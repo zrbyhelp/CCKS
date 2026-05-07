@@ -1,0 +1,16 @@
+services:
+  ccks-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ccks-web:latest
+    container_name: ccks-web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: ${PORT:-3000}
+      NITRO_HOST: 0.0.0.0
+      NITRO_PORT: ${PORT:-3000}
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
