@@ -3,7 +3,7 @@
 import Image from 'next/image'
 import { useRouter } from 'next/navigation'
 import type { ReactNode } from 'react'
-import { Boxes, LayoutDashboard, Settings, Users } from 'lucide-react'
+import { LayoutDashboard, Users } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export type AppHeaderNavKey = 'workbench' | 'variables' | 'community' | 'config'
@@ -23,9 +23,7 @@ const NAV_ITEMS: Array<{
   icon: typeof LayoutDashboard
 }> = [
   { key: 'workbench', href: '/', icon: LayoutDashboard },
-  { key: 'variables', href: '/variables', icon: Boxes },
   { key: 'community', href: '/community', icon: Users },
-  { key: 'config', href: '/config', icon: Settings },
 ]
 
 export function AppHeader({
@@ -51,11 +49,10 @@ export function AppHeader({
 
   return (
     <header className="relative z-10 flex h-12 shrink-0 items-center border-b border-slate-200/80 bg-white shadow-[0_1px_20px_rgba(15,23,42,0.04)]">
-      <div className="flex h-full w-[190px] shrink-0 items-center gap-2 px-4">
+      <div className="flex h-full w-14 shrink-0 items-center justify-center">
         <div className="grid h-7 w-7 place-items-center">
           <Image src="/zr-logo.png" alt="从词开始" width={24} height={24} />
         </div>
-        <span className="truncate text-[15px] font-black text-[#d95a1b]">从词开始</span>
       </div>
       <nav className="flex h-full min-w-0 flex-1 items-center overflow-x-auto" aria-label="主导航">
         {NAV_ITEMS.map((item) => {
