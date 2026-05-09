@@ -275,8 +275,15 @@ type GithubSession = {
 type SessionUser = {
   id: string
   name: string
+  account?: string | null
   email: string | null
   avatar: string | null
+}
+type AdminSession = {
+  name: string
+  account: string | null
+  email: string | null
+  userId: string
 }
 type ProjectFileReference = {
   projectId: string
@@ -478,6 +485,7 @@ const UI_COPY = {
     announcement: '公告',
     noAnnouncement: '暂无公告',
     feedback: '投诉建议',
+    admin: '管理员',
     errorTitle: '操作失败',
     login: '登录',
     logout: '退出',
@@ -880,6 +888,7 @@ const UI_COPY = {
     announcement: 'Announcements',
     noAnnouncement: 'No announcements',
     feedback: 'Feedback',
+    admin: 'Admin',
     errorTitle: 'Action failed',
     login: 'Sign in',
     logout: 'Sign out',
@@ -6563,6 +6572,7 @@ export function WorkbenchShell() {
   const [announcementOpen, setAnnouncementOpen] = useState(false)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [sessionUser, setSessionUser] = useState<SessionUser | null>(null)
+  const [sessionAdmin, setSessionAdmin] = useState<AdminSession | null>(null)
   const [sessionChecked, setSessionChecked] = useState(false)
   const [layout, setLayout] = useState<GridLayoutItem[]>(() => cloneDefaultWorkbenchLayout())
   const [minimized, setMinimized] = useState<MinimizedState>(DEFAULT_MINIMIZED)
@@ -6753,16 +6763,18 @@ export function WorkbenchShell() {
 
     fetch('/api/session')
       .then((response) => (response.ok ? response.json() : null))
-      .then((data: { user?: SessionUser | null } | null) => {
+      .then((data: { user?: SessionUser | null; admin?: AdminSession | null } | null) => {
         if (cancelled) return
         const user = data?.user || null
         setSessionUser(user)
+        setSessionAdmin(data?.admin || null)
         setSessionChecked(true)
         if (!user) redirectToLogin()
       })
       .catch(() => {
         if (cancelled) return
         setSessionUser(null)
+        setSessionAdmin(null)
         setSessionChecked(true)
         redirectToLogin()
       })
@@ -7322,6 +7334,11 @@ export function WorkbenchShell() {
                 <RefreshCw className="h-3.5 w-3.5" />
                 {t.windows.resetLayout}
               </button>
+            ) : null}
+            {sessionAdmin ? (
+              <span className="flex h-7 items-center rounded-md border border-[#ffd8c4] bg-[#fff7f2] px-2 text-[11px] font-black text-[#d95a1b]" title={sessionAdmin.email || sessionAdmin.account || sessionAdmin.name}>
+                {t.admin}
+              </span>
             ) : null}
             <button className="grid h-7 w-7 place-items-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-900" aria-label={t.settings} title={t.settings}>
               <Settings className="h-3.5 w-3.5" />

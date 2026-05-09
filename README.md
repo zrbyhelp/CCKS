@@ -89,7 +89,12 @@ ZR_CLIENT_ID=your-client-id
 ZR_CLIENT_SECRET=your-client-secret
 ZR_CALLBACK_URL=https://your-domain.com/api/auth/callback
 LOCAL_AUTH_BYPASS=false
+SESSION_SECRET=change-me-to-a-long-random-string
+CCKS_ADMIN_ACCOUNTS=admin_account_1,admin_account_2
+CCKS_ADMIN_EMAILS=admin@example.com
 ```
+
+管理员账号通过 `CCKS_ADMIN_ACCOUNTS` 和 `CCKS_ADMIN_EMAILS` 维护，多个值用英文逗号分隔。统一登录成功后，`/api/session` 会根据当前用户的账号或邮箱返回 `admin` 信息；`LOCAL_AUTH_BYPASS=true` 时本地开发用户默认具备管理员身份。
 
 如需 GitHub 导入、发布和推送，先在 <https://github.com/settings/developers> 创建 OAuth App，并配置：
 
@@ -112,7 +117,7 @@ Authorization callback URL: http://localhost:3000/api/github/callback
 
 - `/api/auth/login`：跳转统一登录。
 - `/api/auth/callback`：接收统一登录回调并写入最小 session cookie。
-- `/api/session`：返回当前用户信息。
+- `/api/session`：返回当前用户信息和管理员身份。
 - `/api/announcements`：使用服务端凭据拉取门户公告。
 - `/api/projects`：读取或创建项目。
 - `/api/projects/files`：读取和保存项目文件。

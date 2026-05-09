@@ -1,18 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { SESSION_COOKIE, SESSION_MAX_AGE_SECONDS, encodeSession, type SessionUser } from '@/lib/server-session'
 
 const LOGIN_STATE_COOKIE = 'ccks_login_state'
-const SESSION_COOKIE = 'ccks_session'
 
 type LoginState = {
   state: string
   next: string
-}
-
-type SessionUser = {
-  id: string
-  name: string
-  email: string | null
-  avatar: string | null
 }
 
 export async function GET(request: NextRequest) {
@@ -51,9 +44,10 @@ export async function GET(request: NextRequest) {
   response.cookies.delete(LOGIN_STATE_COOKIE)
   response.cookies.set(SESSION_COOKIE, encodeSession({ user }), {
     httpOnly: true,
-    maxAge: 7 * 24 * 60 * 60,
+    maxAge: SESSION_MAX_AGE_SECONDS,
     path: '/',
     sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production' || request.nextUrl.protocol === 'https:',
   })
 
   return response
@@ -65,6 +59,7 @@ function normalizeUser(payload: any): SessionUser {
 
   return {
     id,
+    account: readNullableString(source.account, source.userAccount, source.username, source.login),
     name: readString(source.name, source.userName, source.nickname, source.username, source.account) || '已登录用户',
     email: readNullableString(source.email, source.mail),
     avatar: readNullableString(source.avatar, source.avatarUrl, source.picture),
@@ -82,10 +77,6 @@ function decodeState(value: string | undefined): LoginState | null {
   }
 
   return null
-}
-
-function encodeSession(value: { user: SessionUser }) {
-  return Buffer.from(JSON.stringify(value)).toString('base64url')
 }
 
 function readNullableString(...values: unknown[]) {
