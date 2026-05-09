@@ -1,4 +1,23 @@
 services:
+  mysql:
+    image: mysql:8.4
+    container_name: ccks-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-ccks_root_password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ccks}
+      MYSQL_USER: ${MYSQL_USER:-ccks}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ccks_password}
+    volumes:
+      - ccks-mysql-data:/var/lib/mysql
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   ccks-web:
     build:
       context: .
@@ -8,9 +27,27 @@ services:
     restart: unless-stopped
     environment:
       NODE_ENV: production
-      HOST: 0.0.0.0
       PORT: ${PORT:-3000}
-      NITRO_HOST: 0.0.0.0
-      NITRO_PORT: ${PORT:-3000}
+      HOSTNAME: 0.0.0.0
+      DATABASE_URL: ${DATABASE_URL:-mysql://ccks:ccks_password@mysql:3306/ccks}
+      CCKS_PROJECT_ROOT: ${CCKS_PROJECT_ROOT:-/data/ccks-projects}
+      NEXT_PUBLIC_ZR_PORTAL_URL: ${NEXT_PUBLIC_ZR_PORTAL_URL:-}
+      NEXT_PUBLIC_ZR_SERVICE_SLUG: ${NEXT_PUBLIC_ZR_SERVICE_SLUG:-ccks}
+      ZR_CLIENT_ID: ${ZR_CLIENT_ID:-}
+      ZR_CLIENT_SECRET: ${ZR_CLIENT_SECRET:-}
+      ZR_CALLBACK_URL: ${ZR_CALLBACK_URL:-}
+      LOCAL_AUTH_BYPASS: ${LOCAL_AUTH_BYPASS:-false}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      GITHUB_CALLBACK_URL: ${GITHUB_CALLBACK_URL:-}
     ports:
       - "${PORT:-3000}:${PORT:-3000}"
+    volumes:
+      - ccks-projects:/data/ccks-projects
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  ccks-mysql-data:
+  ccks-projects:

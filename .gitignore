@@ -1,5 +1,6 @@
 node_modules
 .nuxt
+.next
 .output
 .env
 .env.*
@@ -7,3 +8,5 @@ node_modules
 dist
 coverage
 *.log
+*.tsbuildinfo
+.ccks-projects

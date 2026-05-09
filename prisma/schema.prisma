@@ -1,0 +1,37 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model Project {
+  id            String   @id @default(cuid())
+  userId        String
+  name          String
+  fileName      String
+  localPath     String
+  source        String   @default("local")
+  repositoryUrl String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([userId, fileName])
+  @@index([userId])
+}
+
+model AiProvider {
+  id              String   @id @default(cuid())
+  userId          String
+  name            String
+  providerType    String
+  baseUrl         String
+  apiKeyEncrypted String   @db.Text
+  models          Json
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userId, name])
+  @@index([userId])
+}

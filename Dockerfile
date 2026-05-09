@@ -13,18 +13,33 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
+FROM deps AS prod-deps
+
+WORKDIR /app
+
+COPY prisma ./prisma
+COPY prisma.config.ts ./
+RUN npm prune --omit=dev
+RUN ./node_modules/.bin/prisma generate
+
 FROM node:22-alpine AS runner
 
 WORKDIR /app
 
-ENV NODE_ENV=production
-ENV HOST=0.0.0.0
-ENV PORT=3000
-ENV NITRO_HOST=0.0.0.0
-ENV NITRO_PORT=3000
+RUN apk add --no-cache git openssh-client
 
-COPY --from=build /app/.output ./.output
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+
+COPY --from=prod-deps /app/node_modules ./node_modules
+COPY --from=build /app/public ./public
+COPY --from=build /app/.next/standalone ./
+COPY --from=build /app/.next/static ./.next/static
+COPY prisma ./prisma
+COPY prisma.config.ts ./
+COPY README.md ./README.md
 
 EXPOSE 3000
 
-CMD ["node", ".output/server/index.mjs"]
+CMD ["sh", "-c", "./node_modules/.bin/prisma db push && node server.js"]
