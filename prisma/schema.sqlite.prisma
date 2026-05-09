@@ -1,0 +1,78 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Project {
+  id            String   @id @default(cuid())
+  userId        String
+  name          String
+  fileName      String
+  localPath     String
+  source        String   @default("local")
+  repositoryUrl String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([userId, fileName])
+  @@index([userId])
+}
+
+model AiProvider {
+  id              String   @id @default(cuid())
+  userId          String
+  name            String
+  providerType    String
+  baseUrl         String
+  apiKeyEncrypted String
+  models          Json
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+model RecipeVariableCategory {
+  id            String           @id @default(cuid())
+  userId        String
+  nameZh        String
+  nameEn        String
+  icon          String           @default("boxes")
+  descriptionZh String
+  descriptionEn String
+  tipZh         String
+  tipEn         String
+  changeLog     Json
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  variables     RecipeVariable[]
+
+  @@unique([userId, nameZh])
+  @@index([userId])
+}
+
+model RecipeVariable {
+  id            String                 @id @default(cuid())
+  userId        String
+  categoryId    String
+  variableName  String
+  nameZh        String
+  nameEn        String
+  contentZh     String
+  contentEn     String
+  candidates    Json
+  defaultValues Json
+  multiple      Boolean                @default(false)
+  changeLog     Json
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  category      RecipeVariableCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, variableName])
+  @@index([categoryId])
+  @@index([userId])
+}

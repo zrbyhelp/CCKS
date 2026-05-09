@@ -4,16 +4,20 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
+    "dev:local": "npm run db:push:local && npm run db:generate:local && cross-env CCKS_DATABASE_MODE=sqlite next dev",
     "build": "prisma generate && next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "db:generate": "prisma generate",
-    "db:push": "prisma db push"
+    "db:generate:local": "cross-env CCKS_DATABASE_MODE=sqlite prisma generate --schema prisma/schema.sqlite.prisma",
+    "db:push": "prisma db push",
+    "db:push:local": "cross-env CCKS_DATABASE_MODE=sqlite prisma db push --schema prisma/schema.sqlite.prisma"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
     "@hookform/resolvers": "^5.2.2",
     "@monaco-editor/react": "^4.7.0",
+    "@prisma/adapter-better-sqlite3": "^7.8.0",
     "@prisma/adapter-mariadb": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "@radix-ui/react-slot": "^1.2.4",
@@ -23,6 +27,7 @@
     "@xyflow/react": "^12.9.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "dotenv": "^17.2.3",
     "lucide-react": "^0.552.0",
     "mariadb": "^3.5.2",
     "monaco-editor": "^0.55.1",
@@ -40,12 +45,14 @@
     "zod": "^4.1.12"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
     "@types/react-grid-layout": "^1.3.6",
     "@types/react-resizable": "^3.0.8",
     "autoprefixer": "^10.4.21",
+    "cross-env": "^10.1.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.9.3"

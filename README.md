@@ -22,6 +22,21 @@
 
 ## 本地运行
 
+无 Docker/MySQL 时可以使用本地 SQLite 模式：
+
+```bash
+npm install
+npm run dev:local
+```
+
+`dev:local` 会先执行 SQLite `db push` 并生成 Prisma Client，默认数据库文件为 `.ccks-local/dev.db`。如需自定义位置，可设置：
+
+```env
+CCKS_SQLITE_DATABASE_URL=file:./.ccks-local/dev.db
+```
+
+使用 MySQL 时：
+
 ```bash
 npm install
 npm run db:push
@@ -39,6 +54,7 @@ npm run start
 本地直连 MySQL 时，`DATABASE_URL` 应指向可访问的数据库，例如：
 
 ```env
+CCKS_DATABASE_MODE=mysql
 DATABASE_URL=mysql://ccks:ccks_password@localhost:3306/ccks
 CCKS_PROJECT_ROOT=.ccks-projects
 ```
