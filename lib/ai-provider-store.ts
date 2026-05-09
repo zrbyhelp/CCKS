@@ -3,6 +3,8 @@ import type { AiModelCapability, AiProviderModel, AiProviderSummary } from '@/li
 import {
   createAiProviderModel,
   inferAiModelParameterSchema,
+  inferAiProviderTypeFromBaseUrl,
+  normalizeAiModelPresetRef,
   normalizeAiModelParameterSchema,
   normalizeAiResponseConfig,
   normalizeToolCallingSupport,
@@ -36,16 +38,16 @@ export async function listAiProviders(userId: string): Promise<AiProviderSummary
 
 export async function createAiProvider(
   userId: string,
-  input: { name: unknown; providerType: unknown; baseUrl: unknown; apiKey: unknown; models: unknown },
+  input: { name: unknown; providerType?: unknown; baseUrl: unknown; apiKey: unknown; models: unknown },
 ) {
   const name = normalizeProviderName(input.name)
-  const providerType = normalizeProviderType(input.providerType)
   const baseUrl = normalizeBaseUrl(input.baseUrl)
+  const providerType = resolveProviderType(input.providerType, baseUrl)
   const apiKey = readString(input.apiKey)
   const models = normalizeModels(input.models, providerType)
 
   if (!name) throw new AiProviderStoreError('PROVIDER_NAME_REQUIRED', '供应商名称不能为空')
-  if (!baseUrl) throw new AiProviderStoreError('PROVIDER_BASE_URL_INVALID', '供应商 Base URL 无效')
+  if (!baseUrl) throw new AiProviderStoreError('PROVIDER_BASE_URL_INVALID', '供应商网址无效')
   if (!apiKey) throw new AiProviderStoreError('PROVIDER_API_KEY_REQUIRED', 'API Key 不能为空')
   if (!models.length) throw new AiProviderStoreError('PROVIDER_MODELS_REQUIRED', '至少需要配置一个模型')
 
@@ -68,21 +70,26 @@ export async function createAiProvider(
 
 export async function updateAiProvider(
   userId: string,
-  input: { providerId: unknown; name: unknown; providerType: unknown; baseUrl: unknown; apiKey: unknown; models: unknown },
+  input: { providerId: unknown; name: unknown; providerType?: unknown; baseUrl: unknown; apiKey: unknown; models: unknown },
 ) {
   const providerId = readString(input.providerId)
   const name = normalizeProviderName(input.name)
-  const providerType = normalizeProviderType(input.providerType)
   const baseUrl = normalizeBaseUrl(input.baseUrl)
   const apiKey = readString(input.apiKey)
-  const models = normalizeModels(input.models, providerType)
 
   if (!providerId) throw new AiProviderStoreError('PROVIDER_NOT_FOUND', 'AI 供应商不存在')
   if (!name) throw new AiProviderStoreError('PROVIDER_NAME_REQUIRED', '供应商名称不能为空')
-  if (!baseUrl) throw new AiProviderStoreError('PROVIDER_BASE_URL_INVALID', '供应商 Base URL 无效')
+  if (!baseUrl) throw new AiProviderStoreError('PROVIDER_BASE_URL_INVALID', '供应商网址无效')
+
+  const existingProvider = await requireProvider(userId, providerId)
+  const providerType = resolveProviderType(
+    input.providerType,
+    baseUrl,
+    baseUrl === existingProvider.baseUrl ? existingProvider.providerType : 'custom',
+  )
+  const models = normalizeModels(input.models, providerType)
   if (!models.length) throw new AiProviderStoreError('PROVIDER_MODELS_REQUIRED', '至少需要配置一个模型')
 
-  await requireProvider(userId, providerId)
   const record = await prisma.aiProvider.update({
     where: { id: providerId },
     data: {
@@ -115,21 +122,21 @@ export async function deleteAiProvider(userId: string, providerIdInput: unknown)
 
 export async function pullAiProviderModels(
   userId: string,
-  input: { providerId?: unknown; providerType: unknown; baseUrl: unknown; apiKey?: unknown },
+  input: { providerId?: unknown; providerType?: unknown; baseUrl: unknown; apiKey?: unknown },
 ) {
   const providerId = readString(input.providerId)
-  let providerType = normalizeProviderType(input.providerType)
   let baseUrl = normalizeBaseUrl(input.baseUrl)
   let apiKey = readString(input.apiKey)
+  let providerType = resolveProviderType(input.providerType, baseUrl)
 
   if (providerId) {
     const provider = await requireProvider(userId, providerId)
-    providerType = normalizeProviderType(input.providerType) || provider.providerType
     baseUrl = normalizeBaseUrl(input.baseUrl) || provider.baseUrl
+    providerType = resolveProviderType(input.providerType, baseUrl, baseUrl === provider.baseUrl ? provider.providerType : 'custom')
     apiKey = apiKey || decryptSecret(provider.apiKeyEncrypted)
   }
 
-  if (!baseUrl) throw new AiProviderStoreError('PROVIDER_BASE_URL_INVALID', '供应商 Base URL 无效')
+  if (!baseUrl) throw new AiProviderStoreError('PROVIDER_BASE_URL_INVALID', '供应商网址无效')
   if (!apiKey) throw new AiProviderStoreError('PROVIDER_API_KEY_REQUIRED', 'API Key 不能为空')
 
   const payload = await fetchModelList(baseUrl, apiKey)
@@ -180,7 +187,11 @@ function normalizeProviderName(value: unknown) {
 
 function normalizeProviderType(value: unknown) {
   const normalized = readString(value).toLowerCase()
-  return /^[a-z][a-z0-9_-]{0,31}$/.test(normalized) ? normalized : 'custom'
+  return /^[a-z][a-z0-9_-]{0,31}$/.test(normalized) ? normalized : ''
+}
+
+function resolveProviderType(value: unknown, baseUrl: string, fallback = 'custom') {
+  return normalizeProviderType(value) || inferAiProviderTypeFromBaseUrl(baseUrl, fallback)
 }
 
 function normalizeBaseUrl(value: unknown) {
@@ -212,6 +223,8 @@ function normalizeModels(value: unknown, providerType: string): AiProviderModel[
     if (isRecord(raw.defaultResponseConfig)) {
       model.defaultResponseConfig = normalizeAiResponseConfig(schema.kind, raw.defaultResponseConfig, providerType, id, model)
     }
+    const presetRef = normalizeAiModelPresetRef(raw.presetRef)
+    if (presetRef) model.presetRef = presetRef
     return [model]
   })
 }
@@ -263,13 +276,13 @@ async function fetchModelList(baseUrl: string, apiKey: string) {
     const data = await response.json().catch(() => null)
 
     if (!response.ok) {
-      throw new AiProviderStoreError('PROVIDER_MODELS_FETCH_FAILED', readProviderErrorMessage(data) || `模型列表拉取失败 (${response.status})`)
+    throw new AiProviderStoreError('PROVIDER_MODELS_FETCH_FAILED', readProviderErrorMessage(data) || `模型列表获取失败 (${response.status})`)
     }
 
     return data
   } catch (error) {
     if (isAiProviderStoreError(error)) throw error
-    throw new AiProviderStoreError('PROVIDER_MODELS_FETCH_FAILED', '模型列表拉取失败，请检查 Base URL 和 API Key')
+    throw new AiProviderStoreError('PROVIDER_MODELS_FETCH_FAILED', '模型列表获取失败，请检查供应商网址和 API Key')
   } finally {
     clearTimeout(timeout)
   }

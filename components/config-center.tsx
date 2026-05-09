@@ -1,19 +1,25 @@
 'use client'
 
-import Image from 'next/image'
-import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import { AlertCircle, Bot, LayoutDashboard, Pencil, Plus, RefreshCw, Settings, Trash2, X } from 'lucide-react'
+import { AlertCircle, Bot, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
+import { AppHeader } from '@/components/app-header'
 import { PortalBackground } from '@/components/portal-background'
 import {
   AI_PROVIDER_PRESETS,
-  modelsToText,
-  parseModelsText,
+  aiModelSupportsReferenceFile,
+  aiModelSupportsReferenceImage,
+  aiModelSupportsThinking,
+  applyAiModelPreset,
+  createAiModelPresetRef,
+  findAiModelPresetOption,
+  getAiModelPresetOptionKey,
+  hasAiModelPreset,
+  inferAiProviderTypeFromBaseUrl,
+  listAiModelPresetOptions,
   type AiProviderModel,
   type AiProviderPreset,
   type AiProviderSummary,
@@ -22,12 +28,10 @@ import { cn } from '@/lib/utils'
 
 type AiProviderFormState = {
   id: string
-  providerType: string
   name: string
   baseUrl: string
   apiKey: string
   models: AiProviderModel[]
-  modelsText: string
 }
 
 type AppAlert = {
@@ -39,22 +43,38 @@ type AppAlert = {
 const COPY = {
   title: '配置中心',
   workbench: '网页管理',
+  variables: '变量管理',
+  community: '社区',
   section: 'AI 供应商配置',
-  sectionDesc: '维护 OpenAI 兼容供应商、模型能力和加密保存的 API Key。',
-  providerPreset: '供应商预设',
+  sectionDesc: '维护供应商网址、接口获取的模型列表和加密保存的 API Key。',
+  providerPreset: '常用网址',
   providerName: '供应商名称',
-  providerBaseUrl: 'Base URL',
+  providerBaseUrl: '供应商网址',
   providerApiKey: 'API Key',
   providerApiKeyPlaceholder: '留空则保留已保存密钥',
   providerModels: '模型列表',
-  providerModelsHint: '每行一个模型，格式：模型ID | text,image | tools，可选 tools/no-tools/unknown',
+  providerModelsHint: '模型列表从供应商接口获取；保存前请先获取模型。',
+  providerModelsEmpty: '尚未获取模型，请填写供应商网址和 API Key 后获取。',
+  capabilities: '能力',
+  toolCalling: '工具',
+  thinkingSupport: '思考',
+  thinkingSupported: '支持',
+  thinkingUnsupported: '不支持',
+  referenceImage: '参考图',
+  referenceFile: '参考文件',
+  modelPreset: '模型预设',
+  modelPresetPlaceholder: '选择模型预设',
+  outputTypes: {
+    text: '文本',
+    image: '图片',
+  },
   toolCallingStatus: {
     supported: '工具调用',
     unsupported: '无工具调用',
     unknown: '工具未知',
   },
-  pullModels: '拉取模型',
-  pullingModels: '拉取中',
+  pullModels: '获取模型',
+  pullingModels: '获取中',
   addAiProvider: '新增供应商',
   saveAiProvider: '保存供应商',
   updateAiProvider: '更新供应商',
@@ -70,7 +90,6 @@ const COPY = {
 }
 
 export function ConfigCenterPage() {
-  const router = useRouter()
   const [providers, setProviders] = useState<AiProviderSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [sessionChecked, setSessionChecked] = useState(false)
@@ -138,18 +157,10 @@ export function ConfigCenterPage() {
       <PortalBackground />
       <TopCenterAlert alert={appAlert} onDismiss={() => setAppAlert(null)} />
 
-      <header className="relative z-10 flex h-12 shrink-0 items-center border-b border-slate-200/80 bg-white shadow-[0_1px_20px_rgba(15,23,42,0.04)]">
-        <div className="flex w-[190px] items-center gap-2 px-4">
-          <div className="grid h-7 w-7 place-items-center">
-            <Image src="/zr-logo.png" alt="从词开始" width={24} height={24} />
-          </div>
-          <span className="text-[15px] font-black text-[#d95a1b]">从词开始</span>
-        </div>
-        <nav className="flex h-full flex-1 items-center">
-          <HeaderTab icon={LayoutDashboard} label={COPY.workbench} onClick={() => router.push('/')} />
-          <HeaderTab icon={Settings} label={COPY.title} active />
-        </nav>
-      </header>
+      <AppHeader
+        activeItem="config"
+        labels={{ workbench: COPY.workbench, variables: COPY.variables, community: COPY.community, config: COPY.title }}
+      />
 
       <main className="relative z-10 min-h-0 flex-1 overflow-auto p-4">
         <section className="mx-auto flex max-w-[1380px] flex-col overflow-hidden rounded-md border border-slate-200 bg-white/95 shadow-[0_18px_50px_rgba(15,23,42,0.08)]">
@@ -177,33 +188,6 @@ export function ConfigCenterPage() {
   )
 }
 
-function HeaderTab({
-  icon: Icon,
-  label,
-  active = false,
-  onClick,
-}: {
-  icon: typeof LayoutDashboard
-  label: string
-  active?: boolean
-  onClick?: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex h-12 items-center gap-1.5 border-b-2 px-4 text-xs font-semibold transition ${
-        active
-          ? 'border-[#FB7E3D] bg-[#fff2ea] text-[#d95a1b]'
-          : 'border-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-      }`}
-    >
-      <Icon className="h-3.5 w-3.5" />
-      {label}
-    </button>
-  )
-}
-
 function AiProviderForm({
   providers,
   onRefresh,
@@ -221,26 +205,40 @@ function AiProviderForm({
     const preset = AI_PROVIDER_PRESETS.find((item) => item.providerType === providerType) || AI_PROVIDER_PRESETS[0]
     setForm((current) => ({
       ...current,
-      providerType: preset.providerType,
       name: current.id ? current.name : preset.name,
       baseUrl: preset.baseUrl,
       models: [],
-      modelsText: '',
+    }))
+  }
+
+  function updateBaseUrl(baseUrl: string) {
+    setForm((current) => ({ ...current, baseUrl, models: baseUrl === current.baseUrl ? current.models : [] }))
+  }
+
+  function applyModelPreset(index: number, presetKey: string) {
+    const option = findAiModelPresetOption(presetKey)
+    if (!option) return
+    setForm((current) => ({
+      ...current,
+      models: current.models.map((model, modelIndex) => (modelIndex === index ? applyAiModelPreset(model, option.model, createAiModelPresetRef(option)) : model)),
     }))
   }
 
   async function submitProvider(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const models = form.models.length ? form.models : parseModelsText(form.modelsText, form.providerType)
+    if (!form.models.length) {
+      onNotify('请先获取模型列表，再保存供应商。')
+      return
+    }
+
     const response = await fetchJson('/api/ai-providers', {
       method: editing ? 'PATCH' : 'POST',
       body: {
         providerId: form.id,
-        providerType: form.providerType,
         name: form.name,
         baseUrl: form.baseUrl,
         apiKey: form.apiKey,
-        models,
+        models: form.models,
       },
     })
 
@@ -259,18 +257,17 @@ function AiProviderForm({
       method: 'POST',
       body: {
         providerId: form.id,
-        providerType: form.providerType,
         baseUrl: form.baseUrl,
         apiKey: form.apiKey,
       },
     }).finally(() => setPullingModels(false))
 
     if (!response?.ok || !Array.isArray(response.models)) {
-      onNotify(response?.message || '模型列表拉取失败')
+      onNotify(response?.message || '模型列表获取失败')
       return
     }
 
-    setForm((current) => ({ ...current, models: response.models, modelsText: modelsToText(response.models) }))
+    setForm((current) => ({ ...current, models: response.models }))
   }
 
   useEffect(() => {
@@ -282,20 +279,24 @@ function AiProviderForm({
   return (
     <form className="rounded-md border border-slate-200 bg-white p-3" onSubmit={submitProvider}>
       <div className="grid gap-2">
-        <label className="block text-xs font-semibold text-slate-600">
+        <div className="block text-xs font-semibold text-slate-600">
           {COPY.providerPreset}
-          <select
-            className="mt-1 h-8 w-full rounded-md border border-input bg-card px-2.5 text-xs outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
-            value={form.providerType}
-            onChange={(event) => applyPreset(event.target.value)}
-          >
+          <div className="mt-1 grid grid-cols-2 gap-1.5">
             {AI_PROVIDER_PRESETS.map((preset) => (
-              <option key={preset.providerType} value={preset.providerType}>
+              <button
+                key={preset.providerType}
+                type="button"
+                className={cn(
+                  'min-h-8 rounded-md border px-2 py-1 text-left text-[11px] font-bold transition',
+                  form.baseUrl === preset.baseUrl ? 'border-[#d95a1b] bg-[#fff1e8] text-[#9a3412]' : 'border-slate-200 bg-white text-slate-600 hover:border-[#f2b28d] hover:bg-[#fff7f2]',
+                )}
+                onClick={() => applyPreset(preset.providerType)}
+              >
                 {preset.name}
-              </option>
+              </button>
             ))}
-          </select>
-        </label>
+          </div>
+        </div>
         <div className="grid gap-2 sm:grid-cols-2">
           <label className="block text-xs font-semibold text-slate-600">
             {COPY.providerName}
@@ -303,7 +304,7 @@ function AiProviderForm({
           </label>
           <label className="block text-xs font-semibold text-slate-600">
             {COPY.providerBaseUrl}
-            <Input className="mt-1" value={form.baseUrl} onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} required />
+            <Input className="mt-1" value={form.baseUrl} onChange={(event) => updateBaseUrl(event.target.value)} required />
           </label>
         </div>
         <label className="block text-xs font-semibold text-slate-600">
@@ -332,13 +333,11 @@ function AiProviderForm({
               {pullingModels ? COPY.pullingModels : COPY.pullModels}
             </Button>
           </span>
-          <Textarea
-            className="mt-1 min-h-40 resize-y font-mono text-[11px]"
-            value={form.modelsText}
-            onChange={(event) => {
-              const modelsText = event.target.value
-              setForm({ ...form, modelsText, models: parseModelsText(modelsText, form.providerType) })
-            }}
+          <ModelPreviewList
+            models={form.models}
+            emptyText={COPY.providerModelsEmpty}
+            providerType={inferAiProviderTypeFromBaseUrl(form.baseUrl)}
+            onApplyPreset={applyModelPreset}
           />
           <span className="mt-1 block text-[10px] font-normal text-slate-500">{COPY.providerModelsHint}</span>
         </label>
@@ -403,9 +402,10 @@ function AiProviderList({
           </div>
           <div className="mt-2 flex flex-wrap gap-1">
             {provider.models.map((model) => (
-              <Badge key={model.id} variant={getToolCallingBadgeVariant(model)}>
-                {model.id} · {COPY.toolCallingStatus[model.toolCalling]}
-              </Badge>
+              <div key={model.id} className="flex min-w-0 flex-wrap items-center gap-1 rounded border border-slate-200 bg-slate-50 px-1.5 py-1">
+                <span className="max-w-48 truncate font-mono text-[10px] font-black text-slate-700">{model.id}</span>
+                <ModelTagBadges model={model} />
+              </div>
             ))}
           </div>
           <div className="mt-3 flex gap-2">
@@ -439,26 +439,41 @@ function InlineProviderEditor({
 }) {
   const [form, setForm] = useState<AiProviderFormState>({
     id: provider.id,
-    providerType: provider.providerType,
     name: provider.name,
     baseUrl: provider.baseUrl,
     apiKey: '',
     models: provider.models,
-    modelsText: modelsToText(provider.models),
   })
   const [pullingModels, setPullingModels] = useState(false)
 
+  function updateBaseUrl(baseUrl: string) {
+    setForm((current) => ({ ...current, baseUrl, models: baseUrl === current.baseUrl ? current.models : [] }))
+  }
+
+  function applyModelPreset(index: number, presetKey: string) {
+    const option = findAiModelPresetOption(presetKey)
+    if (!option) return
+    setForm((current) => ({
+      ...current,
+      models: current.models.map((model, modelIndex) => (modelIndex === index ? applyAiModelPreset(model, option.model, createAiModelPresetRef(option)) : model)),
+    }))
+  }
+
   async function submitProvider(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!form.models.length) {
+      onNotify('请先获取模型列表，再保存供应商。')
+      return
+    }
+
     const response = await fetchJson('/api/ai-providers', {
       method: 'PATCH',
       body: {
         providerId: form.id,
-        providerType: form.providerType,
         name: form.name,
         baseUrl: form.baseUrl,
         apiKey: form.apiKey,
-        models: form.models.length ? form.models : parseModelsText(form.modelsText, form.providerType),
+        models: form.models,
       },
     })
 
@@ -477,25 +492,24 @@ function InlineProviderEditor({
       method: 'POST',
       body: {
         providerId: form.id,
-        providerType: form.providerType,
         baseUrl: form.baseUrl,
         apiKey: form.apiKey,
       },
     }).finally(() => setPullingModels(false))
 
     if (!response?.ok || !Array.isArray(response.models)) {
-      onNotify(response?.message || '模型列表拉取失败')
+      onNotify(response?.message || '模型列表获取失败')
       return
     }
 
-    setForm((current) => ({ ...current, models: response.models, modelsText: modelsToText(response.models) }))
+    setForm((current) => ({ ...current, models: response.models }))
   }
 
   return (
     <form className="mt-3 grid gap-2 rounded-md border border-slate-200 bg-slate-50 p-2" onSubmit={submitProvider}>
       <div className="grid gap-2 sm:grid-cols-2">
         <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
-        <Input value={form.baseUrl} onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} required />
+        <Input value={form.baseUrl} onChange={(event) => updateBaseUrl(event.target.value)} required />
       </div>
       <Input
         type="password"
@@ -511,13 +525,12 @@ function InlineProviderEditor({
             {pullingModels ? COPY.pullingModels : COPY.pullModels}
           </Button>
         </div>
-        <Textarea
-          className="min-h-28 resize-y font-mono text-[11px]"
-          value={form.modelsText}
-          onChange={(event) => {
-            const modelsText = event.target.value
-            setForm({ ...form, modelsText, models: parseModelsText(modelsText, form.providerType) })
-          }}
+        <ModelPreviewList
+          models={form.models}
+          emptyText={COPY.providerModelsEmpty}
+          providerType={inferAiProviderTypeFromBaseUrl(form.baseUrl, provider.providerType)}
+          onApplyPreset={applyModelPreset}
+          compact
         />
         <span className="mt-1 block text-[10px] font-normal text-slate-500">{COPY.providerModelsHint}</span>
       </div>
@@ -537,6 +550,88 @@ function getToolCallingBadgeVariant(model: AiProviderModel) {
   if (model.toolCalling === 'supported') return 'default'
   if (model.toolCalling === 'unsupported') return 'danger'
   return 'outline'
+}
+
+function ModelPreviewList({
+  models,
+  emptyText,
+  providerType,
+  onApplyPreset,
+  compact = false,
+}: {
+  models: AiProviderModel[]
+  emptyText: string
+  providerType: string
+  onApplyPreset?: (index: number, presetKey: string) => void
+  compact?: boolean
+}) {
+  if (!models.length) {
+    return (
+      <div className={cn('mt-1 rounded-md border border-dashed border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-500', compact ? 'py-4' : 'py-8 text-center')}>
+        {emptyText}
+      </div>
+    )
+  }
+
+  return (
+    <div className={cn('mt-1 grid max-h-52 gap-1.5 overflow-auto rounded-md border border-slate-200 bg-slate-50 p-2', compact ? 'max-h-36' : '')}>
+      {models.map((model, index) => {
+        const unknownModel = !hasAiModelPreset(providerType, model.id)
+        const presetKey = getAiModelPresetOptionKey(model.presetRef)
+        return (
+        <div key={model.id} className="grid min-h-8 gap-2 rounded-md border border-slate-200 bg-white px-2 py-1.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,150px)]">
+          <div className="min-w-0">
+            <div className="truncate font-mono text-[11px] font-bold text-slate-900">{model.id}</div>
+            <div className="mt-1 flex flex-wrap gap-1">
+              <ModelTagBadges model={model} />
+            </div>
+          </div>
+          {unknownModel && onApplyPreset ? (
+            <label className="grid min-w-0 gap-1 text-[10px] font-black text-slate-500">
+              {COPY.modelPreset}
+              <select
+                className="h-7 w-full max-w-full rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700 outline-none transition focus:border-[#d95a1b] focus:ring-2 focus:ring-[#d95a1b]/15"
+                value={presetKey}
+                onChange={(event) => onApplyPreset(index, event.target.value)}
+              >
+                <option value="">{COPY.modelPresetPlaceholder}</option>
+                {listAiModelPresetOptions(providerType).map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.providerName} / {option.model.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+        </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function ModelTagBadges({ model }: { model: AiProviderModel }) {
+  return (
+    <>
+      {model.capabilities.map((capability) => (
+        <Badge key={capability} variant="outline">
+          {COPY.capabilities}:{COPY.outputTypes[capability]}
+        </Badge>
+      ))}
+      <Badge variant={getToolCallingBadgeVariant(model)}>
+        {COPY.toolCalling}:{COPY.toolCallingStatus[model.toolCalling]}
+      </Badge>
+      <Badge variant={aiModelSupportsThinking(model) ? 'default' : 'outline'}>
+        {COPY.thinkingSupport}:{aiModelSupportsThinking(model) ? COPY.thinkingSupported : COPY.thinkingUnsupported}
+      </Badge>
+      <Badge variant={aiModelSupportsReferenceImage(model) ? 'default' : 'outline'}>
+        {COPY.referenceImage}:{aiModelSupportsReferenceImage(model) ? COPY.thinkingSupported : COPY.thinkingUnsupported}
+      </Badge>
+      <Badge variant={aiModelSupportsReferenceFile(model) ? 'default' : 'outline'}>
+        {COPY.referenceFile}:{aiModelSupportsReferenceFile(model) ? COPY.thinkingSupported : COPY.thinkingUnsupported}
+      </Badge>
+    </>
+  )
 }
 
 function TopCenterAlert({
@@ -572,12 +667,10 @@ function TopCenterAlert({
 function createAiProviderFormState(preset: AiProviderPreset): AiProviderFormState {
   return {
     id: '',
-    providerType: preset.providerType,
     name: preset.name,
     baseUrl: preset.baseUrl,
     apiKey: '',
     models: [],
-    modelsText: '',
   }
 }
 

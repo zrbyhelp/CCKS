@@ -679,7 +679,7 @@ function isGitHubRemote(value: string) {
 
 function getEditorLanguage(filePath: string) {
   const normalized = filePath.toLowerCase()
-  if (normalized.endsWith('.json') || normalized.endsWith('.zpmt')) return 'json'
+  if (normalized.endsWith('.json') || normalized.endsWith('.zpmt') || normalized.endsWith('.zlex') || normalized.endsWith('.zamf')) return 'json'
   if (normalized.endsWith('.md') || normalized.endsWith('.markdown') || normalized.endsWith('.prompt')) return 'markdown'
   if (normalized.endsWith('.ts') || normalized.endsWith('.tsx')) return 'typescript'
   if (normalized.endsWith('.js') || normalized.endsWith('.jsx')) return 'javascript'

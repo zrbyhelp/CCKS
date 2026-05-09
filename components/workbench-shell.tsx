@@ -1,9 +1,7 @@
 'use client'
 
 import dynamic from 'next/dynamic'
-import Image from 'next/image'
-import { useRouter } from 'next/navigation'
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { BeforeMount } from '@monaco-editor/react'
 import {
@@ -21,6 +19,7 @@ import {
   type DragStartEvent,
 } from '@dnd-kit/core'
 import ReactGridLayout, { WidthProvider } from 'react-grid-layout/legacy'
+import type { LayoutConstraint } from 'react-grid-layout/core'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Tree } from 'react-arborist'
@@ -33,17 +32,18 @@ import {
   ChevronDown,
   ChevronRight,
   Cloud,
+  Code2,
   AlertCircle,
   Bot,
   Copy,
   Download,
+  FileJson,
   FilePlus2,
   FileText,
   Folder,
   FolderPlus,
   GitBranch,
   Home,
-  LayoutDashboard,
   LogOut,
   Maximize2,
   Minus,
@@ -62,6 +62,7 @@ import {
   UserRound,
   WandSparkles,
   X,
+  type LucideIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -70,21 +71,59 @@ import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { AppHeader } from '@/components/app-header'
 import { PortalBackground } from '@/components/portal-background'
 import { cn } from '@/lib/utils'
 import {
+  aiModelSupportsReferenceFile,
+  aiModelSupportsReferenceImage,
+  aiModelSupportsThinking,
+  applyAiModelPreset,
+  createAiModelPresetRef,
   defaultAiResponseConfig,
+  findAiModelPresetOption,
+  getAiModelPresetOptionKey,
   getImageAspectRatioOptions,
   getImageSizeForResolution,
+  hasAiModelPreset,
+  inferAiProviderTypeFromBaseUrl,
+  listAiModelPresetOptions,
   normalizeAiResponseConfig,
+  normalizeAiModelPresetRef,
   resolveAiModelParameterSchema,
   ZPMT_OUTPUT_TYPES,
   type AiModelParameterSchema,
+  type AiModelPresetRef,
   type AiProviderModel,
   type AiProviderSummary,
   type ZpmtOutputType,
   type ZpmtResponseConfig,
 } from '@/lib/ai-presets'
+import {
+  AI_TOOL_CATEGORIES,
+  AI_TOOL_SCHEMA_VERSION,
+  coerceAiToolConfig,
+  getAiToolDefinition,
+  getAiToolFieldDefaults,
+  summarizeAiToolConfig,
+  type AiToolConfig,
+  type AiToolField,
+} from '@/lib/tool-definitions'
+import {
+  createRecipeVariableSnapshot,
+  findRecipeVariableBySourceId,
+  findRecipeVariableSnapshot,
+  formatRecipeVariableSourceId,
+  getDefaultRecipeVariableCategories,
+  normalizeRecipeVariableMetadata,
+  sourceIdsEqual,
+  type RecipeVariableCategory as CatalogRecipeVariableCategory,
+  type RecipeVariableChangeLog,
+  type RecipeVariableItem as CatalogRecipeVariableItem,
+  type RecipeVariableSnapshot,
+  type ZpmtRecipeVariableMetadata,
+} from '@/lib/recipe-variables'
+import { isProjectConfigFilePath, isZamfFilePath, isZlexFilePath, type ProjectConfigDiagnostic } from '@/lib/project-config-types'
 import type { GitChange, GitChangeGroupId, GitChangeKind, GitDecoration, SourceControlStatus } from '@/lib/git-source-control'
 
 const MonacoEditor = dynamic(() => import('@monaco-editor/react'), { ssr: false })
@@ -147,31 +186,44 @@ type PromptTokenStyleKey = VariableType | 'recipe' | 'unknown'
 type ThemeMode = 'light' | 'dark'
 type Locale = 'zh' | 'en'
 type LocalizedText = Record<Locale, string>
-type RecipeVariableItem = {
+type RecipeVariableItem = CatalogRecipeVariableItem
+type RecipeVariableCategory = CatalogRecipeVariableCategory
+type InstructionCatalogItem = {
   id: string
   name: LocalizedText
+  description?: LocalizedText
   candidates: Record<Locale, string[]>
   multiple: boolean
 }
-type RecipeVariableCategory = {
+type InstructionCatalogCategory = {
   id: string
   name: LocalizedText
   description: LocalizedText
-  variables: RecipeVariableItem[]
+  variables: InstructionCatalogItem[]
 }
 type InstructionCategoryKind = 'recipe' | 'tool'
-type EditorMode = 'normal' | 'preview' | 'assist'
+type EditorMode = 'normal' | 'preview' | 'assist' | 'source'
 type PromptFileType = 'simple' | 'agent'
 type ZpmtSectionKey = 'config' | 'system' | 'user'
 type ZpmtPromptSectionKey = Extract<ZpmtSectionKey, 'system' | 'user'>
 type ZpmtCollapsedSections = Partial<Record<ZpmtSectionKey, boolean>>
-type ZpmtToolInstruction = RecipeVariableItem & {
+type ZpmtToolInstruction = InstructionCatalogItem & {
   categoryId: string
+  toolId: string
+  description?: LocalizedText
+  config: AiToolConfig
+  schemaVersion: number
 }
 type InstructionDragPayload =
   | { kind: 'variable'; variableType: VariableType }
   | { kind: 'recipe'; categoryId: string; item: RecipeVariableItem }
-  | { kind: 'tool'; categoryId: string; item: RecipeVariableItem }
+  | { kind: 'tool'; categoryId: string; item: InstructionCatalogItem }
+type ProviderFileDragPayload = {
+  kind: 'provider-file'
+  projectId: string
+  path: string
+  provider: AiProviderSummary
+}
 type PendingZpmtTagInsertion = {
   mode: 'insert'
   payload: Extract<InstructionDragPayload, { kind: 'variable' | 'recipe' }>
@@ -188,6 +240,9 @@ type PendingZpmtTagEdit = {
   originalName: string
 }
 type PendingZpmtTagDialog = PendingZpmtTagInsertion | PendingZpmtTagEdit
+type PendingZpmtToolDialog =
+  | { mode: 'add'; payload: Extract<InstructionDragPayload, { kind: 'tool' }> }
+  | { mode: 'edit'; tool: ZpmtToolInstruction }
 type ZpmtPromptTokenEditorHandle = {
   setCaretAtPoint: (point: ZpmtDropPoint, showDropCursor?: boolean) => number
   clearDropCursor: () => void
@@ -256,13 +311,22 @@ type GridLayoutItem = {
   w: number
   h: number
   minW?: number
+  maxW?: number
   minH?: number
+  maxH?: number
+  moved?: boolean
+  static?: boolean
+  isDraggable?: boolean
   isResizable?: boolean
   resizeHandles?: ResizeHandle[]
+  constraints?: LayoutConstraint[]
+  isBounded?: boolean
 }
 type MinimizedState = Record<WindowId, boolean>
 type EntryDialogState =
   | { mode: 'folder'; folder: TreeNode; name: string }
+  | { mode: 'lexicon'; folder: TreeNode; name: string }
+  | { mode: 'provider'; folder: TreeNode; name: string }
   | {
       mode: 'prompt'
       folder: TreeNode
@@ -278,6 +342,7 @@ type EntryDialogState =
 type ZpmtDocument = {
   config: {
     outputType: ZpmtOutputType
+    providerFile: string
     providerId: string
     providerName: string
     model: string
@@ -286,7 +351,65 @@ type ZpmtDocument = {
   system: string
   user: string
   tools: ZpmtToolInstruction[]
+  metadata: ZpmtRecipeVariableMetadata
 }
+type ZpmtTestVariable = {
+  key: string
+  token: string
+  name: string
+  label: string
+  typeLabel: string
+  defaultValue: string
+  source?: string
+}
+type ZpmtModelCapabilityGate = {
+  supportsTools: boolean
+  supportsReferenceImage: boolean
+  supportsReferenceFile: boolean
+}
+type ZlexVariable = {
+  variableName: string
+  description: string
+  candidates: string[]
+  multiple: boolean
+  createdAt?: string
+  updatedAt?: string
+  changeLog: RecipeVariableChangeLog[]
+}
+type ZlexCategory = {
+  name: string
+  description: string
+  createdAt?: string
+  updatedAt?: string
+  changeLog: RecipeVariableChangeLog[]
+  variables: ZlexVariable[]
+}
+type ZlexDocument = {
+  schema: 'ccks.zlex'
+  version: number
+  categories: ZlexCategory[]
+}
+type ZamfModel = {
+  id: string
+  capabilities: ZpmtOutputType[]
+  toolCalling: AiProviderModel['toolCalling']
+  parameterSchema?: unknown
+  defaultResponseConfig?: unknown
+  presetRef?: AiModelPresetRef
+}
+type ZamfDocument = {
+  schema: 'ccks.zamf'
+  version: number
+  id: string
+  name: string
+  providerType: string
+  baseUrl: string
+  apiKey: string
+  models: ZamfModel[]
+}
+type ProjectConfigParseResult<T> =
+  | { ok: true; document: T }
+  | { ok: false; message: string }
 
 const STORAGE_KEYS = {
   theme: 'ccks-theme',
@@ -300,6 +423,11 @@ const ZPMT_INSTRUCTION_DRAG_EVENT = 'ccks-zpmt-instruction-drag'
 const ZPMT_INSTRUCTION_DROP_EVENT = 'ccks-zpmt-instruction-drop'
 const ZPMT_CLEAR_DRAG_CARET_EVENT = 'ccks-zpmt-clear-drag-caret'
 const TAG_NAME_PATTERN = /^[a-z][a-zA-Z0-9_]*$/
+const ALL_ZPMT_MODEL_CAPABILITIES: ZpmtModelCapabilityGate = {
+  supportsTools: true,
+  supportsReferenceImage: true,
+  supportsReferenceFile: true,
+}
 
 type ZpmtDropPoint = { x: number; y: number }
 type ZpmtInstructionPointEventDetail = {
@@ -308,8 +436,9 @@ type ZpmtInstructionPointEventDetail = {
   handled: boolean
 }
 type ZpmtDroppableData = {
-  kind: 'zpmt-root' | 'zpmt-prompt'
+  kind: 'zpmt-root' | 'zpmt-prompt' | 'zpmt-config'
   onDropInstruction: (payload: InstructionDragPayload, point: ZpmtDropPoint) => void
+  onDropProviderFile?: (payload: ProviderFileDragPayload, point: ZpmtDropPoint) => void
   onDragInstruction?: (payload: InstructionDragPayload, point: ZpmtDropPoint) => void
 }
 
@@ -341,7 +470,7 @@ const MINIMIZED_LAYOUT: Record<WindowId, Pick<GridLayoutItem, 'w' | 'h' | 'minW'
 
 const UI_COPY = {
   zh: {
-    nav: ['网页管理', '配置中心'],
+    nav: ['网页管理', '变量管理', '社区', '配置中心'],
     settings: '系统设置',
     themeToDark: '暗色模式',
     themeToLight: '亮色模式',
@@ -383,19 +512,24 @@ const UI_COPY = {
     aiProvider: 'AI 供应商',
     aiModel: '模型',
     responseConfig: '响应配置',
-    noAiProvider: '暂无 AI 供应商，请先在配置中心添加',
+    noAiProvider: '暂无 .zamf 供应商文件，请先在文件树创建',
     noModelForOutput: '当前输出类型没有可用模型',
+    unsupportedByModel: '当前模型不支持',
     aiProviderConfig: 'AI 供应商配置',
     addAiProvider: '新增供应商',
     saveAiProvider: '保存供应商',
     updateAiProvider: '更新供应商',
     providerPreset: '供应商预设',
     providerName: '供应商名称',
-    providerBaseUrl: 'Base URL',
+    providerBaseUrl: '供应商网址',
     providerApiKey: 'API Key',
     providerApiKeyPlaceholder: '留空则保留已保存密钥',
     providerModels: '模型列表',
-    providerModelsHint: '每行一个模型，格式：模型ID | text,image | tools',
+    providerModelsHint: '模型列表通过供应商接口获取；保存前请先获取模型。',
+    pullModels: '获取模型',
+    pullingModels: '获取中',
+    modelFetchApiKeyRequired: '请先填写供应商网址和 API Key。',
+    modelFetchFailed: '模型列表获取失败',
     providerDeleteConfirm: '确认删除 AI 供应商「{name}」？',
     providerHasKey: '密钥已加密保存',
     providerNoKey: '未保存密钥',
@@ -462,6 +596,60 @@ const UI_COPY = {
       max: '最大',
     },
     fileConfig: '文件配置',
+    providerFile: '供应商文件',
+    dropProviderFile: '拖拽 .zamf 到这里替换供应商',
+    newLexiconFile: '新建词汇变量文件',
+    newProviderModelFile: '新建供应商模型文件',
+    configDiagnostics: '配置文件解析问题',
+    zlexEditor: '词汇变量编辑',
+    zamfEditor: '供应商模型编辑',
+    lexiconName: '词库名称',
+    scope: '来源范围',
+    categoryId: '分类 ID',
+    categoryIcon: '图标',
+    categoryManagement: '分类管理',
+    categoryInfo: '分类信息',
+    categoryName: '分类名称',
+    categoryDescription: '分类描述',
+    categories: '分类',
+    categoryTip: '分类提示',
+    addCategory: '新增分类',
+    deleteCategory: '删除分类',
+    addRecipeVariable: '新增变量',
+    deleteVariable: '删除变量',
+    variableList: '变量列表',
+    actions: '操作',
+    variableId: '变量 ID',
+    variableName: '变量名',
+    content: '内容',
+    description: '描述',
+    candidates: '候选值',
+    addCandidate: '添加项',
+    removeCandidate: '删除项',
+    editCandidates: '编辑候选值',
+    candidateEditor: '候选值编辑',
+    candidateCountSuffix: '项',
+    done: '完成',
+    defaultValues: '默认值',
+    multiple: '多选',
+    modelId: '模型 ID',
+    capabilities: '能力',
+    addModel: '新增模型',
+    deleteModel: '删除模型',
+    showApiKey: '显示 Key',
+    hideApiKey: '隐藏 Key',
+    parseFailed: '文件解析失败',
+    sourceRepair: '切到源码修复',
+    emptyVariables: '当前分类没有变量',
+    emptyModels: '当前供应商没有模型',
+    modelPreset: '模型预设',
+    modelPresetPlaceholder: '选择模型预设',
+    modelPresetMatched: '已匹配预设',
+    thinkingSupport: '思考',
+    thinkingSupported: '支持',
+    thinkingUnsupported: '不支持',
+    referenceImage: '参考图',
+    referenceFile: '参考文件',
     systemPrompt: 'System 提示词',
     userPrompt: 'User 提示词',
     openFile: '打开文件',
@@ -535,6 +723,8 @@ const UI_COPY = {
     saving: '保存中',
     unsaved: '未保存',
     saveFailed: '保存失败',
+    closeTab: '关闭标签',
+    closeUnsavedTabConfirm: '「{name}」有未保存更改，确认关闭？',
     noOpenFile: '从左侧文件列表选择文件开始编辑',
     format: '格式化',
     run: '运行 (⌘+↵)',
@@ -542,8 +732,10 @@ const UI_COPY = {
       normal: '正常',
       preview: '预览',
       assist: 'AI辅助',
+      source: '源码',
     },
     markdownPreview: 'Markdown 阅览',
+    sourceCode: 'ZPMT 源码',
     aiAssist: {
       title: 'AI辅助',
       status: '基于当前提示词草稿生成建议',
@@ -553,8 +745,8 @@ const UI_COPY = {
     bottomTabs: ['测试面板', '运行结果', '测试用例', '性能分析'],
     success: '成功',
     tokens: '令牌 1,245（输入 528 / 输出 717）',
-    heroTitle: '从词开始 - 让每个想法都有回响',
-    heroDesc: '新一代AI驱动的网站生成与内容管理平台',
+    heroTitle: 'ZPMT',
+    heroDesc: '新时代 AI 代码编辑工具以及编辑框架',
     coreTitle: '核心能力',
     coreItems: [
       '智能生成：通过自然语言生成高质量网页内容与结构',
@@ -607,7 +799,41 @@ const UI_COPY = {
     tagNameInvalid: '名称必须以小写英文字母开头，只能包含英文、数字和下划线',
     tagNameDuplicate: '名称已存在，请重新输入',
     tagInfoRequired: '请填写必要信息',
-    fixedTools: '固定工具',
+    fixedTools: '已绑定工具',
+    configureTool: '绑定工具',
+    bindTool: '绑定工具',
+    toolBindingConfig: '系统上限',
+    toolBindingNoConfig: '该工具没有需要配置的系统上限。确认后，AI 会在调用时提供参数。',
+    editTool: '编辑工具',
+    addTool: '添加工具',
+    saveTool: '保存工具',
+    runTool: '运行工具',
+    toolRunSelect: '选择工具',
+    toolRunInput: '运行输入',
+    toolRunResult: '运行结果',
+    toolRunNoFile: '打开 .zpmt 文件后可运行固定工具',
+    toolRunNoTools: '请先从指令集拖拽工具到当前提示词',
+    toolRunSuccess: '工具运行成功',
+    toolRunFailed: '工具运行失败',
+    toolConfigRequired: '请填写必填工具参数',
+    downloadFile: '下载文件',
+    generatedFile: '生成文件',
+    duration: '耗时',
+    runAgent: '运行 Agent',
+    runningAgent: '运行中',
+    agentRunNoFile: '打开 .zpmt 文件后可运行测试',
+    agentRunNoProvider: '请先绑定供应商和模型',
+    agentRunSuccess: 'Agent 运行成功',
+    agentRunFailed: 'Agent 运行失败',
+    testVariables: '测试变量',
+    testVariableEmpty: '当前提示词没有变量',
+    testValue: '测试值',
+    runSettings: '运行设置',
+    maxToolRounds: '工具调用最大循环',
+    maxToolRoundsHint: '0 表示不执行工具调用；运行时可调整。',
+    assistantOutput: 'AI 输出',
+    noAgentOutput: '暂无运行结果',
+    renderedPrompt: '渲染后的提示词',
     removeTool: '移除工具',
     recipeVariableSearch: '搜索分类、变量或候选字段',
     recipeVariableEmpty: '没有匹配的配方变量',
@@ -637,7 +863,7 @@ const UI_COPY = {
       branch: 'main',
       saved: '已保存',
       activeFile: '首页.prompt',
-      hint: '提示词工作台原型 · 当前为本地 mock 数据',
+      hint: 'ZPMT 工作台 · 当前为本地 mock 数据',
       portalReady: '门户已配置',
       portalMissing: '门户未配置',
       lineColumn: '行 1, 列 1',
@@ -646,7 +872,7 @@ const UI_COPY = {
     },
   },
   en: {
-    nav: ['Sites', 'Config'],
+    nav: ['Sites', 'Variables', 'Community', 'Config'],
     settings: 'Settings',
     themeToDark: 'Dark mode',
     themeToLight: 'Light mode',
@@ -688,19 +914,24 @@ const UI_COPY = {
     aiProvider: 'AI provider',
     aiModel: 'Model',
     responseConfig: 'Response config',
-    noAiProvider: 'No AI providers. Add one in Config first.',
+    noAiProvider: 'No .zamf provider files. Create one in the file tree.',
     noModelForOutput: 'No available model for this output type',
+    unsupportedByModel: 'Not supported by the current model',
     aiProviderConfig: 'AI provider config',
     addAiProvider: 'Add provider',
     saveAiProvider: 'Save provider',
     updateAiProvider: 'Update provider',
     providerPreset: 'Provider preset',
     providerName: 'Provider name',
-    providerBaseUrl: 'Base URL',
+    providerBaseUrl: 'Provider URL',
     providerApiKey: 'API Key',
     providerApiKeyPlaceholder: 'Leave blank to keep saved key',
     providerModels: 'Models',
-    providerModelsHint: 'One model per line: model-id | text,image | tools',
+    providerModelsHint: 'Fetch models from the provider API before saving.',
+    pullModels: 'Fetch models',
+    pullingModels: 'Fetching',
+    modelFetchApiKeyRequired: 'Enter the provider URL and API Key first.',
+    modelFetchFailed: 'Failed to fetch models',
     providerDeleteConfirm: 'Delete AI provider "{name}"?',
     providerHasKey: 'Key encrypted',
     providerNoKey: 'No key saved',
@@ -767,6 +998,60 @@ const UI_COPY = {
       max: 'Max',
     },
     fileConfig: 'File config',
+    providerFile: 'Provider file',
+    dropProviderFile: 'Drop a .zamf file here to replace the provider',
+    newLexiconFile: 'New lexicon file',
+    newProviderModelFile: 'New provider model file',
+    configDiagnostics: 'Config file diagnostics',
+    zlexEditor: 'Lexicon editor',
+    zamfEditor: 'Provider model editor',
+    lexiconName: 'Lexicon name',
+    scope: 'Scope',
+    categoryId: 'Category ID',
+    categoryIcon: 'Icon',
+    categoryManagement: 'Categories',
+    categoryInfo: 'Category info',
+    categoryName: 'Category name',
+    categoryDescription: 'Category description',
+    categories: 'Categories',
+    categoryTip: 'Category tip',
+    addCategory: 'Add category',
+    deleteCategory: 'Delete category',
+    addRecipeVariable: 'Add variable',
+    deleteVariable: 'Delete variable',
+    variableList: 'Variables',
+    actions: 'Actions',
+    variableId: 'Variable ID',
+    variableName: 'Variable name',
+    content: 'Content',
+    description: 'Description',
+    candidates: 'Candidates',
+    addCandidate: 'Add item',
+    removeCandidate: 'Remove item',
+    editCandidates: 'Edit candidates',
+    candidateEditor: 'Candidate editor',
+    candidateCountSuffix: 'items',
+    done: 'Done',
+    defaultValues: 'Default values',
+    multiple: 'Multi-select',
+    modelId: 'Model ID',
+    capabilities: 'Capabilities',
+    addModel: 'Add model',
+    deleteModel: 'Delete model',
+    showApiKey: 'Show key',
+    hideApiKey: 'Hide key',
+    parseFailed: 'File parse failed',
+    sourceRepair: 'Switch to source',
+    emptyVariables: 'No variables in this category',
+    emptyModels: 'No models in this provider',
+    modelPreset: 'Model preset',
+    modelPresetPlaceholder: 'Choose preset',
+    modelPresetMatched: 'Preset matched',
+    thinkingSupport: 'Thinking',
+    thinkingSupported: 'Supported',
+    thinkingUnsupported: 'Unsupported',
+    referenceImage: 'Reference image',
+    referenceFile: 'Reference file',
     systemPrompt: 'System prompt',
     userPrompt: 'User prompt',
     openFile: 'Open file',
@@ -840,6 +1125,8 @@ const UI_COPY = {
     saving: 'Saving',
     unsaved: 'Unsaved',
     saveFailed: 'Save failed',
+    closeTab: 'Close tab',
+    closeUnsavedTabConfirm: '"{name}" has unsaved changes. Close it?',
     noOpenFile: 'Select a file from the file list to start editing',
     format: 'Format',
     run: 'Run (⌘+↵)',
@@ -847,8 +1134,10 @@ const UI_COPY = {
       normal: 'Normal',
       preview: 'Preview',
       assist: 'AI Assist',
+      source: 'Source',
     },
     markdownPreview: 'Markdown Preview',
+    sourceCode: 'ZPMT Source',
     aiAssist: {
       title: 'AI Assist',
       status: 'Suggestions based on the current prompt draft',
@@ -912,7 +1201,41 @@ const UI_COPY = {
     tagNameInvalid: 'Name must start with a lowercase letter and only include letters, numbers, and underscores',
     tagNameDuplicate: 'Name already exists. Enter another name.',
     tagInfoRequired: 'Fill in the required information',
-    fixedTools: 'Fixed tools',
+    fixedTools: 'Bound tools',
+    configureTool: 'Bind tool',
+    bindTool: 'Bind tool',
+    toolBindingConfig: 'System limits',
+    toolBindingNoConfig: 'This tool has no system limits to configure. After binding, the AI supplies call arguments at runtime.',
+    editTool: 'Edit tool',
+    addTool: 'Add tool',
+    saveTool: 'Save tool',
+    runTool: 'Run tool',
+    toolRunSelect: 'Select tool',
+    toolRunInput: 'Run input',
+    toolRunResult: 'Run result',
+    toolRunNoFile: 'Open a .zpmt file to run fixed tools',
+    toolRunNoTools: 'Drag tools from the instruction set into the current prompt first',
+    toolRunSuccess: 'Tool run succeeded',
+    toolRunFailed: 'Tool run failed',
+    toolConfigRequired: 'Fill in required tool parameters',
+    downloadFile: 'Download file',
+    generatedFile: 'Generated file',
+    duration: 'Duration',
+    runAgent: 'Run Agent',
+    runningAgent: 'Running',
+    agentRunNoFile: 'Open a .zpmt file to run tests',
+    agentRunNoProvider: 'Bind a provider and model first',
+    agentRunSuccess: 'Agent run succeeded',
+    agentRunFailed: 'Agent run failed',
+    testVariables: 'Test variables',
+    testVariableEmpty: 'The current prompt has no variables',
+    testValue: 'Test value',
+    runSettings: 'Run settings',
+    maxToolRounds: 'Max tool-call loops',
+    maxToolRoundsHint: '0 disables tool calls; adjustable per run.',
+    assistantOutput: 'AI output',
+    noAgentOutput: 'No run result yet',
+    renderedPrompt: 'Rendered prompt',
     removeTool: 'Remove tool',
     recipeVariableSearch: 'Search categories, variables, or candidates',
     recipeVariableEmpty: 'No matching recipe variables',
@@ -942,7 +1265,7 @@ const UI_COPY = {
       branch: 'main',
       saved: 'Saved',
       activeFile: 'Home.prompt',
-      hint: 'Prompt workbench prototype · local mock data',
+      hint: 'ZPMT workbench · local mock data',
       portalReady: 'Portal configured',
       portalMissing: 'Portal missing',
       lineColumn: 'Ln 1, Col 1',
@@ -955,8 +1278,8 @@ const UI_COPY = {
 type WorkbenchCopy = (typeof UI_COPY)['zh']
 
 const promptCode = `---
-title: "从词开始 - 让每个想法都有回响"
-description: "从词开始是一个新一代AI驱动的网站生成与内容管理平台"
+title: "ZPMT"
+description: "新时代 AI 代码编辑工具以及编辑框架"
 layout: "base"
 version: "1.2.0"
 updated_at: "{{ now }}"
@@ -966,7 +1289,7 @@ tags: ["首页", "营销"]
 # {{ site.title }}
 ### {{ site.description }}
 
-从词开始，帮助团队以更快的速度创建、管理和优化网站。
+ZPMT，帮助团队以更高效率创建、编辑和管理 AI 代码项目。
 
 ## 核心能力
 
@@ -1066,186 +1389,9 @@ const VARIABLE_TYPES_BY_TOKEN = Object.fromEntries(
   Object.entries(VARIABLE_TOKEN_TYPES).map(([variableType, tokenType]) => [tokenType, variableType]),
 ) as Record<VariableTokenType, VariableType>
 
-const recipeVariableCategories: RecipeVariableCategory[] = [
-  {
-    id: 'camera',
-    name: { zh: '镜头语言', en: 'Camera Language' },
-    description: { zh: '画面视角、镜头和景别控制', en: 'Perspective, lens, and framing controls' },
-    variables: [
-      {
-        id: 'focal-length',
-        name: { zh: '焦段', en: 'Focal length' },
-        candidates: { zh: ['18mm', '35mm', '50mm', '85mm'], en: ['18mm', '35mm', '50mm', '85mm'] },
-        multiple: false,
-      },
-      {
-        id: 'lens-type',
-        name: { zh: '镜头类型', en: 'Lens type' },
-        candidates: { zh: ['广角镜头', '定焦镜头', '长焦镜头', '微距镜头'], en: ['Wide-angle', 'Prime', 'Telephoto', 'Macro'] },
-        multiple: false,
-      },
-      {
-        id: 'shot-size',
-        name: { zh: '景别', en: 'Shot size' },
-        candidates: { zh: ['特写', '中景', '全景', '远景'], en: ['Close-up', 'Medium shot', 'Full shot', 'Wide shot'] },
-        multiple: false,
-      },
-    ],
-  },
-  {
-    id: 'visual-style',
-    name: { zh: '视觉风格', en: 'Visual Style' },
-    description: { zh: '光线、色调和构图倾向', en: 'Lighting, tone, and composition direction' },
-    variables: [
-      {
-        id: 'lighting',
-        name: { zh: '光线', en: 'Lighting' },
-        candidates: { zh: ['自然光', '逆光', '柔光', '霓虹光'], en: ['Natural light', 'Backlight', 'Soft light', 'Neon light'] },
-        multiple: true,
-      },
-      {
-        id: 'color-tone',
-        name: { zh: '色调', en: 'Color tone' },
-        candidates: { zh: ['冷色', '暖色', '高饱和', '低饱和'], en: ['Cool', 'Warm', 'High saturation', 'Low saturation'] },
-        multiple: false,
-      },
-      {
-        id: 'composition',
-        name: { zh: '构图', en: 'Composition' },
-        candidates: { zh: ['居中构图', '三分法', '对角线', '留白'], en: ['Centered', 'Rule of thirds', 'Diagonal', 'Negative space'] },
-        multiple: true,
-      },
-    ],
-  },
-  {
-    id: 'subject',
-    name: { zh: '主体设定', en: 'Subject Setup' },
-    description: { zh: '主体姿态、材质与情绪氛围', en: 'Pose, material, and mood presets' },
-    variables: [
-      {
-        id: 'pose',
-        name: { zh: '主体姿态', en: 'Subject pose' },
-        candidates: { zh: ['站立', '坐姿', '奔跑', '回头'], en: ['Standing', 'Seated', 'Running', 'Looking back'] },
-        multiple: false,
-      },
-      {
-        id: 'material',
-        name: { zh: '材质风格', en: 'Material style' },
-        candidates: { zh: ['金属', '玻璃', '织物', '陶瓷'], en: ['Metal', 'Glass', 'Fabric', 'Ceramic'] },
-        multiple: true,
-      },
-      {
-        id: 'mood',
-        name: { zh: '情绪氛围', en: 'Mood' },
-        candidates: { zh: ['安静', '紧张', '梦幻', '未来感'], en: ['Quiet', 'Tense', 'Dreamlike', 'Futuristic'] },
-        multiple: true,
-      },
-    ],
-  },
-]
+const DEFAULT_RECIPE_VARIABLE_CATEGORIES = getDefaultRecipeVariableCategories()
 
-const toolInstructionCategories: RecipeVariableCategory[] = [
-  {
-    id: 'context-tools',
-    name: { zh: '上下文工具', en: 'Context Tools' },
-    description: { zh: '读取当前环境、时间和会话上下文', en: 'Read environment, time, and session context' },
-    variables: [
-      {
-        id: 'now',
-        name: { zh: '当前时间', en: 'Current time' },
-        candidates: { zh: ['now', 'today', 'weekday', 'timezone'], en: ['now', 'today', 'weekday', 'timezone'] },
-        multiple: false,
-      },
-      {
-        id: 'date-format',
-        name: { zh: '日期格式化', en: 'Date format' },
-        candidates: { zh: ['YYYY-MM-DD', '相对日期', '时间范围', '本地时区'], en: ['YYYY-MM-DD', 'relative date', 'time range', 'local timezone'] },
-        multiple: false,
-      },
-      {
-        id: 'session-context',
-        name: { zh: '会话上下文', en: 'Session context' },
-        candidates: { zh: ['用户语言', '项目名称', '当前文件', '打开标签'], en: ['user locale', 'project name', 'active file', 'open tabs'] },
-        multiple: true,
-      },
-    ],
-  },
-  {
-    id: 'data-tools',
-    name: { zh: '数据与网络', en: 'Data and Web' },
-    description: { zh: '抓取网页、查询数据和提取结构化字段', en: 'Fetch pages, query data, and extract structured fields' },
-    variables: [
-      {
-        id: 'fetch-url',
-        name: { zh: '网页抓取', en: 'Web fetch' },
-        candidates: { zh: ['URL', '选择器', '正文摘要', '链接列表'], en: ['URL', 'selector', 'body summary', 'link list'] },
-        multiple: true,
-      },
-      {
-        id: 'db-query',
-        name: { zh: '数据查询', en: 'Data query' },
-        candidates: { zh: ['表名', '筛选条件', '排序', '限制条数'], en: ['table', 'filters', 'sort', 'limit'] },
-        multiple: true,
-      },
-      {
-        id: 'json-pick',
-        name: { zh: 'JSON 提取', en: 'JSON pick' },
-        candidates: { zh: ['字段路径', '数组项', '默认值', '类型转换'], en: ['field path', 'array item', 'fallback', 'type cast'] },
-        multiple: true,
-      },
-    ],
-  },
-  {
-    id: 'ai-tools',
-    name: { zh: 'AI 生成', en: 'AI Generation' },
-    description: { zh: '生成、改写、翻译和图像提示词扩展', en: 'Generate, rewrite, translate, and expand image prompts' },
-    variables: [
-      {
-        id: 'ai-generate',
-        name: { zh: '文本生成', en: 'Text generate' },
-        candidates: { zh: ['模型', '温度', '最大长度', '输出格式'], en: ['model', 'temperature', 'max length', 'output format'] },
-        multiple: true,
-      },
-      {
-        id: 'ai-rewrite',
-        name: { zh: '内容改写', en: 'Rewrite' },
-        candidates: { zh: ['语气', '长度', '受众', '禁用词'], en: ['tone', 'length', 'audience', 'blocked words'] },
-        multiple: true,
-      },
-      {
-        id: 'image-prompt',
-        name: { zh: '图像提示词', en: 'Image prompt' },
-        candidates: { zh: ['主体', '风格', '比例', '负面提示词'], en: ['subject', 'style', 'ratio', 'negative prompt'] },
-        multiple: true,
-      },
-    ],
-  },
-  {
-    id: 'project-tools',
-    name: { zh: '项目与版本', en: 'Project and Version' },
-    description: { zh: '读取文件、生成差异摘要和辅助提交', en: 'Read files, summarize diffs, and assist commits' },
-    variables: [
-      {
-        id: 'file-read',
-        name: { zh: '文件读取', en: 'File read' },
-        candidates: { zh: ['路径', '编码', '片段', '最近修改'], en: ['path', 'encoding', 'snippet', 'last modified'] },
-        multiple: true,
-      },
-      {
-        id: 'git-diff',
-        name: { zh: '变更摘要', en: 'Diff summary' },
-        candidates: { zh: ['已暂存', '未暂存', '新增文件', '删除文件'], en: ['staged', 'unstaged', 'added files', 'deleted files'] },
-        multiple: true,
-      },
-      {
-        id: 'commit-message',
-        name: { zh: '提交文案', en: 'Commit message' },
-        candidates: { zh: ['功能', '修复', '重构', '文档'], en: ['feature', 'fix', 'refactor', 'docs'] },
-        multiple: false,
-      },
-    ],
-  },
-]
+const toolInstructionCategories: InstructionCatalogCategory[] = AI_TOOL_CATEGORIES
 
 const inputSchema = z.object({
   siteTitle: z.string().min(1),
@@ -1256,30 +1402,23 @@ const inputSchema = z.object({
 
 type InputForm = z.infer<typeof inputSchema>
 
-function NavItem({ icon: Icon, label, active = false, onClick }: { icon: typeof Home; label: string; active?: boolean; onClick?: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex h-12 items-center gap-1.5 border-b-2 px-4 text-xs font-semibold transition ${
-        active
-          ? 'border-[#FB7E3D] bg-[#fff2ea] text-[#d95a1b]'
-          : 'border-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-      }`}
-    >
-      <Icon className="h-3.5 w-3.5" />
-      {label}
-    </button>
-  )
+function getFileIconMeta(filePath: string): { icon: LucideIcon; className: string; badge?: string } {
+  if (isZpmtFilePath(filePath)) return { icon: WandSparkles, className: 'text-[#d95a1b]', badge: 'ZPMT' }
+  if (isZlexFilePath(filePath)) return { icon: Boxes, className: 'text-amber-600', badge: 'ZLEX' }
+  if (isZamfFilePath(filePath)) return { icon: Bot, className: 'text-sky-500', badge: 'ZAMF' }
+  if (filePath.toLowerCase().endsWith('.json')) return { icon: FileJson, className: 'text-slate-400' }
+  return { icon: FileText, className: 'text-slate-400' }
 }
 
 function createNodeRenderer({
   activeFile,
+  aiProviders,
   decorations,
   onOpenFile,
   onNodeContextMenu,
 }: {
   activeFile: ProjectFileReference | null
+  aiProviders: AiProviderSummary[]
   decorations: Record<string, GitDecoration>
   onOpenFile: (file: ProjectFileReference) => void
   onNodeContextMenu: (node: TreeNode, event: React.MouseEvent<HTMLElement>) => void
@@ -1293,8 +1432,27 @@ function createNodeRenderer({
   }) {
     const data = node.data as TreeNode
     const isFile = data.kind === 'file'
+    const filePath = data.path || data.name
+    const isZamfFile = isFile && Boolean(filePath && isZamfFilePath(filePath))
+    const fileIcon = getFileIconMeta(filePath)
     const isActive = isFile && activeFile?.projectId === data.projectId && activeFile?.path === data.path
     const decoration = decorations[data.path || '']
+    const provider = isZamfFile ? aiProviders.find((item) => item.filePath === data.path) || null : null
+    const draggable = useDraggable({
+      id: `provider-file:${data.projectId || 'project'}:${data.path || data.id}`,
+      disabled: !isZamfFile || !data.projectId || !data.path || !provider,
+      data: provider && data.projectId && data.path
+        ? {
+            providerFile: {
+              kind: 'provider-file',
+              projectId: data.projectId,
+              path: data.path,
+              provider,
+            } satisfies ProviderFileDragPayload,
+          }
+        : undefined,
+    })
+    const FileIcon = fileIcon.icon
 
     function handleClick() {
       if (isFile && data.projectId && data.path) {
@@ -1306,10 +1464,13 @@ function createNodeRenderer({
 
     return (
       <div
+        ref={draggable.setNodeRef}
         style={style}
         className={cn(
           'group flex cursor-default items-center gap-1.5 rounded px-2 text-xs',
           isActive ? 'bg-[#fff2ea] text-[#d95a1b]' : 'text-slate-700 hover:bg-slate-100',
+          isZamfFile && provider ? 'cursor-grab active:cursor-grabbing' : '',
+          draggable.isDragging ? 'opacity-45' : '',
           decoration && !isActive ? getGitDecorationTextClass(decoration.kind) : '',
         )}
         onClick={handleClick}
@@ -1317,6 +1478,8 @@ function createNodeRenderer({
           event.preventDefault()
           onNodeContextMenu(data, event)
         }}
+        {...draggable.listeners}
+        {...draggable.attributes}
       >
         {isFile ? (
           <span className="h-3.5 w-3.5 shrink-0" />
@@ -1325,8 +1488,13 @@ function createNodeRenderer({
         ) : (
           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-400" />
         )}
-        {isFile ? <FileText className="h-3.5 w-3.5 text-slate-400" /> : <Folder className="h-3.5 w-3.5 text-amber-500" />}
+        {isFile ? (
+          <FileIcon className={cn('h-3.5 w-3.5', fileIcon.className)} />
+        ) : (
+          <Folder className="h-3.5 w-3.5 text-amber-500" />
+        )}
         <span className="min-w-0 flex-1 truncate">{data.name}</span>
+        {fileIcon.badge ? <span className={cn('shrink-0 text-[10px] font-black', fileIcon.className)}>{fileIcon.badge}</span> : null}
         {decoration ? (
           <span className={cn('ml-auto text-[10px] font-black', getGitDecorationTextClass(decoration.kind))}>
             {decoration.status}
@@ -1426,18 +1594,28 @@ function TooltipAnchor({
   )
 }
 
-function VariableTagsPanel({ t }: { t: WorkbenchCopy }) {
+function VariableTagsPanel({
+  t,
+  modelCapabilities,
+}: {
+  t: WorkbenchCopy
+  modelCapabilities: ZpmtModelCapabilityGate
+}) {
   return (
     <div className="flex flex-wrap gap-2 p-3">
       {VARIABLE_TYPE_ORDER.map((type) => {
         const typeLabel = t.variableTypes[type]
+        const payload: InstructionDragPayload = { kind: 'variable', variableType: type }
+        const disabled = !canUseInstructionPayload(payload, modelCapabilities)
+        const tooltip = disabled ? `${typeLabel}\n${t.unsupportedByModel}` : typeLabel
 
         return (
-          <TooltipAnchor key={type} tooltip={typeLabel} className="inline-flex">
+          <TooltipAnchor key={type} tooltip={tooltip} className="inline-flex">
             <DraggableInstructionTag
               id={`variable:${type}`}
-              payload={{ kind: 'variable', variableType: type }}
+              payload={payload}
               title={typeLabel}
+              disabled={disabled}
               className={cn('prompt-token-chip h-7 cursor-grab outline-none transition active:cursor-grabbing focus:ring-2 focus:ring-[#FB7E3D]/20', getPromptTokenStyleClass(type))}
             >
               <span className="truncate">{typeLabel}</span>
@@ -1453,12 +1631,14 @@ function DraggableInstructionTag({
   id,
   payload,
   title,
+  disabled,
   className,
   children,
 }: {
   id: string
   payload: InstructionDragPayload
   title: string
+  disabled?: boolean
   className: string
   children: React.ReactNode
 }) {
@@ -1466,17 +1646,26 @@ function DraggableInstructionTag({
     id,
     data: { payload },
     attributes: { roleDescription: title },
+    disabled,
   })
   const style: React.CSSProperties | undefined = isDragging ? { opacity: 0.45 } : undefined
+  const dragAttributes = disabled ? {} : attributes
+  const dragListeners = disabled ? {} : listeners
 
   return (
     <span
       ref={setNodeRef}
       aria-label={title}
-      className={cn('cursor-grab touch-none active:cursor-grabbing', className)}
+      aria-disabled={disabled || undefined}
+      className={cn(
+        className,
+        disabled
+          ? 'zpmt-token-chip--unsupported !cursor-not-allowed opacity-80'
+          : 'cursor-grab touch-none active:cursor-grabbing',
+      )}
       style={style}
-      {...listeners}
-      {...attributes}
+      {...dragListeners}
+      {...dragAttributes}
     >
       {children}
     </span>
@@ -1497,9 +1686,27 @@ function InstructionDragOverlay({ payload, t, locale }: { payload: InstructionDr
   )
 }
 
+function ProviderFileDragOverlay({ payload }: { payload: ProviderFileDragPayload }) {
+  return (
+    <span className="prompt-token-chip h-7 max-w-[240px] border-sky-300 bg-sky-50 text-sky-700 opacity-[0.55] shadow-lg">
+      <FileJson className="h-3.5 w-3.5 shrink-0" />
+      <span className="truncate">{payload.provider.name}</span>
+    </span>
+  )
+}
+
 function readDndInstructionPayload(value: unknown): InstructionDragPayload | null {
   if (!isRecord(value)) return null
   return isInstructionDragPayload(value.payload) ? value.payload : null
+}
+
+function readDndProviderFilePayload(value: unknown): ProviderFileDragPayload | null {
+  if (!isRecord(value)) return null
+  const payload = value.providerFile
+  if (!isRecord(payload)) return null
+  if (payload.kind !== 'provider-file') return null
+  if (typeof payload.projectId !== 'string' || typeof payload.path !== 'string' || !isRecord(payload.provider)) return null
+  return payload as ProviderFileDragPayload
 }
 
 function isInstructionDragPayload(value: unknown): value is InstructionDragPayload {
@@ -1511,7 +1718,7 @@ function isInstructionDragPayload(value: unknown): value is InstructionDragPaylo
 
 function readZpmtDroppableData(value: unknown): ZpmtDroppableData | null {
   if (!isRecord(value)) return null
-  if (value.kind !== 'zpmt-root' && value.kind !== 'zpmt-prompt') return null
+  if (value.kind !== 'zpmt-root' && value.kind !== 'zpmt-prompt' && value.kind !== 'zpmt-config') return null
   return typeof value.onDropInstruction === 'function' ? value as ZpmtDroppableData : null
 }
 
@@ -1546,8 +1753,8 @@ function InputPanel() {
   const form = useForm<InputForm>({
     resolver: zodResolver(inputSchema),
     defaultValues: {
-      siteTitle: '从词开始',
-      description: '新一代AI驱动的网站生成与内容管理平台',
+      siteTitle: 'ZPMT',
+      description: '新时代 AI 代码编辑工具以及编辑框架',
       getStarted: '/pricing',
       primary: '#FB7E3D',
     },
@@ -1678,6 +1885,7 @@ function ProjectWorkspacePanel({
   projectsLoading,
   activeFile,
   aiProviders,
+  configDiagnostics,
   sourceControlStatus,
   sourceControlLoading,
   sourceControlBusyAction,
@@ -1702,6 +1910,7 @@ function ProjectWorkspacePanel({
   projectsLoading: boolean
   activeFile: ProjectFileReference | null
   aiProviders: AiProviderSummary[]
+  configDiagnostics: ProjectConfigDiagnostic[]
   sourceControlStatus: SourceControlStatus | null
   sourceControlLoading: boolean
   sourceControlBusyAction: string
@@ -1747,6 +1956,7 @@ function ProjectWorkspacePanel({
             loading={projectsLoading}
             activeFile={activeFile}
             aiProviders={aiProviders}
+            configDiagnostics={configDiagnostics}
             decorations={sourceControlStatus?.decorations || {}}
             sourceControlConnected={Boolean(sourceControlStatus?.connected)}
             sourceControlBusyAction={sourceControlBusyAction}
@@ -1808,6 +2018,7 @@ function ProjectFilesPanel({
   loading,
   activeFile,
   aiProviders,
+  configDiagnostics,
   decorations,
   sourceControlConnected,
   sourceControlBusyAction,
@@ -1828,6 +2039,7 @@ function ProjectFilesPanel({
   loading: boolean
   activeFile: ProjectFileReference | null
   aiProviders: AiProviderSummary[]
+  configDiagnostics: ProjectConfigDiagnostic[]
   decorations: Record<string, GitDecoration>
   sourceControlConnected: boolean
   sourceControlBusyAction: string
@@ -1852,13 +2064,14 @@ function ProjectFilesPanel({
     () =>
       createNodeRenderer({
         activeFile,
+        aiProviders,
         decorations,
         onOpenFile,
         onNodeContextMenu: (node, event) => {
           setContextMenu({ x: event.clientX, y: event.clientY, node })
         },
       }),
-    [activeFile, decorations, onOpenFile],
+    [activeFile, aiProviders, decorations, onOpenFile],
   )
 
   async function submitEntryDialog(event: React.FormEvent<HTMLFormElement>) {
@@ -1893,7 +2106,7 @@ function ProjectFilesPanel({
 
     if (dialog.mode === 'prompt') {
       const fileName = ensureZpmtFileName(dialog.name)
-      const provider = aiProviders.find((item) => item.id === dialog.providerId) || null
+      const provider = findAiProvider(aiProviders, dialog.providerId) || null
       return fetchJson('/api/projects/files', {
         method: 'POST',
         body: {
@@ -1907,6 +2120,19 @@ function ProjectFilesPanel({
             model: dialog.model,
             responseConfig: dialog.responseConfig,
           }),
+        },
+      })
+    }
+
+    if (dialog.mode === 'lexicon' || dialog.mode === 'provider') {
+      const fileName = dialog.mode === 'lexicon' ? ensureZlexFileName(dialog.name) : ensureZamfFileName(dialog.name)
+      return fetchJson('/api/projects/files', {
+        method: 'POST',
+        body: {
+          projectId,
+          parentPath: dialog.folder.path || '',
+          fileName,
+          content: dialog.mode === 'lexicon' ? createZlexTemplate(fileName) : createZamfTemplate(fileName),
         },
       })
     }
@@ -2007,6 +2233,15 @@ function ProjectFilesPanel({
         </div>
       </div>
 
+      {configDiagnostics.length ? (
+        <div
+          className="border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-[10px] font-semibold text-amber-800"
+          title={configDiagnostics.map((item) => `${item.path}: ${item.message}`).join('\n')}
+        >
+          {t.configDiagnostics}：{configDiagnostics.length}
+        </div>
+      ) : null}
+
       <div ref={fileTreeViewportRef} className="min-h-0 flex-1 overflow-hidden p-2">
         {loading ? (
           <div className="p-2 text-xs text-slate-500">{t.loading}</div>
@@ -2048,6 +2283,22 @@ function ProjectFilesPanel({
                 label={t.newPromptFile}
                 onClick={() => {
                   setEntryDialog(createPromptEntryDialog(contextMenu.node, aiProviders))
+                  setContextMenu(null)
+                }}
+              />
+              <ContextMenuButton
+                icon={FileJson}
+                label={t.newLexiconFile}
+                onClick={() => {
+                  setEntryDialog({ mode: 'lexicon', folder: contextMenu.node, name: '词汇变量.zlex' })
+                  setContextMenu(null)
+                }}
+              />
+              <ContextMenuButton
+                icon={FileJson}
+                label={t.newProviderModelFile}
+                onClick={() => {
+                  setEntryDialog({ mode: 'provider', folder: contextMenu.node, name: '供应商模型.zamf' })
                   setContextMenu(null)
                 }}
               />
@@ -2301,10 +2552,19 @@ function EntryDialogOverlay({
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void
 }) {
   const [mounted, setMounted] = useState(false)
-  const title = dialog.mode === 'folder' ? t.newFolder : dialog.mode === 'prompt' ? t.newPromptFile : t.rename
-  const label = dialog.mode === 'folder' ? t.folderName : dialog.mode === 'prompt' ? t.fileName : t.renameTo
-  const submitLabel = dialog.mode === 'folder' ? t.createFolder : dialog.mode === 'prompt' ? t.createFile : t.rename
-  const Icon = dialog.mode === 'folder' ? FolderPlus : dialog.mode === 'prompt' ? FilePlus2 : Pencil
+  const title =
+    dialog.mode === 'folder'
+      ? t.newFolder
+      : dialog.mode === 'prompt'
+        ? t.newPromptFile
+        : dialog.mode === 'lexicon'
+          ? t.newLexiconFile
+          : dialog.mode === 'provider'
+            ? t.newProviderModelFile
+            : t.rename
+  const label = dialog.mode === 'folder' ? t.folderName : dialog.mode === 'rename' ? t.renameTo : t.fileName
+  const submitLabel = dialog.mode === 'folder' ? t.createFolder : dialog.mode === 'rename' ? t.rename : t.createFile
+  const Icon = dialog.mode === 'folder' ? FolderPlus : dialog.mode === 'rename' ? Pencil : dialog.mode === 'prompt' ? FilePlus2 : FileJson
   const compatibleModels = dialog.mode === 'prompt' ? listCompatibleModelsForProvider(aiProviders, dialog.providerId, dialog.outputType) : []
   const selectedModelContext = dialog.mode === 'prompt' ? getSelectedAiModelContext(aiProviders, dialog.providerId, dialog.model) : null
   const responseSchema =
@@ -2385,7 +2645,7 @@ function EntryDialogOverlay({
                       onChange({
                         ...dialog,
                         outputType: value,
-                        providerId: nextSelection.providerId,
+                        providerId: nextSelection.providerRef,
                         model: nextSelection.model,
                         responseConfig: defaultResponseConfig(value, nextSelection.providerType, nextSelection.model, nextSelection.modelEntry),
                       })
@@ -2406,7 +2666,7 @@ function EntryDialogOverlay({
                   value={dialog.providerId}
                   disabled={!aiProviders.length}
                   onChange={(event) => {
-                    const provider = aiProviders.find((item) => item.id === event.target.value)
+                    const provider = findAiProvider(aiProviders, event.target.value)
                     const model = findCompatibleModelForProvider(provider, dialog.outputType)
                     onChange({
                       ...dialog,
@@ -2418,7 +2678,7 @@ function EntryDialogOverlay({
                 >
                   {aiProviders.length ? null : <option value="">{t.noAiProvider}</option>}
                   {aiProviders.map((provider) => (
-                    <option key={provider.id} value={provider.id}>
+                    <option key={getAiProviderRef(provider)} value={getAiProviderRef(provider)}>
                       {provider.name}
                     </option>
                   ))}
@@ -2435,7 +2695,7 @@ function EntryDialogOverlay({
                   disabled={!compatibleModels.length}
                   onChange={(event) => {
                     const model = compatibleModels.find((item) => item.id === event.target.value) || null
-                    const provider = aiProviders.find((item) => item.id === dialog.providerId) || null
+                    const provider = findAiProvider(aiProviders, dialog.providerId) || null
                     onChange({
                       ...dialog,
                       model: model?.id || event.target.value,
@@ -3275,7 +3535,7 @@ function SourceControlChangeRow({
   )
 }
 
-const EDITOR_MODES: EditorMode[] = ['preview', 'assist', 'normal']
+const EDITOR_MODES: EditorMode[] = ['preview', 'assist', 'source', 'normal']
 
 function EditorModeSwitch({
   mode,
@@ -3314,13 +3574,22 @@ function MarkdownPreviewPanel({
   title,
   t,
   locale,
+  recipeVariableCategories,
+  metadata,
+  modelCapabilities = ALL_ZPMT_MODEL_CAPABILITIES,
 }: {
   markdown: string
   title: string
   t: WorkbenchCopy
   locale: Locale
+  recipeVariableCategories: RecipeVariableCategory[]
+  metadata?: ZpmtRecipeVariableMetadata
+  modelCapabilities?: ZpmtModelCapabilityGate
 }) {
-  const content = useMemo(() => decoratePromptTokensForMarkdown(stripPromptFrontmatter(markdown), t, locale), [locale, markdown, t])
+  const content = useMemo(
+    () => decoratePromptTokensForMarkdown(stripPromptFrontmatter(markdown), t, locale, recipeVariableCategories, metadata, modelCapabilities),
+    [locale, markdown, metadata, modelCapabilities, recipeVariableCategories, t],
+  )
   const [tooltip, setTooltip] = useState<FloatingTooltipState>(null)
 
   function showTokenTooltip(target: HTMLElement, text: string) {
@@ -3341,10 +3610,14 @@ function MarkdownPreviewPanel({
             a: ({ href, children }) => {
               if (typeof href === 'string' && href.startsWith('ccks-token:')) {
                 const token = decodeURIComponent(href.slice('ccks-token:'.length))
-                const presentation = resolvePromptTokenPresentation(token, t, locale)
+                const presentation = resolvePromptTokenPresentation(token, t, locale, recipeVariableCategories, metadata, modelCapabilities)
                 return (
                   <span
-                    className={cn('prompt-token-chip', getPromptTokenStyleClass(presentation.styleKey))}
+                    className={cn(
+                      'prompt-token-chip',
+                      getPromptTokenStyleClass(presentation.styleKey),
+                      presentation.unsupported && 'zpmt-token-chip--unsupported',
+                    )}
                     onMouseEnter={(event) => showTokenTooltip(event.currentTarget, presentation.tooltip)}
                     onMouseMove={(event) => showTokenTooltip(event.currentTarget, presentation.tooltip)}
                     onMouseLeave={() => setTooltip(null)}
@@ -3392,13 +3665,60 @@ function AiAssistPanel({ t }: { t: WorkbenchCopy }) {
   )
 }
 
+function SourceCodePanel({
+  source,
+  language,
+  title,
+  monacoTheme,
+}: {
+  source: string
+  language: string
+  title: string
+  monacoTheme: string
+}) {
+  return (
+    <aside className="source-code-panel">
+      <div className="source-code-panel__header">
+        <Code2 className="h-3.5 w-3.5 text-[#d95a1b]" />
+        <span>{title}</span>
+      </div>
+      <div className="source-code-panel__body">
+        <MonacoEditor
+          height="100%"
+          theme={monacoTheme}
+          beforeMount={defineTransparentMonacoTheme}
+          language={language}
+          value={source}
+          options={{
+            automaticLayout: true,
+            readOnly: true,
+            minimap: { enabled: false },
+            fontSize: 12,
+            lineHeight: 19,
+            wordWrap: 'on',
+            padding: { top: 10, bottom: 10 },
+            scrollBeyondLastLine: false,
+            renderLineHighlight: 'none',
+            scrollbar: {
+              arrowSize: 0,
+              horizontalScrollbarSize: 10,
+              useShadows: false,
+              verticalScrollbarSize: 10,
+            },
+          }}
+        />
+      </div>
+    </aside>
+  )
+}
+
 function buildEditorTabId(projectId: string, filePath: string) {
   return `${projectId}:${filePath}`
 }
 
 function getEditorLanguage(filePath: string) {
   const normalized = filePath.toLowerCase()
-  if (normalized.endsWith('.json') || normalized.endsWith('.zpmt')) return 'json'
+  if (normalized.endsWith('.json') || normalized.endsWith('.zpmt') || isProjectConfigFilePath(normalized)) return 'json'
   if (normalized.endsWith('.md') || normalized.endsWith('.markdown') || normalized.endsWith('.prompt')) return 'markdown'
   if (normalized.endsWith('.ts') || normalized.endsWith('.tsx')) return 'typescript'
   if (normalized.endsWith('.js') || normalized.endsWith('.jsx')) return 'javascript'
@@ -3436,9 +3756,11 @@ function EditorPanel({
   locale,
   monacoTheme,
   aiProviders,
+  recipeVariableCategories,
   tabs,
   activeTab,
   onActivateTab,
+  onCloseTab,
   onChangeActiveContent,
   onSaveActive,
 }: {
@@ -3446,18 +3768,27 @@ function EditorPanel({
   locale: Locale
   monacoTheme: string
   aiProviders: AiProviderSummary[]
+  recipeVariableCategories: RecipeVariableCategory[]
   tabs: EditorFileTab[]
   activeTab: EditorFileTab | null
   onActivateTab: (tabId: string) => void
+  onCloseTab: (tabId: string) => void
   onChangeActiveContent: (value: string) => void
   onSaveActive: () => void
 }) {
   const [editorMode, setEditorMode] = useState<EditorMode>('normal')
   const [zpmtPromptModes, setZpmtPromptModes] = useState<Record<string, PromptFileType>>({})
   const [zpmtCollapsedSections, setZpmtCollapsedSections] = useState<Record<string, ZpmtCollapsedSections>>({})
-  const hasSidePanel = editorMode !== 'normal'
+  const isSourceMode = editorMode === 'source'
+  const hasSidePanel = editorMode === 'preview' || editorMode === 'assist'
   const editorValue = activeTab?.content || ''
   const activeZpmtDocument = activeTab && isZpmtFilePath(activeTab.path) ? parseZpmtContent(editorValue, aiProviders) : null
+  const activeZpmtModelContext = activeZpmtDocument
+    ? getSelectedAiModelContext(aiProviders, activeZpmtDocument.config.providerId, activeZpmtDocument.config.model, activeZpmtDocument.config.providerFile)
+    : null
+  const activeZpmtModelCapabilities = useMemo(() => getZpmtModelCapabilityGate(activeZpmtModelContext?.model), [activeZpmtModelContext?.model])
+  const activeZlexResult = activeTab && isZlexFilePath(activeTab.path) ? parseZlexContent(editorValue) : null
+  const activeZamfResult = activeTab && isZamfFilePath(activeTab.path) ? parseZamfContent(editorValue) : null
   const activeZpmtInitialMode = activeZpmtDocument ? getZpmtPromptMode(activeZpmtDocument) : 'simple'
   const activeZpmtPromptMode = activeTab && activeZpmtDocument ? zpmtPromptModes[activeTab.id] || activeZpmtInitialMode : 'simple'
   const activeZpmtTabId = activeTab && activeZpmtDocument ? activeTab.id : ''
@@ -3494,25 +3825,42 @@ function EditorPanel({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-slate-200 bg-white">
-        <div className="flex h-full min-w-0 items-center">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              title={tab.path}
-              onClick={() => onActivateTab(tab.id)}
-              className={`flex h-full min-w-24 max-w-36 items-center gap-1.5 border-r border-slate-200 px-2.5 text-[11px] ${
-                activeTab?.id === tab.id ? 'border-b-2 border-b-[#FB7E3D] text-[#d95a1b]' : 'text-slate-600'
-              }`}
-            >
-              <FileText className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-              <span className="truncate">{tab.name}</span>
-              {tab.dirty ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#FB7E3D]" /> : null}
-            </button>
-          ))}
-          <Button variant="ghost" size="icon">
-            <Plus className="h-3.5 w-3.5" />
-          </Button>
+        <div className="flex h-full min-w-0 flex-1 items-center overflow-x-auto overflow-y-hidden">
+          {tabs.map((tab) => {
+            const fileIcon = getFileIconMeta(tab.path)
+            const FileIcon = fileIcon.icon
+            return (
+              <div
+                key={tab.id}
+                title={tab.path}
+                className={`group flex h-full w-40 shrink-0 items-center border-r border-slate-200 text-[11px] ${
+                  activeTab?.id === tab.id ? 'border-b-2 border-b-[#FB7E3D] text-[#d95a1b]' : 'text-slate-600'
+                }`}
+              >
+                <button
+                  type="button"
+                  className="flex h-full min-w-0 flex-1 items-center gap-1.5 px-2.5 text-left"
+                  onClick={() => onActivateTab(tab.id)}
+                >
+                  <FileIcon className={cn('h-3.5 w-3.5 shrink-0', fileIcon.className)} />
+                  <span className="truncate">{tab.name}</span>
+                  {tab.dirty ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#FB7E3D]" /> : null}
+                </button>
+                <button
+                  type="button"
+                  aria-label={`${t.closeTab}: ${tab.name}`}
+                  title={`${t.closeTab}: ${tab.name}`}
+                  className="mx-1 grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onCloseTab(tab.id)
+                  }}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            )
+          })}
         </div>
         <div className="flex shrink-0 items-center gap-1.5 px-2 text-[11px] text-slate-500">
           <span className={`hidden xl:inline ${activeTab?.dirty || activeTab?.error ? 'text-[#d95a1b]' : 'text-emerald-600'}`}>
@@ -3521,7 +3869,6 @@ function EditorPanel({
           <Button variant="outline" size="sm" disabled={!activeTab || activeTab.saving} onClick={onSaveActive}>
             <Save className="h-3 w-3" /> {saveText}
           </Button>
-          <Button variant="outline" size="sm">{t.format}</Button>
           <EditorModeSwitch mode={editorMode} t={t} onChange={setEditorMode} />
         </div>
       </div>
@@ -3529,7 +3876,39 @@ function EditorPanel({
       <div className={hasSidePanel ? 'editor-workspace editor-workspace--split' : 'editor-workspace'}>
         <div className="editor-surface min-h-0">
           {activeTab ? (
-            activeZpmtDocument ? (
+            isSourceMode ? (
+              <MonacoEditor
+                key={`${activeTab.id}:source`}
+                height="100%"
+                theme={monacoTheme}
+                beforeMount={defineTransparentMonacoTheme}
+                language={activeTab.language}
+                value={editorValue}
+                onChange={(value) => onChangeActiveContent(value || '')}
+                options={{
+                  automaticLayout: true,
+                  minimap: {
+                    enabled: true,
+                    renderCharacters: true,
+                    scale: 1,
+                    showSlider: 'always',
+                    side: 'right',
+                  },
+                  fontSize: 13,
+                  lineHeight: 20,
+                  wordWrap: 'on',
+                  padding: { top: 10 },
+                  scrollBeyondLastLine: false,
+                  renderLineHighlight: 'none',
+                  scrollbar: {
+                    arrowSize: 0,
+                    horizontalScrollbarSize: 10,
+                    useShadows: false,
+                    verticalScrollbarSize: 10,
+                  },
+                }}
+              />
+            ) : activeZpmtDocument ? (
               <ZpmtStructuredEditor
                 key={activeTab.id}
                 t={t}
@@ -3538,9 +3917,30 @@ function EditorPanel({
                 promptMode={activeZpmtPromptMode}
                 collapsedSections={activeZpmtCollapsedSections}
                 aiProviders={aiProviders}
+                recipeVariableCategories={recipeVariableCategories}
                 onToggleSection={toggleActiveZpmtSection}
-                onChange={(nextDocument) => onChangeActiveContent(serializeZpmtDocument(nextDocument, aiProviders))}
+                onChange={(nextDocument) => onChangeActiveContent(serializeZpmtDocument(nextDocument, aiProviders, recipeVariableCategories))}
               />
+            ) : activeZlexResult ? (
+              activeZlexResult.ok ? (
+                <ZlexStructuredEditor
+                  t={t}
+                  document={activeZlexResult.document}
+                  onChange={(nextDocument) => onChangeActiveContent(serializeZlexDocument(nextDocument))}
+                />
+              ) : (
+                <ConfigParseErrorPanel t={t} filePath={activeTab.path} message={activeZlexResult.message} onOpenSource={() => setEditorMode('source')} />
+              )
+            ) : activeZamfResult ? (
+              activeZamfResult.ok ? (
+                <ZamfStructuredEditor
+                  t={t}
+                  document={activeZamfResult.document}
+                  onChange={(nextDocument) => onChangeActiveContent(serializeZamfDocument(nextDocument))}
+                />
+              ) : (
+                <ConfigParseErrorPanel t={t} filePath={activeTab.path} message={activeZamfResult.message} onOpenSource={() => setEditorMode('source')} />
+              )
             ) : (
               <MonacoEditor
                 key={activeTab.id}
@@ -3578,10 +3978,541 @@ function EditorPanel({
             <div className="grid h-full place-items-center text-xs text-slate-500">{t.noOpenFile}</div>
           )}
         </div>
-        {editorMode === 'preview' ? <MarkdownPreviewPanel markdown={previewMarkdown} title={t.markdownPreview} t={t} locale={locale} /> : null}
+        {editorMode === 'preview' ? (
+          <MarkdownPreviewPanel
+            markdown={previewMarkdown}
+            title={t.markdownPreview}
+            t={t}
+            locale={locale}
+            recipeVariableCategories={recipeVariableCategories}
+            metadata={activeZpmtDocument?.metadata}
+            modelCapabilities={activeZpmtModelCapabilities}
+          />
+        ) : null}
         {editorMode === 'assist' ? <AiAssistPanel t={t} /> : null}
       </div>
     </div>
+  )
+}
+
+function ConfigParseErrorPanel({
+  t,
+  filePath,
+  message,
+  onOpenSource,
+}: {
+  t: WorkbenchCopy
+  filePath: string
+  message: string
+  onOpenSource: () => void
+}) {
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-auto bg-white p-4">
+      <div className="rounded-md border border-amber-200 bg-amber-50 p-4">
+        <div className="flex items-start gap-3">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-black text-amber-900">{t.parseFailed}</h2>
+            <p className="mt-1 break-words text-xs font-semibold text-amber-800">{filePath}</p>
+            <p className="mt-2 text-xs text-amber-700">{message}</p>
+            <Button className="mt-3" size="sm" variant="outline" type="button" onClick={onOpenSource}>
+              <Code2 className="h-3.5 w-3.5" />
+              {t.sourceRepair}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ZlexStructuredEditor({
+  t,
+  document,
+  onChange,
+}: {
+  t: WorkbenchCopy
+  document: ZlexDocument
+  onChange: (document: ZlexDocument) => void
+}) {
+  const [activeCategoryIndex, setActiveCategoryIndex] = useState(0)
+  const [candidateDialog, setCandidateDialog] = useState<{ categoryIndex: number; variableIndex: number } | null>(null)
+  const selectedCategoryIndex = document.categories[activeCategoryIndex] ? activeCategoryIndex : 0
+  const selectedCategory = document.categories[selectedCategoryIndex] || null
+  const variableCount = document.categories.reduce((total, category) => total + category.variables.length, 0)
+  const candidateDialogVariable = candidateDialog
+    ? document.categories[candidateDialog.categoryIndex]?.variables[candidateDialog.variableIndex] || null
+    : null
+  const candidateDialogTarget = typeof window === 'undefined' ? null : window.document.body
+
+  useEffect(() => {
+    if (activeCategoryIndex <= document.categories.length - 1) return
+    setActiveCategoryIndex(Math.max(0, document.categories.length - 1))
+  }, [activeCategoryIndex, document.categories.length])
+
+  useEffect(() => {
+    if (!candidateDialog) return
+    if (document.categories[candidateDialog.categoryIndex]?.variables[candidateDialog.variableIndex]) return
+    setCandidateDialog(null)
+  }, [candidateDialog, document.categories])
+
+  function updateDocument(next: Partial<ZlexDocument>) {
+    onChange({ ...document, ...next })
+  }
+
+  function updateCategory(index: number, next: Partial<ZlexCategory>) {
+    onChange({
+      ...document,
+      categories: document.categories.map((category, categoryIndex) => (categoryIndex === index ? { ...category, ...next } : category)),
+    })
+  }
+
+  function updateVariable(categoryIndex: number, variableIndex: number, next: Partial<ZlexVariable>) {
+    onChange({
+      ...document,
+      categories: document.categories.map((category, currentCategoryIndex) =>
+        currentCategoryIndex === categoryIndex
+          ? {
+              ...category,
+              variables: category.variables.map((variable, currentVariableIndex) =>
+                currentVariableIndex === variableIndex ? { ...variable, ...next } : variable,
+              ),
+            }
+          : category,
+      ),
+    })
+  }
+
+  function addCategory() {
+    const index = document.categories.length + 1
+    updateDocument({ categories: [...document.categories, createEmptyZlexCategory(`category-${index}`)] })
+    setActiveCategoryIndex(index - 1)
+  }
+
+  function deleteCategory(index: number) {
+    setActiveCategoryIndex((current) => {
+      if (document.categories.length <= 1) return 0
+      if (index < current) return current - 1
+      if (index === current) return Math.min(current, document.categories.length - 2)
+      return current
+    })
+    updateDocument({ categories: document.categories.filter((_, categoryIndex) => categoryIndex !== index) })
+  }
+
+  function addVariable(categoryIndex: number) {
+    const category = document.categories[categoryIndex]
+    if (!category) return
+    const index = category.variables.length + 1
+    updateCategory(categoryIndex, { variables: [createEmptyZlexVariable(`variable-${index}`), ...category.variables] })
+  }
+
+  function deleteVariable(categoryIndex: number, variableIndex: number) {
+    const category = document.categories[categoryIndex]
+    if (!category) return
+    updateCategory(categoryIndex, { variables: category.variables.filter((_, index) => index !== variableIndex) })
+  }
+
+  function addCandidate(categoryIndex: number, variableIndex: number) {
+    const variable = document.categories[categoryIndex]?.variables[variableIndex]
+    if (!variable) return
+    updateVariable(categoryIndex, variableIndex, { candidates: [...variable.candidates, ''] })
+  }
+
+  function updateCandidate(categoryIndex: number, variableIndex: number, candidateIndex: number, value: string) {
+    const variable = document.categories[categoryIndex]?.variables[variableIndex]
+    if (!variable) return
+    updateVariable(categoryIndex, variableIndex, {
+      candidates: variable.candidates.map((candidate, index) => (index === candidateIndex ? value : candidate)),
+    })
+  }
+
+  function deleteCandidate(categoryIndex: number, variableIndex: number, candidateIndex: number) {
+    const variable = document.categories[categoryIndex]?.variables[variableIndex]
+    if (!variable) return
+    updateVariable(categoryIndex, variableIndex, {
+      candidates: variable.candidates.filter((_, index) => index !== candidateIndex),
+    })
+  }
+
+  return (
+    <div className="zpmt-editor zlex-editor">
+      <aside className="zlex-sidebar">
+        <div className="zlex-sidebar__header">
+          <span>{t.categoryManagement}</span>
+          <button type="button" title={t.addCategory} aria-label={t.addCategory} onClick={addCategory}>
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        <div className="zlex-category-nav">
+          {document.categories.map((category, categoryIndex) => (
+            <button
+              key={`category-${categoryIndex}`}
+              type="button"
+              className={cn('zlex-category-nav__item', categoryIndex === selectedCategoryIndex && 'zlex-category-nav__item--active')}
+              onClick={() => setActiveCategoryIndex(categoryIndex)}
+            >
+              <span className="truncate">{category.name || `${t.categoryName} ${categoryIndex + 1}`}</span>
+              <Badge variant="outline" className="zlex-category-nav__count">{category.variables.length}</Badge>
+            </button>
+          ))}
+          {document.categories.length ? null : (
+            <button type="button" className="zlex-category-nav__empty" onClick={addCategory}>
+              <Plus className="h-3.5 w-3.5" />
+              {t.addCategory}
+            </button>
+          )}
+        </div>
+      </aside>
+
+      <div className="zlex-workspace">
+        <div className="zlex-editor__toolbar">
+          <div className="flex min-w-0 items-center gap-2">
+            <Boxes className="h-4 w-4 shrink-0 text-[#d95a1b]" />
+            <div className="min-w-0">
+              <p className="truncate text-xs font-black text-slate-900">{t.zlexEditor}</p>
+              <p className="mt-0.5 truncate text-[11px] font-semibold text-slate-500">
+                {document.categories.length} {t.categories} / {variableCount} {t.variables}
+              </p>
+            </div>
+          </div>
+          <Button className="zlex-header-action" size="sm" type="button" onClick={() => selectedCategory && addVariable(selectedCategoryIndex)} disabled={!selectedCategory}>
+            <Plus className="h-3.5 w-3.5" />
+            {t.addRecipeVariable}
+          </Button>
+        </div>
+
+        {selectedCategory ? (
+          <>
+            <section className="zlex-panel">
+              <div className="zlex-panel__header">
+                <div className="min-w-0">
+                  <p>{t.categoryInfo}</p>
+                  <span>{selectedCategory.name || `${t.categoryName} ${selectedCategoryIndex + 1}`}</span>
+                </div>
+                <Badge variant="outline" className="zlex-panel__count">{selectedCategory.variables.length}</Badge>
+                <button
+                  type="button"
+                  title={t.deleteCategory}
+                  aria-label={t.deleteCategory}
+                  onClick={() => deleteCategory(selectedCategoryIndex)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <div className="zlex-category__fields">
+                <label className="zpmt-config-field">
+                  <span>{t.categoryName}</span>
+                  <input value={selectedCategory.name} onChange={(event) => updateCategory(selectedCategoryIndex, { name: event.target.value })} />
+                </label>
+                <label className="zpmt-config-field">
+                  <span>{t.categoryDescription}</span>
+                  <input value={selectedCategory.description} onChange={(event) => updateCategory(selectedCategoryIndex, { description: event.target.value })} />
+                </label>
+              </div>
+            </section>
+
+            <section className="zlex-panel zlex-variable-list">
+              <div className="zlex-panel__header">
+                <div className="min-w-0">
+                  <p>{t.variableList}</p>
+                  <span>{selectedCategory.variables.length} {t.variables}</span>
+                </div>
+              </div>
+              {selectedCategory.variables.length ? (
+                <div className="zlex-variable-table">
+                  <div className="zlex-variable-table__head">
+                    <span>{t.variableName}</span>
+                    <span>{t.description}</span>
+                    <span>{t.candidates}</span>
+                    <span>{t.actions}</span>
+                  </div>
+                  {selectedCategory.variables.map((variable, variableIndex) => (
+                    <div key={`variable-${variableIndex}`} className="zlex-variable-row">
+                      <div className="zlex-variable-row__name">
+                        <input value={variable.variableName} onChange={(event) => updateVariable(selectedCategoryIndex, variableIndex, { variableName: event.target.value.trim() })} />
+                        <label className="zlex-inline-check">
+                          <input type="checkbox" checked={variable.multiple} onChange={(event) => updateVariable(selectedCategoryIndex, variableIndex, { multiple: event.target.checked })} />
+                          <span>{t.multiple}</span>
+                        </label>
+                      </div>
+                      <textarea value={variable.description} onChange={(event) => updateVariable(selectedCategoryIndex, variableIndex, { description: event.target.value })} />
+                      <div className="zlex-candidate-summary">
+                        <span>{variable.candidates.length} {t.candidateCountSuffix}</span>
+                        <button
+                          type="button"
+                          onClick={() => setCandidateDialog({ categoryIndex: selectedCategoryIndex, variableIndex })}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                          {t.editCandidates}
+                        </button>
+                      </div>
+                      <div className="zlex-variable-row__actions">
+                        <button
+                          type="button"
+                          title={t.deleteVariable}
+                          aria-label={t.deleteVariable}
+                          onClick={() => deleteVariable(selectedCategoryIndex, variableIndex)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="zlex-empty">
+                  <Button size="sm" variant="outline" type="button" onClick={() => addVariable(selectedCategoryIndex)}>
+                    <Plus className="h-3.5 w-3.5" />
+                    {t.addRecipeVariable}
+                  </Button>
+                </div>
+              )}
+            </section>
+          </>
+        ) : (
+          <div className="zlex-empty zlex-empty--page">
+            <Button size="sm" type="button" onClick={addCategory}>
+              <Plus className="h-3.5 w-3.5" />
+              {t.addCategory}
+            </Button>
+          </div>
+        )}
+      </div>
+      {candidateDialog && candidateDialogVariable && candidateDialogTarget ? createPortal(
+        <div className="zlex-candidate-dialog" onMouseDown={() => setCandidateDialog(null)}>
+          <div className="zlex-candidate-dialog__panel" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="zlex-candidate-dialog__header">
+              <div className="min-w-0">
+                <p>{t.candidateEditor}</p>
+                <span>{candidateDialogVariable.variableName || t.variableName}</span>
+              </div>
+              <button type="button" title={t.cancel} aria-label={t.cancel} onClick={() => setCandidateDialog(null)}>
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div className="zlex-candidate-dialog__body">
+              {candidateDialogVariable.candidates.length ? (
+                candidateDialogVariable.candidates.map((candidate, candidateIndex) => (
+                  <div key={candidateIndex} className="zlex-candidate-dialog__row">
+                    <span>{candidateIndex + 1}</span>
+                    <input
+                      value={candidate}
+                      placeholder={`${t.candidates} ${candidateIndex + 1}`}
+                      onChange={(event) => updateCandidate(candidateDialog.categoryIndex, candidateDialog.variableIndex, candidateIndex, event.target.value)}
+                    />
+                    <button
+                      type="button"
+                      title={t.removeCandidate}
+                      aria-label={t.removeCandidate}
+                      onClick={() => deleteCandidate(candidateDialog.categoryIndex, candidateDialog.variableIndex, candidateIndex)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <div className="zlex-candidate-dialog__empty">
+                  {t.candidates}
+                </div>
+              )}
+            </div>
+            <div className="zlex-candidate-dialog__footer">
+              <Button size="sm" variant="outline" type="button" onClick={() => addCandidate(candidateDialog.categoryIndex, candidateDialog.variableIndex)}>
+                <Plus className="h-3.5 w-3.5" />
+                {t.addCandidate}
+              </Button>
+              <Button size="sm" type="button" onClick={() => setCandidateDialog(null)}>
+                {t.done}
+              </Button>
+            </div>
+          </div>
+        </div>,
+        candidateDialogTarget,
+      ) : null}
+    </div>
+  )
+}
+
+function ZamfStructuredEditor({
+  t,
+  document,
+  onChange,
+}: {
+  t: WorkbenchCopy
+  document: ZamfDocument
+  onChange: (document: ZamfDocument) => void
+}) {
+  const [showApiKey, setShowApiKey] = useState(false)
+  const [pullingModels, setPullingModels] = useState(false)
+  const [modelFetchError, setModelFetchError] = useState('')
+
+  function updateDocument(next: Partial<ZamfDocument>) {
+    onChange({ ...document, ...next })
+  }
+
+  function updateBaseUrl(baseUrl: string) {
+    updateDocument({
+      baseUrl,
+      providerType: inferAiProviderTypeFromBaseUrl(baseUrl, 'custom'),
+    })
+  }
+
+  async function pullModels() {
+    if (!document.baseUrl || !document.apiKey) {
+      setModelFetchError(t.modelFetchApiKeyRequired)
+      return
+    }
+
+    setPullingModels(true)
+    setModelFetchError('')
+    const response = await fetchJson('/api/ai-providers/models', {
+      method: 'POST',
+      body: {
+        baseUrl: document.baseUrl,
+        apiKey: document.apiKey,
+      },
+    }).finally(() => setPullingModels(false))
+
+    if (!response?.ok || !Array.isArray(response.models)) {
+      setModelFetchError(response?.message || t.modelFetchFailed)
+      return
+    }
+
+    updateDocument({
+      providerType: inferAiProviderTypeFromBaseUrl(document.baseUrl, document.providerType || 'custom'),
+      models: response.models.map((model: unknown, index: number) => normalizeZamfModelForEditor(model, index)),
+    })
+  }
+
+  function applyModelPreset(index: number, presetKey: string) {
+    const option = findAiModelPresetOption(presetKey)
+    const currentModel = document.models[index]
+    if (!option || !currentModel) return
+    onChange({
+      ...document,
+      models: document.models.map((model, modelIndex) => (modelIndex === index ? applyAiModelPreset(model, option.model, createAiModelPresetRef(option)) : model)),
+    })
+  }
+
+  return (
+    <div className="zpmt-editor">
+      <section className="zpmt-section">
+        <div className="zpmt-section__header cursor-default hover:bg-transparent hover:text-slate-700">
+          <Bot className="h-3.5 w-3.5 text-sky-500" />
+          <span>{t.zamfEditor}</span>
+          <Badge variant="outline" className="ml-auto">{document.models.length}</Badge>
+        </div>
+        <div className="grid gap-2 p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_auto]">
+          <label className="zpmt-config-field">
+            <span>{t.providerName}</span>
+            <input value={document.name} onChange={(event) => updateDocument({ name: event.target.value })} />
+          </label>
+          <label className="zpmt-config-field md:col-span-2">
+            <span>{t.providerBaseUrl}</span>
+            <input value={document.baseUrl} onChange={(event) => updateBaseUrl(event.target.value.trim())} />
+          </label>
+          <label className="zpmt-config-field md:col-span-3">
+            <span>{t.providerApiKey}</span>
+            <input type={showApiKey ? 'text' : 'password'} value={document.apiKey} onChange={(event) => updateDocument({ apiKey: event.target.value })} />
+          </label>
+          <div className="flex items-end">
+            <Button size="sm" variant="outline" type="button" onClick={() => setShowApiKey((current) => !current)}>
+              {showApiKey ? t.hideApiKey : t.showApiKey}
+            </Button>
+          </div>
+        </div>
+      </section>
+
+      <section className="zpmt-section">
+        <div className="zpmt-section__header cursor-default hover:bg-transparent hover:text-slate-700">
+          <Code2 className="h-3.5 w-3.5 text-sky-500" />
+          <span>{t.providerModels}</span>
+          <Button
+            className="ml-auto h-7"
+            size="sm"
+            variant="outline"
+            type="button"
+            onClick={() => void pullModels()}
+            disabled={pullingModels}
+          >
+            <RefreshCw className={cn('h-3.5 w-3.5', pullingModels && 'animate-spin')} />
+            {pullingModels ? t.pullingModels : t.pullModels}
+          </Button>
+        </div>
+        <div className="space-y-2 p-3">
+          <p className="text-[11px] font-semibold text-slate-500">{t.providerModelsHint}</p>
+          {modelFetchError ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+              {modelFetchError}
+            </div>
+          ) : null}
+          {document.models.length ? (
+            document.models.map((model, index) => (
+              <div key={`${model.id}-${index}`} className="rounded-md border border-slate-200 bg-white p-2">
+                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,220px)]">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[10px] font-black uppercase tracking-wide text-slate-400">{t.modelId}</div>
+                    <div className="mt-1 truncate font-mono text-xs font-black text-slate-900">{model.id}</div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      <ZamfModelTags t={t} model={model} />
+                    </div>
+                  </div>
+                  {!hasAiModelPreset(document.providerType, model.id) ? (
+                    <label className="grid min-w-0 gap-1 text-[10px] font-black text-slate-500">
+                      {t.modelPreset}
+                      <select
+                        className="h-8 w-full max-w-full rounded-md border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                        value={getAiModelPresetOptionKey(model.presetRef)}
+                        onChange={(event) => applyModelPreset(index, event.target.value)}
+                      >
+                        <option value="">{t.modelPresetPlaceholder}</option>
+                        {listAiModelPresetOptions(document.providerType).map((option) => (
+                          <option key={option.key} value={option.key}>
+                            {option.providerName} / {option.model.id}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : (
+                    <Badge variant="outline">{t.modelPresetMatched}</Badge>
+                  )}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="rounded-md border border-dashed border-slate-200 bg-white px-3 py-6 text-center text-xs font-semibold text-slate-500">
+              {t.emptyModels}
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function ZamfModelTags({ t, model }: { t: WorkbenchCopy; model: ZamfModel }) {
+  const thinking = aiModelSupportsThinking(model)
+
+  return (
+    <>
+      {model.capabilities.map((capability) => (
+        <Badge key={capability} variant="outline">
+          {t.capabilities}:{t.outputTypes[capability]}
+        </Badge>
+      ))}
+      <Badge variant={model.toolCalling === 'supported' ? 'default' : model.toolCalling === 'unsupported' ? 'danger' : 'outline'}>
+        {t.toolCalling}:{t.toolCallingStatus[model.toolCalling]}
+      </Badge>
+      <Badge variant={thinking ? 'default' : 'outline'}>
+        {t.thinkingSupport}:{thinking ? t.thinkingSupported : t.thinkingUnsupported}
+      </Badge>
+      <Badge variant={aiModelSupportsReferenceImage(model) ? 'default' : 'outline'}>
+        {t.referenceImage}:{aiModelSupportsReferenceImage(model) ? t.thinkingSupported : t.thinkingUnsupported}
+      </Badge>
+      <Badge variant={aiModelSupportsReferenceFile(model) ? 'default' : 'outline'}>
+        {t.referenceFile}:{aiModelSupportsReferenceFile(model) ? t.thinkingSupported : t.thinkingUnsupported}
+      </Badge>
+    </>
   )
 }
 
@@ -3592,6 +4523,7 @@ function ZpmtStructuredEditor({
   promptMode,
   collapsedSections,
   aiProviders,
+  recipeVariableCategories,
   onToggleSection,
   onChange,
 }: {
@@ -3601,18 +4533,21 @@ function ZpmtStructuredEditor({
   promptMode: PromptFileType
   collapsedSections: ZpmtCollapsedSections
   aiProviders: AiProviderSummary[]
+  recipeVariableCategories: RecipeVariableCategory[]
   onToggleSection: (section: ZpmtSectionKey) => void
   onChange: (document: ZpmtDocument) => void
 }) {
   const showSystemPrompt = promptMode === 'agent'
-  const selectedModelContext = getSelectedAiModelContext(aiProviders, document.config.providerId, document.config.model)
+  const selectedModelContext = getSelectedAiModelContext(aiProviders, document.config.providerId, document.config.model, document.config.providerFile)
   const responseSchema = resolveAiModelParameterSchema(
     document.config.outputType,
     selectedModelContext?.provider?.providerType,
     document.config.model,
     selectedModelContext?.model,
   )
-  const compatibleModels = listCompatibleModelsForProvider(aiProviders, document.config.providerId, document.config.outputType)
+  const compatibleModels = listCompatibleModelsForProvider(aiProviders, document.config.providerFile || document.config.providerId, document.config.outputType)
+  const modelCapabilities = useMemo(() => getZpmtModelCapabilityGate(selectedModelContext?.model), [selectedModelContext?.model])
+  const { supportsTools } = modelCapabilities
 
   function updateDocument(next: Partial<Omit<ZpmtDocument, 'config'>> & { config?: Partial<ZpmtDocument['config']> }) {
     onChange({
@@ -3623,7 +4558,21 @@ function ZpmtStructuredEditor({
   }
 
   const [pendingTagDialog, setPendingTagDialog] = useState<PendingZpmtTagDialog | null>(null)
+  const [pendingToolDialog, setPendingToolDialog] = useState<PendingZpmtToolDialog | null>(null)
   const existingTagNames = useMemo(() => extractZpmtTagNames(document.system, document.user), [document.system, document.user])
+
+  function applyProviderFile(provider: AiProviderSummary) {
+    const model = findCompatibleModelForProvider(provider, document.config.outputType)
+    updateDocument({
+      config: {
+        providerFile: provider.filePath || '',
+        providerId: provider.id,
+        providerName: provider.name,
+        model: model?.id || '',
+        responseConfig: defaultResponseConfig(document.config.outputType, provider.providerType, model?.id, model),
+      },
+    })
+  }
 
   function insertPromptToken(sectionKey: ZpmtPromptSectionKey, offset: number, token: string) {
     if (sectionKey === 'system') {
@@ -3645,8 +4594,9 @@ function ZpmtStructuredEditor({
   }
 
   function handleInstructionDrop(payload: InstructionDragPayload, sectionKey: ZpmtPromptSectionKey, offset: number) {
+    if (!canUseInstructionPayload(payload, modelCapabilities)) return
     if (payload.kind === 'tool') {
-      addToolFromPayload(payload)
+      handleToolDrop(payload)
       return
     }
 
@@ -3654,7 +4604,7 @@ function ZpmtStructuredEditor({
   }
 
   function handleTokenEdit(sectionKey: ZpmtPromptSectionKey, start: number, end: number, token: string) {
-    const dialog = createPendingZpmtTagEdit(sectionKey, start, end, token)
+    const dialog = createPendingZpmtTagEdit(sectionKey, start, end, token, recipeVariableCategories, document.metadata)
     if (dialog) setPendingTagDialog(dialog)
   }
 
@@ -3664,10 +4614,36 @@ function ZpmtStructuredEditor({
     })
   }
 
-  function addToolFromPayload(payload: Extract<InstructionDragPayload, { kind: 'tool' }>) {
-    const tool = createZpmtToolInstruction(payload)
+  function handleToolDrop(payload: Extract<InstructionDragPayload, { kind: 'tool' }>) {
+    if (!supportsTools) return
+    setPendingToolDialog({ mode: 'add', payload })
+  }
+
+  function editTool(tool: ZpmtToolInstruction) {
+    setPendingToolDialog({ mode: 'edit', tool })
+  }
+
+  function addToolFromPayload(payload: Extract<InstructionDragPayload, { kind: 'tool' }>, config?: AiToolConfig) {
+    if (!supportsTools) return
+    const tool = createZpmtToolInstruction(payload, config)
     const exists = document.tools.some((item) => item.categoryId === tool.categoryId && item.id === tool.id)
-    if (!exists) updateDocument({ tools: [...document.tools, tool] })
+    if (exists) {
+      updateDocument({
+        tools: document.tools.map((item) => (item.categoryId === tool.categoryId && item.id === tool.id ? tool : item)),
+      })
+      return
+    }
+    updateDocument({ tools: [...document.tools, tool] })
+  }
+
+  function updateToolConfig(tool: ZpmtToolInstruction, config: AiToolConfig) {
+    updateDocument({
+      tools: document.tools.map((item) =>
+        item.categoryId === tool.categoryId && item.id === tool.id
+          ? { ...item, config: coerceAiToolConfig(item.id, config), schemaVersion: AI_TOOL_SCHEMA_VERSION }
+          : item,
+      ),
+    })
   }
 
   const { setNodeRef: setEditorDropRef } = useDroppable({
@@ -3675,7 +4651,17 @@ function ZpmtStructuredEditor({
     data: {
       kind: 'zpmt-root',
       onDropInstruction: (payload: InstructionDragPayload) => {
-        if (payload.kind === 'tool') addToolFromPayload(payload)
+        if (payload.kind === 'tool' && canUseInstructionPayload(payload, modelCapabilities)) handleToolDrop(payload)
+      },
+    } satisfies ZpmtDroppableData,
+  })
+  const { setNodeRef: setConfigDropRef, isOver: providerFileOverConfig } = useDroppable({
+    id: 'zpmt-config-provider-drop',
+    data: {
+      kind: 'zpmt-config',
+      onDropInstruction: () => undefined,
+      onDropProviderFile: (payload: ProviderFileDragPayload) => {
+        applyProviderFile(payload.provider)
       },
     } satisfies ZpmtDroppableData,
   })
@@ -3692,17 +4678,36 @@ function ZpmtStructuredEditor({
         collapsed={Boolean(collapsedSections.config)}
         onToggle={onToggleSection}
       >
-        <div className="zpmt-section__body--config">
+        <div
+          ref={setConfigDropRef}
+          className={cn('zpmt-section__body--config', providerFileOverConfig && 'zpmt-section__body--drop-target')}
+        >
+          <label className="zpmt-config-field">
+            <span>{t.providerFile}</span>
+            <input className="zpmt-config-control" value={document.config.providerFile || t.dropProviderFile} readOnly />
+          </label>
           <label className="zpmt-config-field">
             <span>{t.outputType}</span>
             <select
               value={document.config.outputType}
               onChange={(event) => {
                 const outputType = normalizeZpmtOutputType(event.target.value)
-                const selection = selectDefaultAiModel(aiProviders, outputType)
+                const currentProvider = findAiProvider(aiProviders, document.config.providerFile || document.config.providerId)
+                const currentModel = findCompatibleModelForProvider(currentProvider, outputType)
+                const selection = currentProvider && currentModel
+                  ? {
+                      providerFile: currentProvider.filePath || '',
+                      providerId: currentProvider.id,
+                      providerName: currentProvider.name,
+                      providerType: currentProvider.providerType,
+                      model: currentModel.id,
+                      modelEntry: currentModel,
+                    }
+                  : selectDefaultAiModel(aiProviders, outputType)
                 updateDocument({
                   config: {
                     outputType,
+                    providerFile: selection.providerFile,
                     providerId: selection.providerId,
                     providerName: selection.providerName,
                     model: selection.model,
@@ -3719,34 +4724,6 @@ function ZpmtStructuredEditor({
             </select>
           </label>
           <label className="zpmt-config-field">
-            <span>{t.aiProvider}</span>
-            <select
-              value={document.config.providerId}
-              onChange={(event) => {
-                const provider = aiProviders.find((item) => item.id === event.target.value)
-                const model = findCompatibleModelForProvider(provider, document.config.outputType)
-                updateDocument({
-                  config: {
-                    providerId: event.target.value,
-                    providerName: provider?.name || '',
-                    model: model?.id || '',
-                    responseConfig: defaultResponseConfig(document.config.outputType, provider?.providerType, model?.id, model),
-                  },
-                })
-              }}
-            >
-              {aiProviders.length ? null : <option value="">{t.noAiProvider}</option>}
-              {document.config.providerId && !aiProviders.some((provider) => provider.id === document.config.providerId) ? (
-                <option value={document.config.providerId}>{document.config.providerName || document.config.providerId}</option>
-              ) : null}
-              {aiProviders.map((provider) => (
-                <option key={provider.id} value={provider.id}>
-                  {provider.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="zpmt-config-field">
             <span className="flex items-center gap-1.5">
               {t.aiModel}
               {selectedModelContext?.model ? <ToolCallingBadge t={t} model={selectedModelContext.model} /> : null}
@@ -3754,7 +4731,7 @@ function ZpmtStructuredEditor({
             <select
               value={document.config.model}
               onChange={(event) => {
-                const provider = aiProviders.find((item) => item.id === document.config.providerId) || null
+                const provider = findAiProvider(aiProviders, document.config.providerFile || document.config.providerId) || null
                 const model = compatibleModels.find((item) => item.id === event.target.value) || null
                 updateDocument({
                   config: {
@@ -3791,11 +4768,14 @@ function ZpmtStructuredEditor({
         <ZpmtPromptSection
           t={t}
           locale={locale}
+          recipeVariableCategories={recipeVariableCategories}
+          metadata={document.metadata}
           sectionKey="system"
           title={t.systemPrompt}
           value={document.system}
           collapsed={Boolean(collapsedSections.system)}
           onToggle={onToggleSection}
+          modelCapabilities={modelCapabilities}
           onInstructionDrop={handleInstructionDrop}
           onTokenEdit={handleTokenEdit}
           onChange={(value) => updateDocument({ system: value })}
@@ -3805,16 +4785,19 @@ function ZpmtStructuredEditor({
       <ZpmtPromptSection
         t={t}
         locale={locale}
+        recipeVariableCategories={recipeVariableCategories}
+        metadata={document.metadata}
         sectionKey="user"
         title={t.userPrompt}
         value={document.user}
         collapsed={Boolean(collapsedSections.user)}
         onToggle={onToggleSection}
+        modelCapabilities={modelCapabilities}
         onInstructionDrop={handleInstructionDrop}
         onTokenEdit={handleTokenEdit}
         onChange={(value) => updateDocument({ user: value })}
       />
-      <ZpmtToolsDock t={t} locale={locale} tools={document.tools} onRemove={removeTool} />
+      <ZpmtToolsDock t={t} locale={locale} tools={document.tools} supportsTools={supportsTools} onEdit={editTool} onRemove={removeTool} />
       {pendingTagDialog ? (
         <ZpmtTagInsertionDialog
           key={
@@ -3834,6 +4817,23 @@ function ZpmtStructuredEditor({
               replacePromptToken(pendingTagDialog.sectionKey, pendingTagDialog.start, pendingTagDialog.end, token)
             }
             setPendingTagDialog(null)
+          }}
+        />
+      ) : null}
+      {pendingToolDialog ? (
+        <ZpmtToolConfigDialog
+          key={pendingToolDialog.mode === 'add' ? `add-${pendingToolDialog.payload.item.id}` : `edit-${pendingToolDialog.tool.id}`}
+          t={t}
+          locale={locale}
+          dialog={pendingToolDialog}
+          onClose={() => setPendingToolDialog(null)}
+          onSubmit={(config) => {
+            if (pendingToolDialog.mode === 'add') {
+              addToolFromPayload(pendingToolDialog.payload, config)
+            } else {
+              updateToolConfig(pendingToolDialog.tool, config)
+            }
+            setPendingToolDialog(null)
           }}
         />
       ) : null}
@@ -3876,22 +4876,28 @@ function ZpmtSection({
 function ZpmtPromptSection({
   t,
   locale,
+  recipeVariableCategories,
+  metadata,
   sectionKey,
   title,
   value,
   collapsed,
   onToggle,
+  modelCapabilities,
   onInstructionDrop,
   onTokenEdit,
   onChange,
 }: {
   t: WorkbenchCopy
   locale: Locale
+  recipeVariableCategories: RecipeVariableCategory[]
+  metadata: ZpmtRecipeVariableMetadata
   sectionKey: ZpmtSectionKey
   title: string
   value: string
   collapsed: boolean
   onToggle: (section: ZpmtSectionKey) => void
+  modelCapabilities: ZpmtModelCapabilityGate
   onInstructionDrop: (payload: InstructionDragPayload, sectionKey: ZpmtPromptSectionKey, offset: number) => void
   onTokenEdit: (sectionKey: ZpmtPromptSectionKey, start: number, end: number, token: string) => void
   onChange: (value: string) => void
@@ -3905,10 +4911,12 @@ function ZpmtPromptSection({
     data: {
       kind: 'zpmt-prompt',
       onDragInstruction: (payload: InstructionDragPayload, point: ZpmtDropPoint) => {
+        if (!canUseInstructionPayload(payload, modelCapabilities)) return
         if (payload.kind === 'tool') return
         editorRef.current?.setCaretAtPoint(point, true)
       },
       onDropInstruction: (payload: InstructionDragPayload, point: ZpmtDropPoint) => {
+        if (!canUseInstructionPayload(payload, modelCapabilities)) return
         if (sectionKey !== 'system' && sectionKey !== 'user') return
         const offset = payload.kind === 'tool' ? value.length : editorRef.current?.setCaretAtPoint(point, false) ?? value.length
         editorRef.current?.clearDropCursor()
@@ -3927,7 +4935,7 @@ function ZpmtPromptSection({
 
     function handleInstructionDrag(event: Event) {
       const detail = (event as CustomEvent<ZpmtInstructionPointEventDetail>).detail
-      if (!detail || detail.payload.kind === 'tool') return
+      if (!detail || !canUseInstructionPayload(detail.payload, modelCapabilities) || detail.payload.kind === 'tool') return
       if (!isPointInsidePrompt(detail.point)) {
         editorRef.current?.clearDropCursor()
         return
@@ -3938,7 +4946,7 @@ function ZpmtPromptSection({
 
     function handleInstructionDrop(event: Event) {
       const detail = (event as CustomEvent<ZpmtInstructionPointEventDetail>).detail
-      if (!detail || detail.payload.kind === 'tool') return
+      if (!detail || !canUseInstructionPayload(detail.payload, modelCapabilities) || detail.payload.kind === 'tool') return
       if (!isPointInsidePrompt(detail.point)) return
       const offset = editorRef.current?.setCaretAtPoint(detail.point, false) ?? value.length
       editorRef.current?.clearDropCursor()
@@ -3952,7 +4960,7 @@ function ZpmtPromptSection({
       window.removeEventListener(ZPMT_INSTRUCTION_DRAG_EVENT, handleInstructionDrag)
       window.removeEventListener(ZPMT_INSTRUCTION_DROP_EVENT, handleInstructionDrop)
     }
-  }, [onInstructionDrop, sectionKey, value.length])
+  }, [modelCapabilities, onInstructionDrop, sectionKey, value.length])
 
   return (
     <ZpmtSection
@@ -3974,6 +4982,9 @@ function ZpmtPromptSection({
           ref={editorRef}
           t={t}
           locale={locale}
+          recipeVariableCategories={recipeVariableCategories}
+          metadata={metadata}
+          modelCapabilities={modelCapabilities}
           value={value}
           minHeight={editorHeight}
           onChange={onChange}
@@ -3989,27 +5000,36 @@ function ZpmtPromptSection({
 const ZpmtPromptTokenEditor = forwardRef<ZpmtPromptTokenEditorHandle, {
   t: WorkbenchCopy
   locale: Locale
+  recipeVariableCategories: RecipeVariableCategory[]
+  metadata: ZpmtRecipeVariableMetadata
+  modelCapabilities: ZpmtModelCapabilityGate
   value: string
   minHeight: number
   onChange: (value: string) => void
   onTokenEdit: (start: number, end: number, token: string) => void
-}>(function ZpmtPromptTokenEditor({ t, locale, value, minHeight, onChange, onTokenEdit }, ref) {
+}>(function ZpmtPromptTokenEditor({ t, locale, recipeVariableCategories, metadata, modelCapabilities, value, minHeight, onChange, onTokenEdit }, ref) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const latestValueRef = useRef(value)
   const renderKeyRef = useRef('')
+  const lastCaretOffsetRef = useRef<number | null>(null)
   const [tooltip, setTooltip] = useState<FloatingTooltipState>(null)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const root = rootRef.current
     if (!root) return
-    const renderKey = `${locale}:${value}`
+    const renderKey = `${locale}:${metadata.recipeVariables.length}:${getZpmtCapabilityRenderKey(modelCapabilities)}:${value}`
+    if (isPromptEditorFocused(root) && renderKeyRef.current === renderKey && latestValueRef.current === value) {
+      return
+    }
     const currentValue = serializePromptTokenEditorDom(root)
     if (renderKeyRef.current !== renderKey || currentValue !== value) {
-      renderPromptTokenEditorDom(root, value, t, locale)
+      const caretOffset = isPromptEditorFocused(root) ? lastCaretOffsetRef.current ?? getPromptEditorCaretOffset(root) : null
+      renderPromptTokenEditorDom(root, value, t, locale, recipeVariableCategories, metadata, modelCapabilities)
+      if (caretOffset !== null) setPromptEditorCaretAtOffset(root, Math.min(caretOffset, value.length))
       renderKeyRef.current = renderKey
     }
     latestValueRef.current = value
-  }, [locale, t, value])
+  }, [locale, metadata, modelCapabilities, recipeVariableCategories, t, value])
 
   useEffect(() => {
     function clearCursor() {
@@ -4041,7 +5061,8 @@ const ZpmtPromptTokenEditor = forwardRef<ZpmtPromptTokenEditorHandle, {
     clearPromptEditorDropCursor(root)
     const nextValue = serializePromptTokenEditorDom(root)
     latestValueRef.current = nextValue
-    renderKeyRef.current = `${locale}:${nextValue}`
+    lastCaretOffsetRef.current = getPromptEditorCaretOffset(root)
+    renderKeyRef.current = `${locale}:${metadata.recipeVariables.length}:${getZpmtCapabilityRenderKey(modelCapabilities)}:${nextValue}`
     onChange(nextValue)
   }
 
@@ -4049,8 +5070,9 @@ const ZpmtPromptTokenEditor = forwardRef<ZpmtPromptTokenEditorHandle, {
     const root = rootRef.current
     if (!root) return
     latestValueRef.current = nextValue
-    renderPromptTokenEditorDom(root, nextValue, t, locale)
-    renderKeyRef.current = `${locale}:${nextValue}`
+    renderPromptTokenEditorDom(root, nextValue, t, locale, recipeVariableCategories, metadata, modelCapabilities)
+    renderKeyRef.current = `${locale}:${metadata.recipeVariables.length}:${getZpmtCapabilityRenderKey(modelCapabilities)}:${nextValue}`
+    lastCaretOffsetRef.current = offset
     setPromptEditorCaretAtOffset(root, offset)
     onChange(nextValue)
   }
@@ -4122,25 +5144,57 @@ const ZpmtPromptTokenEditor = forwardRef<ZpmtPromptTokenEditorHandle, {
   )
 })
 
-function renderPromptTokenEditorDom(root: HTMLElement, value: string, t: WorkbenchCopy, locale: Locale) {
+function renderPromptTokenEditorDom(
+  root: HTMLElement,
+  value: string,
+  t: WorkbenchCopy,
+  locale: Locale,
+  categories: RecipeVariableCategory[] = DEFAULT_RECIPE_VARIABLE_CATEGORIES,
+  metadata?: ZpmtRecipeVariableMetadata,
+  modelCapabilities: ZpmtModelCapabilityGate = ALL_ZPMT_MODEL_CAPABILITIES,
+) {
   clearPromptEditorDropCursor(root)
   const nodes: Node[] = []
   let cursor = 0
 
   for (const tokenRange of findPromptTokenRanges(value)) {
-    if (tokenRange.start > cursor) nodes.push(root.ownerDocument.createTextNode(value.slice(cursor, tokenRange.start)))
-    nodes.push(createPromptTokenEditorNode(root.ownerDocument, tokenRange.token, t, locale))
+    if (tokenRange.start > cursor) nodes.push(...createPromptEditorTextNodes(root.ownerDocument, value.slice(cursor, tokenRange.start)))
+    nodes.push(createPromptTokenEditorNode(root.ownerDocument, tokenRange.token, t, locale, categories, metadata, modelCapabilities))
     cursor = tokenRange.end
   }
 
-  if (cursor < value.length) nodes.push(root.ownerDocument.createTextNode(value.slice(cursor)))
+  if (cursor < value.length) nodes.push(...createPromptEditorTextNodes(root.ownerDocument, value.slice(cursor)))
   root.replaceChildren(...nodes)
 }
 
-function createPromptTokenEditorNode(documentRef: Document, token: string, t: WorkbenchCopy, locale: Locale) {
-  const presentation = resolvePromptTokenPresentation(token, t, locale)
+function createPromptEditorTextNodes(documentRef: Document, text: string) {
+  const nodes: Node[] = []
+  const lines = text.split('\n')
+
+  lines.forEach((line, index) => {
+    if (line) nodes.push(documentRef.createTextNode(line))
+    if (index < lines.length - 1) nodes.push(documentRef.createElement('br'))
+  })
+
+  return nodes
+}
+
+function createPromptTokenEditorNode(
+  documentRef: Document,
+  token: string,
+  t: WorkbenchCopy,
+  locale: Locale,
+  categories: RecipeVariableCategory[] = DEFAULT_RECIPE_VARIABLE_CATEGORIES,
+  metadata?: ZpmtRecipeVariableMetadata,
+  modelCapabilities: ZpmtModelCapabilityGate = ALL_ZPMT_MODEL_CAPABILITIES,
+) {
+  const presentation = resolvePromptTokenPresentation(token, t, locale, categories, metadata, modelCapabilities)
   const tokenElement = documentRef.createElement('span')
-  tokenElement.className = cn('prompt-token-chip zpmt-token-editor__token', getPromptTokenStyleClass(presentation.styleKey))
+  tokenElement.className = cn(
+    'prompt-token-chip zpmt-token-editor__token',
+    getPromptTokenStyleClass(presentation.styleKey),
+    presentation.unsupported && 'zpmt-token-chip--unsupported',
+  )
   tokenElement.contentEditable = 'false'
   tokenElement.dataset.zpmtToken = token
   tokenElement.dataset.zpmtTooltip = presentation.tooltip
@@ -4301,6 +5355,19 @@ function setPromptEditorSelection(root: HTMLElement, range: Range) {
   selection.addRange(range)
 }
 
+function isPromptEditorFocused(root: HTMLElement) {
+  const activeElement = root.ownerDocument.activeElement
+  return activeElement === root || Boolean(activeElement && root.contains(activeElement))
+}
+
+function getPromptEditorCaretOffset(root: HTMLElement) {
+  const selection = root.ownerDocument.getSelection()
+  if (!selection?.rangeCount) return null
+  const range = selection.getRangeAt(0)
+  if (!root.contains(range.startContainer)) return null
+  return getPromptEditorOffsetFromDomPosition(root, range.startContainer, range.startOffset)
+}
+
 function showPromptEditorDropCursor(root: HTMLElement, range: Range) {
   clearPromptEditorDropCursor(root)
   const cursor = root.ownerDocument.createElement('span')
@@ -4403,6 +5470,13 @@ function setPromptEditorCaretAtOffset(root: HTMLElement, targetOffset: number) {
       return
     }
 
+    if (node instanceof HTMLElement && node.tagName === 'BR') {
+      if (targetOffset <= offset) placeBefore(node)
+      else if (targetOffset <= offset + 1) placeAfter(node)
+      offset += 1
+      return
+    }
+
     node.childNodes.forEach(visit)
   }
 
@@ -4417,10 +5491,18 @@ function insertPromptEditorTextAtSelection(root: HTMLElement, text: string) {
   const range = selection?.rangeCount ? selection.getRangeAt(0) : createPromptEditorEndRange(root)
   const targetRange = root.contains(range.startContainer) ? normalizePromptEditorRange(root, range) : createPromptEditorEndRange(root)
   targetRange.deleteContents()
-  const textNode = root.ownerDocument.createTextNode(text)
-  targetRange.insertNode(textNode)
+  const nodes = createPromptEditorTextNodes(root.ownerDocument, text)
+  if (!nodes.length) return
+  const fragment = root.ownerDocument.createDocumentFragment()
+  nodes.forEach((node) => fragment.appendChild(node))
+  targetRange.insertNode(fragment)
+  const lastNode = nodes[nodes.length - 1]
   const nextRange = root.ownerDocument.createRange()
-  nextRange.setStart(textNode, text.length)
+  if (lastNode.nodeType === Node.TEXT_NODE) {
+    nextRange.setStart(lastNode, (lastNode.nodeValue || '').length)
+  } else {
+    nextRange.setStartAfter(lastNode)
+  }
   nextRange.collapse(true)
   setPromptEditorSelection(root, nextRange)
 }
@@ -4463,11 +5545,15 @@ function ZpmtToolsDock({
   t,
   locale,
   tools,
+  supportsTools,
+  onEdit,
   onRemove,
 }: {
   t: WorkbenchCopy
   locale: Locale
   tools: ZpmtToolInstruction[]
+  supportsTools: boolean
+  onEdit: (tool: ZpmtToolInstruction) => void
   onRemove: (tool: ZpmtToolInstruction) => void
 }) {
   if (!tools.length) return null
@@ -4481,18 +5567,32 @@ function ZpmtToolsDock({
       <div className="flex flex-wrap gap-2">
         {tools.map((tool) => {
           const toolName = tool.name[locale]
-          const candidateText = tool.candidates[locale].join(' / ')
+          const configSummary = summarizeAiToolConfig(tool.id, tool.config, locale)
+          const candidateText = configSummary || tool.candidates[locale].join(' / ')
+          const title = supportsTools ? candidateText : [t.unsupportedByModel, candidateText].filter(Boolean).join('\n')
 
           return (
             <span
               key={`${tool.categoryId}:${tool.id}`}
-              title={candidateText}
-              className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-md border border-[#ffd8c4] bg-[#fff8f4] px-2 text-[11px] font-black text-[#b94712]"
+              title={title}
+              className={cn(
+                'inline-flex h-7 max-w-full items-center gap-1.5 rounded-md border border-[#ffd8c4] bg-[#fff8f4] px-2 text-[11px] font-black text-[#b94712]',
+                !supportsTools && 'zpmt-token-chip--unsupported',
+              )}
             >
               <span className="truncate">{toolName}</span>
               <button
                 type="button"
-                className="grid h-4 w-4 shrink-0 place-items-center rounded text-[#b94712]/70 hover:bg-[#ffe5d7] hover:text-[#9a3412]"
+                className="grid h-4 w-4 shrink-0 place-items-center rounded text-inherit opacity-70 hover:bg-slate-200/70 hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-35"
+                title={t.editTool}
+                disabled={!supportsTools}
+                onClick={() => onEdit(tool)}
+              >
+                <Pencil className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                className="grid h-4 w-4 shrink-0 place-items-center rounded text-inherit opacity-70 hover:bg-slate-200/70 hover:opacity-100"
                 title={t.removeTool}
                 onClick={() => onRemove(tool)}
               >
@@ -4504,6 +5604,184 @@ function ZpmtToolsDock({
       </div>
     </div>
   )
+}
+
+function ZpmtToolConfigDialog({
+  t,
+  locale,
+  dialog,
+  onClose,
+  onSubmit,
+}: {
+  t: WorkbenchCopy
+  locale: Locale
+  dialog: PendingZpmtToolDialog
+  onClose: () => void
+  onSubmit: (config: AiToolConfig) => void
+}) {
+  const toolItem = dialog.mode === 'add' ? dialog.payload.item : dialog.tool
+  const definition = getAiToolDefinition(toolItem.id)
+  const [config, setConfig] = useState<AiToolConfig>(() =>
+    coerceAiToolConfig(toolItem.id, dialog.mode === 'edit' ? dialog.tool.config : getAiToolFieldDefaults(toolItem.id)),
+  )
+  const [error, setError] = useState('')
+
+  if (!definition) return null
+  const toolDefinition = definition
+
+  function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (toolDefinition.fields.some((field) => isAiToolRequiredMissing(field, config[field.name]))) {
+      setError(t.toolConfigRequired)
+      return
+    }
+    onSubmit(coerceAiToolConfig(toolDefinition.id, config))
+  }
+
+  return createPortal(
+    <div className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/35 p-6 backdrop-blur-sm" onMouseDown={onClose}>
+      <form
+        className="w-[min(520px,calc(100vw-32px))] rounded-lg border border-slate-200 bg-white p-4 shadow-[0_28px_80px_rgba(15,23,42,0.24)]"
+        onMouseDown={(event) => event.stopPropagation()}
+        onSubmit={submit}
+      >
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="truncate text-sm font-black text-slate-900">
+              {dialog.mode === 'edit' ? t.editTool : t.bindTool} · {definition.name[locale]}
+            </h2>
+            <p className="mt-1 truncate text-[11px] font-semibold text-slate-500">{definition.description[locale]}</p>
+          </div>
+          <button type="button" className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-slate-500 hover:bg-slate-100" onClick={onClose}>
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <div className="mb-2 text-[11px] font-black uppercase text-slate-500">{t.toolBindingConfig}</div>
+        {definition.fields.length ? (
+          <AiToolConfigFields
+            fields={definition.fields}
+            config={config}
+            locale={locale}
+            onChange={(nextConfig) => {
+              setConfig(nextConfig)
+              setError('')
+            }}
+          />
+        ) : (
+          <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs font-semibold text-slate-500">
+            {t.toolBindingNoConfig}
+          </div>
+        )}
+        {error ? <p className="mt-3 text-xs font-semibold text-red-600">{error}</p> : null}
+        <div className="mt-4 flex justify-end gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={onClose}>
+            {t.cancel}
+          </Button>
+          <Button type="submit" size="sm">
+            {dialog.mode === 'edit' ? t.saveTool : t.addTool}
+          </Button>
+        </div>
+      </form>
+    </div>,
+    document.body,
+  )
+}
+
+function AiToolConfigFields({
+  fields,
+  config,
+  locale,
+  disabled,
+  onChange,
+}: {
+  fields: AiToolField[]
+  config: AiToolConfig
+  locale: Locale
+  disabled?: boolean
+  onChange: (config: AiToolConfig) => void
+}) {
+  function updateField(field: AiToolField, value: string | number | boolean) {
+    onChange({ ...config, [field.name]: value })
+  }
+
+  return (
+    <div className="grid gap-3">
+      {fields.map((field) => {
+        const value = config[field.name] ?? ''
+        const label = `${field.label[locale]}${field.required ? ' *' : ''}`
+
+        if (field.type === 'textarea') {
+          return (
+            <label key={field.name} className="block text-xs font-bold text-slate-600">
+              {label}
+              <Textarea
+                className="mt-1 min-h-20"
+                value={String(value)}
+                disabled={disabled}
+                placeholder={field.placeholder?.[locale]}
+                onChange={(event) => updateField(field, event.target.value)}
+              />
+              {field.helper ? <span className="mt-1 block text-[11px] font-semibold text-slate-400">{field.helper[locale]}</span> : null}
+            </label>
+          )
+        }
+
+        if (field.type === 'select') {
+          return (
+            <label key={field.name} className="block text-xs font-bold text-slate-600">
+              {label}
+              <select
+                className="mt-1 h-8 w-full rounded-md border border-input bg-card px-2.5 text-xs outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                value={String(value)}
+                disabled={disabled}
+                onChange={(event) => updateField(field, event.target.value)}
+              >
+                {(field.options || []).map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label[locale]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )
+        }
+
+        if (field.type === 'boolean') {
+          return (
+            <label key={field.name} className="flex min-h-8 items-center gap-2 text-xs font-bold text-slate-600">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-slate-300 text-[#d95a1b] focus:ring-[#FB7E3D]/30"
+                checked={Boolean(value)}
+                disabled={disabled}
+                onChange={(event) => updateField(field, event.target.checked)}
+              />
+              {label}
+            </label>
+          )
+        }
+
+        return (
+          <label key={field.name} className="block text-xs font-bold text-slate-600">
+            {label}
+            <Input
+              className="mt-1"
+              type={field.type === 'number' ? 'number' : 'text'}
+              value={String(value)}
+              disabled={disabled}
+              placeholder={field.placeholder?.[locale]}
+              onChange={(event) => updateField(field, field.type === 'number' && event.target.value !== '' ? Number(event.target.value) : event.target.value)}
+            />
+          </label>
+        )
+      })}
+    </div>
+  )
+}
+
+function isAiToolRequiredMissing(field: AiToolField, value: unknown) {
+  return Boolean(field.required && field.type !== 'boolean' && !String(value ?? '').trim())
 }
 
 function ZpmtTagInsertionDialog({
@@ -4525,7 +5803,7 @@ function ZpmtTagInsertionDialog({
   const variableType = dialog.payload.kind === 'variable' ? dialog.payload.variableType : null
   const recipeItem = dialog.payload.kind === 'recipe' ? dialog.payload.item : null
   const detailConfig = variableType ? getVariableDetailConfig(variableType, t) : null
-  const [name, setName] = useState(() => initialValues.name || createIdentifierSeed(recipeItem?.id || variableType || ''))
+  const [name, setName] = useState(() => initialValues.name || createIdentifierSeed(recipeItem?.variableName || recipeItem?.id || variableType || ''))
   const [detailValue, setDetailValue] = useState(() => initialValues.detailValue || detailConfig?.defaultValue || '')
   const [defaultValue, setDefaultValue] = useState(() => initialValues.defaultValue)
   const [recipeDefaultValues, setRecipeDefaultValues] = useState<string[]>(() => initialValues.recipeDefaultValues)
@@ -4711,7 +5989,71 @@ function estimateZpmtPromptEditorHeight(value: string) {
   return Math.max(ZPMT_PROMPT_EDITOR_MIN_HEIGHT, lineCount * 20 + 34)
 }
 
-function TestPanel({ t }: { t: WorkbenchCopy }) {
+function TestPanel({
+  t,
+  locale,
+  document,
+  activeFile,
+  supportsTools,
+}: {
+  t: WorkbenchCopy
+  locale: Locale
+  document: ZpmtDocument | null
+  activeFile: ProjectFileReference | null
+  supportsTools: boolean
+}) {
+  const variables = useMemo(() => (document ? collectZpmtTestVariables(document, t, locale) : []), [document, locale, t])
+  const variablesKey = variables.map((variable) => `${variable.key}:${variable.defaultValue}`).join('|')
+  const [variableValues, setVariableValues] = useState<Record<string, string>>({})
+  const [maxToolRounds, setMaxToolRounds] = useState(5)
+  const [runLoading, setRunLoading] = useState(false)
+  const [runResponse, setRunResponse] = useState<Record<string, unknown> | null>(null)
+  const canRun = Boolean(document && activeFile?.projectId && document.config.providerId && document.config.model)
+  const renderedSystem = document ? renderZpmtPromptForTest(document.system, variableValues) : ''
+  const renderedUser = document ? renderZpmtPromptForTest(document.user, variableValues) : ''
+
+  useEffect(() => {
+    setVariableValues((current) => {
+      const next: Record<string, string> = {}
+      for (const variable of variables) {
+        next[variable.key] = current[variable.key] ?? variable.defaultValue
+      }
+      return next
+    })
+  }, [variablesKey, variables])
+
+  async function runAgentTest() {
+    if (!document || !activeFile?.projectId || runLoading) return
+    setRunLoading(true)
+    setRunResponse(null)
+    const response = await fetchJson('/api/agents/test', {
+      method: 'POST',
+      body: {
+        document,
+        variables: variableValues,
+        maxToolRounds,
+        context: {
+          projectId: activeFile?.projectId || '',
+          path: activeFile?.path || '',
+        },
+      },
+    }).finally(() => setRunLoading(false))
+    setRunResponse((response && typeof response === 'object' ? response : { ok: false, message: t.agentRunFailed }) as Record<string, unknown>)
+  }
+
+  function updateVariableValue(variable: ZpmtTestVariable, value: string) {
+    setVariableValues((current) => ({ ...current, [variable.key]: value }))
+  }
+
+  function updateMaxToolRounds(value: string) {
+    const parsed = Math.round(Number(value))
+    if (!Number.isFinite(parsed)) {
+      setMaxToolRounds(0)
+      return
+    }
+    setMaxToolRounds(Math.min(20, Math.max(0, parsed)))
+  }
+
   return (
     <Tabs defaultValue="test" className="flex h-full min-h-0 flex-col">
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-slate-200">
@@ -4726,49 +6068,270 @@ function TestPanel({ t }: { t: WorkbenchCopy }) {
         </Button>
       </div>
       <TabsContent value="test" className="min-h-0 flex-1 overflow-auto p-3">
-        <section className="rounded-md border border-slate-200 bg-white">
-          <div className="flex h-9 items-center justify-between border-b border-slate-200 px-3">
-            <h3 className="text-xs font-black">{t.bottomTabs[0]}</h3>
-            <Button variant="outline" size="sm">
-              <Play className="h-3 w-3" /> {t.run}
-            </Button>
+        {!document ? (
+          <div className="rounded-md border border-dashed border-slate-200 bg-white px-3 py-6 text-center text-xs font-semibold text-slate-500">
+            {t.agentRunNoFile}
           </div>
-          <InputPanel />
-        </section>
-        <section className="mt-3 rounded-md border border-slate-200 bg-white p-3">
-          <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500">
-            <span className="rounded-full bg-emerald-50 px-2 py-1 font-semibold text-emerald-700">{t.success}</span>
-            <span>{t.tokens}</span>
-          </div>
-          <h2 className="text-sm font-black text-slate-900">{t.heroTitle}</h2>
-          <p className="mt-1.5 text-xs text-slate-600">{t.heroDesc}</p>
-          <h3 className="mt-3 text-xs font-black">{t.coreTitle}</h3>
-          <ul className="mt-1.5 space-y-1 text-xs text-slate-700">
-            {t.coreItems.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-          <Button className="mt-3" size="sm">{t.cta}</Button>
-        </section>
+        ) : (
+          <section className="rounded-md border border-slate-200 bg-white">
+            <div className="flex h-9 items-center justify-between border-b border-slate-200 px-3">
+              <h3 className="text-xs font-black">{t.testVariables}</h3>
+              <Button variant="outline" size="sm" onClick={() => void runAgentTest()} disabled={!canRun || runLoading}>
+                <Play className="h-3 w-3" /> {runLoading ? t.runningAgent : t.runAgent}
+              </Button>
+            </div>
+            <div className="space-y-3 p-3">
+              {!canRun ? <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700">{t.agentRunNoProvider}</div> : null}
+              {variables.length ? (
+                <div className="space-y-2">
+                  {variables.map((variable) => (
+                    <label key={variable.key} className="block rounded-md border border-slate-200 bg-slate-50 p-2 text-xs font-bold text-slate-600">
+                      <span className="flex items-center justify-between gap-2">
+                        <span className="min-w-0 truncate">{variable.label}</span>
+                        <Badge variant="outline" className="shrink-0">{variable.typeLabel}</Badge>
+                      </span>
+                      {variable.source ? <span className="mt-1 block truncate text-[11px] font-semibold text-slate-400">{variable.source}</span> : null}
+                      <Input
+                        className="mt-2 bg-white"
+                        value={variableValues[variable.key] ?? variable.defaultValue}
+                        placeholder={t.testValue}
+                        onChange={(event) => updateVariableValue(variable, event.target.value)}
+                      />
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-md border border-dashed border-slate-200 bg-white px-3 py-6 text-center text-xs font-semibold text-slate-500">
+                  {t.testVariableEmpty}
+                </div>
+              )}
+              <div className="rounded-md border border-slate-200 bg-white p-3">
+                <div className="mb-2 text-[11px] font-black uppercase text-slate-500">{t.runSettings}</div>
+                <label className="block text-xs font-bold text-slate-600">
+                  {t.maxToolRounds}
+                  <Input
+                    className="mt-1"
+                    type="number"
+                    min={0}
+                    max={20}
+                    value={String(maxToolRounds)}
+                    onChange={(event) => updateMaxToolRounds(event.target.value)}
+                  />
+                  <span className="mt-1 block text-[11px] font-semibold text-slate-400">{t.maxToolRoundsHint}</span>
+                </label>
+              </div>
+            </div>
+          </section>
+        )}
+        {runResponse ? <AgentTestResultCard t={t} response={runResponse} /> : null}
       </TabsContent>
       <TabsContent value="result" className="min-h-0 flex-1 overflow-auto p-3">
-        <div className="rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-600">{t.tokens}</div>
+        {runResponse ? (
+          <AgentTestResultCard t={t} response={runResponse} />
+        ) : (
+          <div className="rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-600">{t.noAgentOutput}</div>
+        )}
       </TabsContent>
       <TabsContent value="cases" className="min-h-0 flex-1 overflow-auto p-3">
-        <div className="rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-600">{t.contextText}</div>
+        <div className="space-y-3">
+          <div className="rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-600">
+            <p className="mb-2 font-black text-slate-900">{t.renderedPrompt}</p>
+            <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-[11px] leading-5">{[renderedSystem, renderedUser].filter(Boolean).join('\n\n')}</pre>
+          </div>
+        </div>
       </TabsContent>
       <TabsContent value="perf" className="min-h-0 flex-1 overflow-auto p-3">
-        <div className="rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-600">{t.success}</div>
+        <div className="rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-600">
+          {runResponse?.durationMs ? `${t.duration}: ${runResponse.durationMs}ms` : t.noAgentOutput}
+        </div>
       </TabsContent>
     </Tabs>
   )
 }
 
-function InspectorToolsPanel({ t, locale }: { t: WorkbenchCopy; locale: Locale }) {
+function AgentTestResultCard({ t, response }: { t: WorkbenchCopy; response: Record<string, unknown> }) {
+  const ok = response.ok === true
+  const output = typeof response.output === 'string' ? response.output : ''
+  const message = typeof response.message === 'string' ? response.message : ''
+
+  return (
+    <div className={cn('mt-3 rounded-md border bg-white p-3 text-xs', ok ? 'border-emerald-200' : 'border-red-200')}>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className={cn('font-black', ok ? 'text-emerald-700' : 'text-red-700')}>
+          {ok ? t.agentRunSuccess : t.agentRunFailed}
+        </span>
+        {response.durationMs ? <span className="text-slate-400">{t.duration}: {String(response.durationMs)}ms</span> : null}
+      </div>
+      <div className="text-[11px] font-black uppercase text-slate-500">{t.assistantOutput}</div>
+      <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-[11px] leading-5 text-slate-700">
+        {output || message || JSON.stringify(response, null, 2)}
+      </pre>
+    </div>
+  )
+}
+
+function collectZpmtTestVariables(document: ZpmtDocument, t: WorkbenchCopy, locale: Locale): ZpmtTestVariable[] {
+  const variables = new Map<string, ZpmtTestVariable>()
+  for (const tokenRange of [...findPromptTokenRanges(document.system), ...findPromptTokenRanges(document.user)]) {
+    const parsed = parsePromptToken(tokenRange.token)
+    if (!parsed) continue
+    const params = getPromptTokenParamMap(parsed.params)
+    const key = getZpmtTestVariableKey(tokenRange.token)
+    if (!key || variables.has(key)) continue
+    const isRecipe = parsed.tokenType === 'recipe'
+    const typeLabel = parsed.variableType
+      ? t.variableTypes[parsed.variableType]
+      : isRecipe
+        ? t.recipeVariableLabel
+        : parsed.tokenType
+    const source = isRecipe ? resolveRecipeVariableSourceLabel(params.source || '', DEFAULT_RECIPE_VARIABLE_CATEGORIES, document.metadata, locale) || params.source : ''
+    variables.set(key, {
+      key,
+      token: tokenRange.token,
+      name: parsed.name,
+      label: `${typeLabel}:${parsed.name}`,
+      typeLabel,
+      defaultValue: params.default || '',
+      source,
+    })
+  }
+  return [...variables.values()]
+}
+
+function renderZpmtPromptForTest(text: string, values: Record<string, string>) {
+  return text.replace(/\{\{[^{}\n]+\}\}/g, (token) => {
+    const key = getZpmtTestVariableKey(token)
+    if (!key) return token
+    const parsed = parsePromptToken(token)
+    const params = parsed ? getPromptTokenParamMap(parsed.params) : {}
+    return values[key] ?? params.default ?? ''
+  })
+}
+
+function getZpmtTestVariableKey(token: string) {
+  const parsed = parsePromptToken(token)
+  if (!parsed) return ''
+  const params = getPromptTokenParamMap(parsed.params)
+  return `${parsed.tokenType}:${parsed.name}:${params.source || ''}`
+}
+
+function ToolRunResultCard({ t, response }: { t: WorkbenchCopy; response: Record<string, unknown> }) {
+  const ok = response.ok === true
+  const artifact = getToolDownloadArtifact(response)
+  return (
+    <section className="mt-3 rounded-md border border-slate-200 bg-white p-3">
+      <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500">
+        <span className={cn('rounded-full px-2 py-1 font-semibold', ok ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700')}>
+          {ok ? t.toolRunSuccess : t.toolRunFailed}
+        </span>
+        {response.durationMs ? <span>{t.duration}: {String(response.durationMs)}ms</span> : null}
+      </div>
+      {artifact ? <ToolDownloadArtifactCard t={t} artifact={artifact} /> : null}
+      <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-950 p-3 text-[11px] leading-relaxed text-slate-100">
+        {formatToolRunResponse(response)}
+      </pre>
+    </section>
+  )
+}
+
+type ToolDownloadArtifact = {
+  kind: 'download'
+  filename: string
+  mimeType: string
+  encoding: 'base64'
+  contentBase64: string
+  size: number
+}
+
+function ToolDownloadArtifactCard({ t, artifact }: { t: WorkbenchCopy; artifact: ToolDownloadArtifact }) {
+  const [downloadUrl, setDownloadUrl] = useState('')
+
+  useEffect(() => {
+    const blob = base64ToBlob(artifact.contentBase64, artifact.mimeType)
+    const nextUrl = URL.createObjectURL(blob)
+    setDownloadUrl(nextUrl)
+    return () => URL.revokeObjectURL(nextUrl)
+  }, [artifact.contentBase64, artifact.mimeType])
+
+  return (
+    <div className="mb-3 rounded-md border border-[#ffd8c4] bg-[#fff8f4] p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-xs font-black text-slate-900">{t.generatedFile}: {artifact.filename}</p>
+          <p className="mt-1 text-[11px] font-semibold text-slate-500">{artifact.mimeType} · {formatBytes(artifact.size)}</p>
+        </div>
+        <Button asChild size="sm" disabled={!downloadUrl}>
+          <a href={downloadUrl || undefined} download={artifact.filename}>
+            <Download className="h-3 w-3" /> {t.downloadFile}
+          </a>
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function getToolDownloadArtifact(response: Record<string, unknown>): ToolDownloadArtifact | null {
+  const result = isRecord(response.result) ? response.result : null
+  const artifact = result && isRecord(result.artifact) ? result.artifact : null
+  if (!artifact) return null
+  if (artifact.kind !== 'download' || artifact.encoding !== 'base64') return null
+  const filename = typeof artifact.filename === 'string' ? artifact.filename : ''
+  const mimeType = typeof artifact.mimeType === 'string' ? artifact.mimeType : ''
+  const contentBase64 = typeof artifact.contentBase64 === 'string' ? artifact.contentBase64 : ''
+  const size = typeof artifact.size === 'number' && Number.isFinite(artifact.size) ? artifact.size : 0
+  if (!filename || !mimeType) return null
+  return { kind: 'download', filename, mimeType, encoding: 'base64', contentBase64, size }
+}
+
+function formatToolRunResponse(response: Record<string, unknown>) {
+  const artifact = getToolDownloadArtifact(response)
+  if (!artifact || !isRecord(response.result)) return JSON.stringify(response.result ?? response, null, 2)
+
+  return JSON.stringify(
+    {
+      ...response,
+      result: {
+        ...response.result,
+        artifact: {
+          ...artifact,
+          contentBase64: `[base64 omitted, ${formatBytes(artifact.size)}]`,
+        },
+      },
+    },
+    null,
+    2,
+  )
+}
+
+function base64ToBlob(contentBase64: string, mimeType: string) {
+  const binary = window.atob(contentBase64)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+  return new Blob([bytes], { type: mimeType })
+}
+
+function formatBytes(size: number) {
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
+function InspectorToolsPanel({
+  t,
+  locale,
+  disabled,
+}: {
+  t: WorkbenchCopy
+  locale: Locale
+  disabled?: boolean
+}) {
   return (
     <InstructionTagCategoriesPanel
       categories={toolInstructionCategories}
       dragKind="tool"
+      disabled={disabled}
       emptyText={t.toolInstructionEmpty}
       locale={locale}
       searchPlaceholder={t.toolInstructionSearch}
@@ -4780,13 +6343,15 @@ function InspectorToolsPanel({ t, locale }: { t: WorkbenchCopy; locale: Locale }
 function InstructionTagCategoriesPanel({
   categories,
   dragKind,
+  disabled = false,
   emptyText,
   locale,
   searchPlaceholder,
   t,
 }: {
-  categories: RecipeVariableCategory[]
+  categories: InstructionCatalogCategory[]
   dragKind: InstructionCategoryKind
+  disabled?: boolean
   emptyText: string
   locale: Locale
   searchPlaceholder: string
@@ -4798,7 +6363,7 @@ function InstructionTagCategoriesPanel({
   )
   const normalizedSearch = search.trim().toLocaleLowerCase()
   const searchActive = normalizedSearch.length > 0
-  const filteredCategories = useMemo<RecipeVariableCategory[]>(() => {
+  const filteredCategories = useMemo<InstructionCatalogCategory[]>(() => {
     if (!searchActive) return categories
 
     return categories
@@ -4819,7 +6384,7 @@ function InstructionTagCategoriesPanel({
 
         return matchingVariables.length ? { ...category, variables: matchingVariables } : null
       })
-      .filter((category): category is RecipeVariableCategory => category !== null)
+      .filter((category): category is InstructionCatalogCategory => category !== null)
   }, [categories, normalizedSearch, searchActive])
 
   return (
@@ -4869,7 +6434,7 @@ function InstructionTagCategoriesPanel({
                       const variableName = variable.name[locale]
                       const candidateText = variable.candidates[locale].join(' / ')
                       const modeText = variable.multiple ? t.recipeVariableModes.multi : t.recipeVariableModes.single
-                      const tooltipText = [candidateText, modeText].filter(Boolean).join('\n')
+                      const tooltipText = [disabled ? t.unsupportedByModel : '', candidateText, modeText].filter(Boolean).join('\n')
 
                       return (
                         <TooltipAnchor key={variable.id} tooltip={tooltipText || variableName} className="inline-flex">
@@ -4878,9 +6443,10 @@ function InstructionTagCategoriesPanel({
                             payload={{
                               kind: dragKind,
                               categoryId: category.id,
-                              item: variable,
-                            }}
+                              item: variable as RecipeVariableItem & InstructionCatalogItem,
+                            } as InstructionDragPayload}
                             title={variableName}
+                            disabled={disabled}
                             className={cn(
                               'prompt-token-chip h-7 max-w-full cursor-grab outline-none transition active:cursor-grabbing focus:ring-2 focus:ring-[#FB7E3D]/20',
                               dragKind === 'recipe'
@@ -4908,10 +6474,10 @@ function InstructionTagCategoriesPanel({
   )
 }
 
-function RecipeVariablesPanel({ t, locale }: { t: WorkbenchCopy; locale: Locale }) {
+function RecipeVariablesPanel({ t, locale, categories }: { t: WorkbenchCopy; locale: Locale; categories: RecipeVariableCategory[] }) {
   return (
     <InstructionTagCategoriesPanel
-      categories={recipeVariableCategories}
+      categories={categories}
       dragKind="recipe"
       emptyText={t.recipeVariableEmpty}
       locale={locale}
@@ -4921,27 +6487,39 @@ function RecipeVariablesPanel({ t, locale }: { t: WorkbenchCopy; locale: Locale 
   )
 }
 
-function InspectorPanel({ t, locale }: { t: WorkbenchCopy; locale: Locale }) {
+function InspectorPanel({
+  t,
+  locale,
+  recipeVariableCategories,
+  modelCapabilities,
+}: {
+  t: WorkbenchCopy
+  locale: Locale
+  recipeVariableCategories: RecipeVariableCategory[]
+  modelCapabilities: ZpmtModelCapabilityGate
+}) {
+  const { supportsTools } = modelCapabilities
+
   return (
     <Tabs defaultValue="variables" className="flex h-full min-h-0 flex-col">
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-slate-200">
-        <TabsList className="min-w-0 flex-1 overflow-hidden">
+        <TabsList className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
           <TabsTrigger value="variables" className="px-2">{t.inspectorTabs[0]}</TabsTrigger>
           <TabsTrigger value="recipe" className="px-2">{t.inspectorTabs[1]}</TabsTrigger>
-          <TabsTrigger value="tools" className="px-2">{t.inspectorTabs[2]}</TabsTrigger>
+          <TabsTrigger value="tools" className={cn('px-2', !supportsTools && 'text-slate-400')}>{t.inspectorTabs[2]}</TabsTrigger>
         </TabsList>
         <Button variant="ghost" size="icon" className="mr-1 shrink-0">
           <MoreHorizontal className="h-3.5 w-3.5" />
         </Button>
       </div>
       <TabsContent value="variables" className="min-h-0 flex-1 overflow-auto">
-        <VariableTagsPanel t={t} />
+        <VariableTagsPanel t={t} modelCapabilities={modelCapabilities} />
       </TabsContent>
       <TabsContent value="recipe" className="min-h-0 flex-1 overflow-auto p-3">
-        <RecipeVariablesPanel t={t} locale={locale} />
+        <RecipeVariablesPanel t={t} locale={locale} categories={recipeVariableCategories} />
       </TabsContent>
       <TabsContent value="tools" className="min-h-0 flex-1 overflow-auto p-3">
-        <InspectorToolsPanel t={t} locale={locale} />
+        <InspectorToolsPanel t={t} locale={locale} disabled={!supportsTools} />
       </TabsContent>
     </Tabs>
   )
@@ -4978,7 +6556,6 @@ function TopCenterAlert({
 }
 
 export function WorkbenchShell() {
-  const router = useRouter()
   const [theme, setTheme] = useState<ThemeMode>('light')
   const [locale, setLocale] = useState<Locale>('zh')
   const [announcements, setAnnouncements] = useState<Announcement[]>([])
@@ -4999,7 +6576,8 @@ export function WorkbenchShell() {
   const [activeProjectId, setActiveProjectId] = useState('')
   const [projectsLoading, setProjectsLoading] = useState(false)
   const [aiProviders, setAiProviders] = useState<AiProviderSummary[]>([])
-  const [aiProvidersLoading, setAiProvidersLoading] = useState(false)
+  const [recipeVariableCategories, setRecipeVariableCategories] = useState<RecipeVariableCategory[]>([])
+  const [configDiagnostics, setConfigDiagnostics] = useState<ProjectConfigDiagnostic[]>([])
   const [sourceControlStatus, setSourceControlStatus] = useState<SourceControlStatus | null>(null)
   const [sourceControlLoading, setSourceControlLoading] = useState(false)
   const [sourceControlDiff, setSourceControlDiff] = useState<SourceControlDiffView | null>(null)
@@ -5014,6 +6592,7 @@ export function WorkbenchShell() {
   const [projectFileName, setProjectFileName] = useState('')
   const [repositoryUrl, setRepositoryUrl] = useState('')
   const [activeInstructionDragPayload, setActiveInstructionDragPayload] = useState<InstructionDragPayload | null>(null)
+  const [activeProviderFileDragPayload, setActiveProviderFileDragPayload] = useState<ProviderFileDragPayload | null>(null)
   const [workbenchRef, workbenchHeight] = useMeasuredHeight<HTMLElement>()
   const sourceControlBusyRef = useRef(false)
   const dndSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
@@ -5031,6 +6610,11 @@ export function WorkbenchShell() {
   const activeProjectFile = activeEditorTab
     ? { projectId: activeEditorTab.projectId, path: activeEditorTab.path, name: activeEditorTab.name }
     : null
+  const activeZpmtDocument = activeEditorTab && isZpmtFilePath(activeEditorTab.path) ? parseZpmtContent(activeEditorTab.content, aiProviders) : null
+  const activeZpmtModelContext = activeZpmtDocument
+    ? getSelectedAiModelContext(aiProviders, activeZpmtDocument.config.providerId, activeZpmtDocument.config.model, activeZpmtDocument.config.providerFile)
+    : null
+  const activeZpmtModelCapabilities = useMemo(() => getZpmtModelCapabilityGate(activeZpmtModelContext?.model), [activeZpmtModelContext?.model])
   const visibleAnnouncements = announcements.filter((announcement) => !dismissedAnnouncements.has(dismissAnnouncementKey(announcement)))
   const feedbackUrl = useMemo(() => buildFeedbackUrl(), [])
   const gridMaxRows = useMemo(() => calculateGridRows(workbenchHeight), [workbenchHeight])
@@ -5042,6 +6626,7 @@ export function WorkbenchShell() {
 
   function handleInstructionDragStart(event: DragStartEvent) {
     setActiveInstructionDragPayload(readDndInstructionPayload(event.active.data.current))
+    setActiveProviderFileDragPayload(readDndProviderFilePayload(event.active.data.current))
   }
 
   function clearZpmtDragCarets() {
@@ -5060,10 +6645,17 @@ export function WorkbenchShell() {
 
   function handleInstructionDragEnd(event: DragEndEvent) {
     const payload = readDndInstructionPayload(event.active.data.current)
+    const providerPayload = readDndProviderFilePayload(event.active.data.current)
     const dropTarget = readZpmtDroppableData(event.over?.data.current)
     const point = getDragClientPoint(event)
     setActiveInstructionDragPayload(null)
+    setActiveProviderFileDragPayload(null)
     clearZpmtDragCarets()
+    if (providerPayload && point) {
+      dropTarget?.onDropProviderFile?.(providerPayload, point)
+      setActiveWindow('editor')
+      return
+    }
     if (!payload || !point) return
     if (payload.kind !== 'tool') {
       const handled = dispatchZpmtInstructionPointEvent(ZPMT_INSTRUCTION_DROP_EVENT, payload, point)
@@ -5183,7 +6775,6 @@ export function WorkbenchShell() {
   useEffect(() => {
     if (!sessionUser) return
     void loadProjects()
-    void loadAiProviders()
   }, [sessionUser?.id])
 
   useEffect(() => {
@@ -5192,6 +6783,10 @@ export function WorkbenchShell() {
       return
     }
     void refreshSourceControlStatus(activeProject.id)
+  }, [activeProject?.id])
+
+  useEffect(() => {
+    void loadProjectConfigFiles(activeProject?.id || '')
   }, [activeProject?.id])
 
   useEffect(() => {
@@ -5363,25 +6958,39 @@ export function WorkbenchShell() {
     const nextId = incoming.find((project: ProjectSummary) => project.id === preferredId)?.id || incoming[0]?.id || ''
     setActiveProjectId(nextId)
     if (nextId) {
+      await loadProjectConfigFiles(nextId)
       await refreshSourceControlStatus(nextId)
     } else {
+      await loadProjectConfigFiles('')
       setSourceControlStatus(null)
     }
   }
 
-  async function loadAiProviders() {
-    setAiProvidersLoading(true)
-    const response = await fetch('/api/ai-providers')
+  async function loadProjectConfigFiles(projectId = activeProject?.id) {
+    if (!projectId) {
+      setAiProviders([])
+      setRecipeVariableCategories([])
+      setConfigDiagnostics([])
+      return
+    }
+
+    const query = new URLSearchParams({ projectId })
+    const response = await fetch(`/api/projects/config-files?${query.toString()}`)
       .then((result) => result.json().catch(() => null))
       .catch(() => null)
-      .finally(() => setAiProvidersLoading(false))
 
     if (!response?.ok) {
-      showAppAlert(response?.message || 'AI 供应商加载失败')
+      setAiProviders([])
+      setRecipeVariableCategories([])
+      setConfigDiagnostics([])
+      showAppAlert(response?.message || '项目配置文件读取失败')
       return
     }
 
     setAiProviders(Array.isArray(response.providers) ? response.providers : [])
+    const incoming = Array.isArray(response.recipeCategories) ? response.recipeCategories : []
+    setRecipeVariableCategories(incoming)
+    setConfigDiagnostics(Array.isArray(response.diagnostics) ? response.diagnostics : [])
   }
 
   function selectProject(projectId: string) {
@@ -5566,6 +7175,25 @@ export function WorkbenchShell() {
     dispatchSourceControlRefresh()
   }
 
+  function closeEditorTab(tabId: string) {
+    const targetTab = editorTabs.find((tab) => tab.id === tabId)
+    if (!targetTab) return
+    if (targetTab.dirty && !window.confirm(t.closeUnsavedTabConfirm.replace('{name}', targetTab.name))) return
+
+    setEditorTabs((current) => {
+      const closingIndex = current.findIndex((tab) => tab.id === tabId)
+      if (closingIndex < 0) return current
+
+      const next = current.filter((tab) => tab.id !== tabId)
+      if (activeEditorTabId === tabId || !next.some((tab) => tab.id === activeEditorTabId)) {
+        const nextActiveTab = next[closingIndex] || next[closingIndex - 1] || next[0]
+        setActiveEditorTabId(nextActiveTab?.id || '')
+      }
+
+      return next
+    })
+  }
+
   async function saveActiveEditorFile() {
     const currentTab = activeEditorTab
     if (!currentTab || currentTab.saving) return
@@ -5617,18 +7245,16 @@ export function WorkbenchShell() {
         ),
     )
     dispatchSourceControlRefresh()
+    if (isProjectConfigFilePath(currentTab.path)) {
+      await loadProjectConfigFiles(currentTab.projectId)
+    }
   }
 
-  function updateLayout(nextLayout: Array<Partial<GridLayoutItem> & { i: string }>) {
+  function commitRuntimeLayout(nextLayout: Array<Partial<GridLayoutItem> & { i: string }>) {
     setLayout((current) => {
       const next = sanitizeRuntimeLayout(nextLayout, minimized)
       return areLayoutsEqual(current, next) ? current : next
     })
-  }
-
-  function handleResizeStop(nextLayout: Array<Partial<GridLayoutItem> & { i: string }>) {
-    const next = sanitizeRuntimeLayout(nextLayout, minimized)
-    setLayout((current) => (areLayoutsEqual(current, next) ? current : next))
   }
 
   function minimizeWindow(id: WindowId) {
@@ -5680,66 +7306,55 @@ export function WorkbenchShell() {
     >
       <PortalBackground />
       <TopCenterAlert alert={appAlert} onDismiss={() => setAppAlert(null)} />
-      <header className="relative z-10 flex h-12 shrink-0 items-center border-b border-slate-200/80 bg-white shadow-[0_1px_20px_rgba(15,23,42,0.04)]">
-        <div className="flex w-[190px] items-center gap-2 px-4">
-          <div className="grid h-7 w-7 place-items-center">
-            <Image src="/zr-logo.png" alt="从词开始" width={24} height={24} />
-          </div>
-          <span className="text-[15px] font-black text-[#d95a1b]">从词开始</span>
-        </div>
-        <nav className="flex h-full flex-1 items-center">
-          <NavItem icon={LayoutDashboard} label={t.nav[0]} active={activeWindow === 'files' || activeWindow === 'editor' || activeWindow === 'inspector'} onClick={() => setActiveWindow('editor')} />
-          <NavItem
-            icon={Settings}
-            label={t.nav[1]}
-            onClick={() => {
-              router.push('/config')
-            }}
-          />
-        </nav>
-        <div className="flex items-center gap-2 px-4">
-          {layoutChanged ? (
-            <button
-              className="flex h-7 items-center gap-1 rounded-md border border-[#ffd8c4] bg-[#fff2ea] px-2 text-[11px] font-bold text-[#d95a1b] hover:bg-[#ffe5d7]"
-              aria-label={t.windows.resetLayout}
-              title={t.windows.resetLayout}
-              onClick={resetWorkbenchLayout}
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-              {t.windows.resetLayout}
+      <AppHeader
+        activeItem="workbench"
+        labels={{ workbench: t.nav[0], variables: t.nav[1], community: t.nav[2], config: t.nav[3] }}
+        onWorkbenchClick={() => setActiveWindow('editor')}
+        rightContent={
+          <>
+            {layoutChanged ? (
+              <button
+                className="flex h-7 items-center gap-1 rounded-md border border-[#ffd8c4] bg-[#fff2ea] px-2 text-[11px] font-bold text-[#d95a1b] hover:bg-[#ffe5d7]"
+                aria-label={t.windows.resetLayout}
+                title={t.windows.resetLayout}
+                onClick={resetWorkbenchLayout}
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                {t.windows.resetLayout}
+              </button>
+            ) : null}
+            <button className="grid h-7 w-7 place-items-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-900" aria-label={t.settings} title={t.settings}>
+              <Settings className="h-3.5 w-3.5" />
             </button>
-          ) : null}
-          <button className="grid h-7 w-7 place-items-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-900" aria-label={t.settings} title={t.settings}>
-            <Settings className="h-3.5 w-3.5" />
-          </button>
-          <button
-            className="grid h-7 w-7 place-items-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-900"
-            aria-label={t.feedback}
-            title={t.feedback}
-            onClick={() => setFeedbackOpen(true)}
-          >
-            <MessageSquareWarning className="h-3.5 w-3.5" />
-          </button>
-          {sessionUser ? (
             <button
-              className="flex h-7 max-w-32 items-center gap-1 rounded-md bg-slate-100 px-2 text-[11px] font-bold text-slate-700 hover:bg-slate-200"
-              title={`${sessionUser.name} / ${t.logout}`}
-              onClick={logout}
+              className="grid h-7 w-7 place-items-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+              aria-label={t.feedback}
+              title={t.feedback}
+              onClick={() => setFeedbackOpen(true)}
             >
-              {sessionUser.avatar ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img className="h-4 w-4 rounded-full" src={sessionUser.avatar} alt="" />
-              ) : (
-                <UserRound className="h-3.5 w-3.5" />
-              )}
-              <span className="truncate">{sessionUser.name}</span>
-              <LogOut className="h-3 w-3 shrink-0" />
+              <MessageSquareWarning className="h-3.5 w-3.5" />
             </button>
-          ) : sessionChecked ? null : (
-            <span className="h-7 w-16 rounded-md bg-slate-100/70" aria-hidden="true" />
-          )}
-        </div>
-      </header>
+            {sessionUser ? (
+              <button
+                className="flex h-7 max-w-32 items-center gap-1 rounded-md bg-slate-100 px-2 text-[11px] font-bold text-slate-700 hover:bg-slate-200"
+                title={`${sessionUser.name} / ${t.logout}`}
+                onClick={logout}
+              >
+                {sessionUser.avatar ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img className="h-4 w-4 rounded-full" src={sessionUser.avatar} alt="" />
+                ) : (
+                  <UserRound className="h-3.5 w-3.5" />
+                )}
+                <span className="truncate">{sessionUser.name}</span>
+                <LogOut className="h-3 w-3 shrink-0" />
+              </button>
+            ) : sessionChecked ? null : (
+              <span className="h-7 w-16 rounded-md bg-slate-100/70" aria-hidden="true" />
+            )}
+          </>
+        }
+      />
 
       {visibleAnnouncements.length ? (
         <section className="relative z-20 shrink-0 border-b border-slate-200 bg-white px-3 py-2">
@@ -5767,6 +7382,7 @@ export function WorkbenchShell() {
         onDragEnd={handleInstructionDragEnd}
         onDragCancel={() => {
           setActiveInstructionDragPayload(null)
+          setActiveProviderFileDragPayload(null)
           clearZpmtDragCarets()
         }}
       >
@@ -5791,8 +7407,8 @@ export function WorkbenchShell() {
           resizeHandles={RESIZE_HANDLES}
           draggableHandle=".workbench-window__title"
           draggableCancel=".workbench-window__control"
-          onLayoutChange={(nextLayout) => updateLayout(nextLayout as Array<Partial<GridLayoutItem> & { i: string }>)}
-          onResizeStop={(nextLayout) => handleResizeStop(nextLayout as Array<Partial<GridLayoutItem> & { i: string }>)}
+          onDragStop={(nextLayout) => commitRuntimeLayout(nextLayout as Array<Partial<GridLayoutItem> & { i: string }>)}
+          onResizeStop={(nextLayout) => commitRuntimeLayout(nextLayout as Array<Partial<GridLayoutItem> & { i: string }>)}
         >
           <div
             key="files"
@@ -5821,6 +7437,7 @@ export function WorkbenchShell() {
                 projectsLoading={projectsLoading}
                 activeFile={activeProjectFile}
                 aiProviders={aiProviders}
+                configDiagnostics={configDiagnostics}
                 sourceControlStatus={sourceControlStatus}
                 sourceControlLoading={sourceControlLoading}
                 sourceControlBusyAction={sourceControlBusyAction}
@@ -5862,9 +7479,11 @@ export function WorkbenchShell() {
                 locale={locale}
                 monacoTheme={monacoTheme}
                 aiProviders={aiProviders}
+                recipeVariableCategories={recipeVariableCategories}
                 tabs={editorTabs}
                 activeTab={activeEditorTab}
                 onActivateTab={setActiveEditorTabId}
+                onCloseTab={closeEditorTab}
                 onChangeActiveContent={changeActiveEditorContent}
                 onSaveActive={saveActiveEditorFile}
               />
@@ -5888,7 +7507,13 @@ export function WorkbenchShell() {
               onMinimize={minimizeWindow}
               onRestore={restoreWindow}
             >
-              <TestPanel t={t} />
+              <TestPanel
+                t={t}
+                locale={locale}
+                document={activeZpmtDocument}
+                activeFile={activeProjectFile}
+                supportsTools={activeZpmtModelCapabilities.supportsTools}
+              />
             </WorkbenchWindow>
           </div>
           <div
@@ -5909,7 +7534,12 @@ export function WorkbenchShell() {
               onMinimize={minimizeWindow}
               onRestore={restoreWindow}
             >
-              <InspectorPanel t={t} locale={locale} />
+              <InspectorPanel
+                t={t}
+                locale={locale}
+                recipeVariableCategories={recipeVariableCategories}
+                modelCapabilities={activeZpmtModelCapabilities}
+              />
             </WorkbenchWindow>
           </div>
           </WorkbenchGridLayout>
@@ -5917,6 +7547,8 @@ export function WorkbenchShell() {
         <DragOverlay>
           {activeInstructionDragPayload ? (
             <InstructionDragOverlay payload={activeInstructionDragPayload} t={t} locale={locale} />
+          ) : activeProviderFileDragPayload ? (
+            <ProviderFileDragOverlay payload={activeProviderFileDragPayload} />
           ) : null}
         </DragOverlay>
       </DndContext>
@@ -6352,6 +7984,53 @@ function ensureZpmtFileName(value: string) {
   return /\.zpmt$/i.test(normalized) ? normalized : `${normalized.replace(/\.[a-z0-9]+$/i, '')}.zpmt`
 }
 
+function ensureZlexFileName(value: string) {
+  const normalized = value.trim()
+  if (!normalized) return 'lexicon.zlex'
+  return /\.zlex$/i.test(normalized) ? normalized : `${normalized.replace(/\.[a-z0-9]+$/i, '')}.zlex`
+}
+
+function ensureZamfFileName(value: string) {
+  const normalized = value.trim()
+  if (!normalized) return 'provider.zamf'
+  return /\.zamf$/i.test(normalized) ? normalized : `${normalized.replace(/\.[a-z0-9]+$/i, '')}.zamf`
+}
+
+function createZlexTemplate(fileName: string) {
+  const title = fileName.replace(/\.zlex$/i, '') || '词汇变量'
+  return `${JSON.stringify(
+    {
+      schema: 'ccks.zlex',
+      version: 1,
+      categories: [
+        {
+          name: title,
+          description: '',
+          variables: [],
+        },
+      ],
+    },
+    null,
+    2,
+  )}\n`
+}
+
+function createZamfTemplate(fileName: string) {
+  const title = fileName.replace(/\.zamf$/i, '') || 'Custom Provider'
+  return `${JSON.stringify(
+    {
+      schema: 'ccks.zamf',
+      version: 1,
+      name: title,
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: '',
+      models: [],
+    },
+    null,
+    2,
+  )}\n`
+}
+
 function createZpmtContent(input: {
   promptType: PromptFileType
   outputType: ZpmtOutputType
@@ -6364,6 +8043,7 @@ function createZpmtContent(input: {
     {
       config: {
         outputType: input.outputType,
+        providerFile: input.provider?.filePath || '',
         providerId: input.provider?.id || '',
         providerName: input.provider?.name || '',
         model: input.model,
@@ -6372,6 +8052,7 @@ function createZpmtContent(input: {
       system: input.promptType === 'agent' ? '\n' : '',
       user: '',
       tools: [],
+      metadata: { schemaVersion: 2, recipeVariables: [] },
     },
     input.provider ? [input.provider] : [],
   )
@@ -6381,6 +8062,101 @@ function isZpmtFilePath(filePath: string) {
   return filePath.toLowerCase().endsWith('.zpmt')
 }
 
+function parseZlexContent(content: string): ProjectConfigParseResult<ZlexDocument> {
+  try {
+    const parsed = JSON.parse(content) as unknown
+    if (!isRecord(parsed)) return { ok: false, message: '文件不是 JSON 对象' }
+    const schema = readString(parsed.schema)
+    if (schema && schema !== 'ccks.zlex') return { ok: false, message: 'schema 不是 ccks.zlex' }
+    return {
+      ok: true,
+      document: {
+        schema: 'ccks.zlex',
+        version: Math.max(1, Math.round(readFiniteNumber(parsed.version, 1))),
+        categories: Array.isArray(parsed.categories) ? parsed.categories.map(normalizeZlexCategoryForEditor) : [],
+      },
+    }
+  } catch {
+    return { ok: false, message: 'JSON 解析失败' }
+  }
+}
+
+function serializeZlexDocument(document: ZlexDocument) {
+  return `${JSON.stringify(
+    {
+      schema: 'ccks.zlex',
+      version: document.version || 1,
+      categories: document.categories.map((category) => ({
+        name: category.name,
+        description: category.description,
+        ...(category.createdAt ? { createdAt: category.createdAt } : {}),
+        ...(category.updatedAt ? { updatedAt: category.updatedAt } : {}),
+        ...(category.changeLog.length ? { changeLog: category.changeLog } : {}),
+        variables: category.variables.map((variable) => ({
+          variableName: variable.variableName,
+          description: variable.description,
+          candidates: variable.candidates,
+          multiple: variable.multiple,
+          ...(variable.createdAt ? { createdAt: variable.createdAt } : {}),
+          ...(variable.updatedAt ? { updatedAt: variable.updatedAt } : {}),
+          ...(variable.changeLog.length ? { changeLog: variable.changeLog } : {}),
+        })),
+      })),
+    },
+    null,
+    2,
+  )}\n`
+}
+
+function parseZamfContent(content: string): ProjectConfigParseResult<ZamfDocument> {
+  try {
+    const parsed = JSON.parse(content) as unknown
+    if (!isRecord(parsed)) return { ok: false, message: '文件不是 JSON 对象' }
+    const schema = readString(parsed.schema)
+    if (schema && schema !== 'ccks.zamf') return { ok: false, message: 'schema 不是 ccks.zamf' }
+    const name = readString(parsed.name) || 'Custom Provider'
+    const baseUrl = readString(parsed.baseUrl)
+    const providerType = readString(parsed.providerType) || inferAiProviderTypeFromBaseUrl(baseUrl, 'custom')
+    return {
+      ok: true,
+      document: {
+        schema: 'ccks.zamf',
+        version: Math.max(1, Math.round(readFiniteNumber(parsed.version, 1))),
+        id: readString(parsed.id) || (providerType !== 'custom' ? providerType : createIdentifierSeed(name)?.toLowerCase() || providerType),
+        name,
+        providerType,
+        baseUrl,
+        apiKey: readString(parsed.apiKey),
+        models: Array.isArray(parsed.models) ? parsed.models.map(normalizeZamfModelForEditor) : [],
+      },
+    }
+  } catch {
+    return { ok: false, message: 'JSON 解析失败' }
+  }
+}
+
+function serializeZamfDocument(document: ZamfDocument) {
+  return `${JSON.stringify(
+    {
+      schema: 'ccks.zamf',
+      version: document.version || 1,
+      name: document.name,
+      baseUrl: document.baseUrl,
+      apiKey: document.apiKey,
+      models: document.models.map((model) => ({
+        id: model.id,
+        capabilities: model.capabilities,
+        toolCalling: model.toolCalling,
+        ...(model.parameterSchema === undefined || model.parameterSchema === '' ? {} : { parameterSchema: model.parameterSchema }),
+        ...(model.defaultResponseConfig === undefined || model.defaultResponseConfig === '' ? {} : { defaultResponseConfig: model.defaultResponseConfig }),
+        ...(model.presetRef ? { presetRef: model.presetRef } : {}),
+      })),
+    },
+    null,
+    2,
+  )}\n`
+}
+
 function parseZpmtContent(content: string, providers: AiProviderSummary[] = []): ZpmtDocument | null {
   try {
     const parsed = JSON.parse(content) as Partial<ZpmtDocument> | null
@@ -6388,10 +8164,11 @@ function parseZpmtContent(content: string, providers: AiProviderSummary[] = []):
     const config = parsed.config && typeof parsed.config === 'object' ? parsed.config : {}
     const rawOutputType = (config as { outputType?: unknown }).outputType
     const outputType = normalizeZpmtOutputType(rawOutputType)
+    const providerFile = readString((config as { providerFile?: unknown }).providerFile)
     const providerId = readString((config as { providerId?: unknown }).providerId)
     const providerName = readString((config as { providerName?: unknown }).providerName)
     const modelId = readString((config as { model?: unknown }).model)
-    const selectedModelContext = getSelectedAiModelContext(providers, providerId, modelId)
+    const selectedModelContext = getSelectedAiModelContext(providers, providerId, modelId, providerFile)
     const rawResponseConfig = (config as { responseConfig?: unknown }).responseConfig
     const legacyJsonResponseConfig =
       readString(rawOutputType) === 'json'
@@ -6401,6 +8178,7 @@ function parseZpmtContent(content: string, providers: AiProviderSummary[] = []):
     return {
       config: {
         outputType,
+        providerFile,
         providerId,
         providerName,
         model: modelId,
@@ -6409,18 +8187,25 @@ function parseZpmtContent(content: string, providers: AiProviderSummary[] = []):
       system: typeof parsed.system === 'string' ? parsed.system : '',
       user: typeof parsed.user === 'string' ? parsed.user : '',
       tools: normalizeZpmtTools((parsed as { tools?: unknown }).tools),
+      metadata: normalizeRecipeVariableMetadata((parsed as { metadata?: unknown }).metadata),
     }
   } catch {
     return null
   }
 }
 
-function serializeZpmtDocument(document: ZpmtDocument, providers: AiProviderSummary[] = []) {
-  const selectedModelContext = getSelectedAiModelContext(providers, document.config.providerId, document.config.model)
+function serializeZpmtDocument(
+  document: ZpmtDocument,
+  providers: AiProviderSummary[] = [],
+  categories: RecipeVariableCategory[] = DEFAULT_RECIPE_VARIABLE_CATEGORIES,
+) {
+  const selectedModelContext = getSelectedAiModelContext(providers, document.config.providerId, document.config.model, document.config.providerFile)
+  const metadata = buildZpmtRecipeVariableMetadata(document, categories)
   return `${JSON.stringify(
     {
       config: {
         outputType: normalizeZpmtOutputType(document.config.outputType),
+        providerFile: document.config.providerFile,
         providerId: document.config.providerId,
         providerName: document.config.providerName,
         model: document.config.model,
@@ -6436,15 +8221,60 @@ function serializeZpmtDocument(document: ZpmtDocument, providers: AiProviderSumm
       user: document.user,
       tools: document.tools.map((tool) => ({
         id: tool.id,
+        toolId: tool.toolId || tool.id,
         categoryId: tool.categoryId,
         name: tool.name,
+        description: tool.description,
         candidates: tool.candidates,
         multiple: tool.multiple,
+        config: tool.config,
+        schemaVersion: tool.schemaVersion || AI_TOOL_SCHEMA_VERSION,
       })),
+      metadata,
     },
     null,
     2,
   )}\n`
+}
+
+function buildZpmtRecipeVariableMetadata(
+  document: ZpmtDocument,
+  categories: RecipeVariableCategory[] = DEFAULT_RECIPE_VARIABLE_CATEGORIES,
+): ZpmtRecipeVariableMetadata {
+  const seen = new Set<string>()
+  const recipeVariables: RecipeVariableSnapshot[] = []
+
+  for (const tokenRange of [...findPromptTokenRanges(document.system), ...findPromptTokenRanges(document.user)]) {
+    const parsed = parsePromptToken(tokenRange.token)
+    if (!parsed || parsed.tokenType !== 'recipe') continue
+    const params = getPromptTokenParamMap(parsed.params)
+    const sourceId = params.source || ''
+    if (!sourceId) continue
+    const key = `${parsed.name}:${sourceId}`
+    if (seen.has(key)) continue
+    seen.add(key)
+
+    const current = findRecipeVariableBySourceId(categories, sourceId)
+    if (current) {
+      recipeVariables.push(
+        createRecipeVariableSnapshot({
+          tokenName: parsed.name,
+          sourceId,
+          category: current.category,
+          variable: current.variable,
+        }),
+      )
+      continue
+    }
+
+    const existing = findRecipeVariableSnapshot(document.metadata, parsed.name, sourceId)
+    if (existing) recipeVariables.push(existing)
+  }
+
+  return {
+    schemaVersion: 2,
+    recipeVariables,
+  }
 }
 
 function normalizeZpmtOutputType(value: unknown): ZpmtOutputType {
@@ -6474,7 +8304,7 @@ function createPromptEntryDialog(folder: TreeNode, providers: AiProviderSummary[
     name: '',
     promptType: 'simple',
     outputType,
-    providerId: selection.providerId,
+    providerId: selection.providerRef,
     model: selection.model,
     responseConfig: defaultResponseConfig(outputType, selection.providerType, selection.model, selection.modelEntry),
   }
@@ -6485,7 +8315,9 @@ function selectDefaultAiModel(providers: AiProviderSummary[], outputType: ZpmtOu
     const model = findCompatibleModelForProvider(provider, outputType)
     if (model) {
       return {
+        providerFile: provider.filePath || '',
         providerId: provider.id,
+        providerRef: getAiProviderRef(provider),
         providerName: provider.name,
         providerType: provider.providerType,
         model: model.id,
@@ -6494,22 +8326,60 @@ function selectDefaultAiModel(providers: AiProviderSummary[], outputType: ZpmtOu
     }
   }
 
-  return { providerId: '', providerName: '', providerType: '', model: '', modelEntry: null }
+  return { providerFile: '', providerId: '', providerRef: '', providerName: '', providerType: '', model: '', modelEntry: null }
+}
+
+function getAiProviderRef(provider: AiProviderSummary) {
+  return provider.filePath || provider.id
+}
+
+function findAiProvider(providers: AiProviderSummary[], providerRef: string, providerFile = '') {
+  if (providerFile) return providers.find((item) => item.filePath === providerFile) || null
+  return providers.find((item) => item.filePath === providerRef || item.id === providerRef) || null
 }
 
 function listCompatibleModelsForProvider(providers: AiProviderSummary[], providerId: string, outputType: ZpmtOutputType) {
-  const provider = providers.find((item) => item.id === providerId)
+  const provider = findAiProvider(providers, providerId)
   return provider?.models.filter((model) => model.capabilities.includes(outputType)) || []
 }
 
-function findCompatibleModelForProvider(provider: AiProviderSummary | undefined, outputType: ZpmtOutputType) {
+function findCompatibleModelForProvider(provider: AiProviderSummary | null | undefined, outputType: ZpmtOutputType) {
   return provider?.models.find((item) => item.capabilities.includes(outputType)) || null
 }
 
-function getSelectedAiModelContext(providers: AiProviderSummary[], providerId: string, modelId: string) {
-  const provider = providers.find((item) => item.id === providerId) || null
+function getSelectedAiModelContext(providers: AiProviderSummary[], providerId: string, modelId: string, providerFile = '') {
+  const provider = findAiProvider(providers, providerId, providerFile)
   const model = provider?.models.find((item) => item.id === modelId) || null
   return provider && model ? { provider, model } : null
+}
+
+function getZpmtModelCapabilityGate(model: AiProviderModel | null | undefined): ZpmtModelCapabilityGate {
+  if (!model) return ALL_ZPMT_MODEL_CAPABILITIES
+  return {
+    supportsTools: model.toolCalling === 'supported',
+    supportsReferenceImage: aiModelSupportsReferenceImage(model),
+    supportsReferenceFile: aiModelSupportsReferenceFile(model),
+  }
+}
+
+function canUseInstructionPayload(payload: InstructionDragPayload, capabilities: ZpmtModelCapabilityGate) {
+  if (payload.kind === 'tool') return capabilities.supportsTools
+  if (payload.kind === 'variable' && payload.variableType === 'image') return capabilities.supportsReferenceImage
+  if (payload.kind === 'variable' && payload.variableType === 'file') return capabilities.supportsReferenceFile
+  return true
+}
+
+function isPromptTokenUnsupported(parsed: { variableType?: VariableType } | null, capabilities: ZpmtModelCapabilityGate) {
+  if (!parsed?.variableType) return false
+  return !canUseInstructionPayload({ kind: 'variable', variableType: parsed.variableType }, capabilities)
+}
+
+function getZpmtCapabilityRenderKey(capabilities: ZpmtModelCapabilityGate) {
+  return [
+    capabilities.supportsTools ? 'tools' : 'no-tools',
+    capabilities.supportsReferenceImage ? 'image' : 'no-image',
+    capabilities.supportsReferenceFile ? 'file' : 'no-file',
+  ].join(':')
 }
 
 function readNumberInput(value: string, fallback: number) {
@@ -6539,12 +8409,116 @@ function readLocalizedText(value: unknown, fallback: string): LocalizedText {
   }
 }
 
+function readPlainText(value: unknown, fallback: string) {
+  if (typeof value === 'string') return value.trim() || fallback
+  if (!isRecord(value)) return fallback
+  const zh = readString(value.zh)
+  const en = readString(value.en)
+  return zh || en || fallback
+}
+
+function readPlainCandidates(value: unknown) {
+  if (Array.isArray(value)) return value.map((item) => (typeof item === 'string' ? item : readString(item)))
+  if (typeof value === 'string') return splitLines(value)
+  if (!isRecord(value)) return []
+  const zh = Array.isArray(value.zh) ? value.zh.map((item) => (typeof item === 'string' ? item : readString(item))) : []
+  if (zh.length) return zh
+  return Array.isArray(value.en) ? value.en.map((item) => (typeof item === 'string' ? item : readString(item))) : []
+}
+
 function readLocalizedCandidates(value: unknown): Record<Locale, string[]> {
   if (!isRecord(value)) return { zh: [], en: [] }
   return {
     zh: readStringArray(value.zh),
     en: readStringArray(value.en),
   }
+}
+
+function normalizeZlexCategoryForEditor(value: unknown, index: number): ZlexCategory {
+  const source = isRecord(value) ? value : {}
+  const name = readPlainText(source.name, readString(source.id) || `分类 ${index + 1}`)
+  return {
+    name,
+    description: readPlainText(source.description, ''),
+    createdAt: readString(source.createdAt) || undefined,
+    updatedAt: readString(source.updatedAt) || undefined,
+    changeLog: normalizeRecipeChangeLog(source.changeLog),
+    variables: Array.isArray(source.variables) ? source.variables.map(normalizeZlexVariableForEditor) : [],
+  }
+}
+
+function normalizeZlexVariableForEditor(value: unknown, index: number): ZlexVariable {
+  const source = isRecord(value) ? value : {}
+  const id = readString(source.id) || `variable-${index + 1}`
+  const variableName = readString(source.variableName) || createIdentifierSeed(id) || `variable${index + 1}`
+  return {
+    variableName,
+    description: readPlainText(source.description, readPlainText(source.content, '')),
+    candidates: readPlainCandidates(source.candidates),
+    multiple: source.multiple === true,
+    createdAt: readString(source.createdAt) || undefined,
+    updatedAt: readString(source.updatedAt) || undefined,
+    changeLog: normalizeRecipeChangeLog(source.changeLog),
+  }
+}
+
+function normalizeZamfModelForEditor(value: unknown, index: number): ZamfModel {
+  const source = isRecord(value) ? value : {}
+  const rawCapabilities = Array.isArray(source.capabilities) ? source.capabilities : typeof source.capabilities === 'string' ? source.capabilities.split(',') : []
+  const capabilities = ZPMT_OUTPUT_TYPES.filter((type) => rawCapabilities.map(readString).includes(type))
+  return {
+    id: readString(source.id) || `model-${index + 1}`,
+    capabilities: capabilities.length ? capabilities : ['text'],
+    toolCalling: normalizeToolCallingOption(source.toolCalling),
+    parameterSchema: source.parameterSchema,
+    defaultResponseConfig: source.defaultResponseConfig,
+    presetRef: normalizeAiModelPresetRef(source.presetRef),
+  }
+}
+
+function normalizeToolCallingOption(value: unknown): AiProviderModel['toolCalling'] {
+  const normalized = readString(value).toLowerCase()
+  if (normalized === 'supported' || normalized === 'tools' || normalized === 'true') return 'supported'
+  if (normalized === 'unsupported' || normalized === 'no-tools' || normalized === 'false') return 'unsupported'
+  return 'unknown'
+}
+
+function normalizeRecipeChangeLog(value: unknown): RecipeVariableChangeLog[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item): RecipeVariableChangeLog[] => {
+    if (!isRecord(item)) return []
+    const version = readString(item.version)
+    const date = readString(item.date)
+    const note = readLocalizedText(item.note, '')
+    if (!version && !date && !note.zh && !note.en) return []
+    return [{ version, date, note }]
+  })
+}
+
+function createEmptyZlexCategory(id: string): ZlexCategory {
+  return {
+    name: '新分类',
+    description: '',
+    changeLog: [],
+    variables: [],
+  }
+}
+
+function createEmptyZlexVariable(id: string): ZlexVariable {
+  return {
+    variableName: createIdentifierSeed(id) || 'recipeVariable',
+    description: '',
+    candidates: [],
+    multiple: false,
+    changeLog: [],
+  }
+}
+
+function splitLines(value: string) {
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
 }
 
 function normalizeZpmtTools(value: unknown): ZpmtToolInstruction[] {
@@ -6555,12 +8529,31 @@ function normalizeZpmtTools(value: unknown): ZpmtToolInstruction[] {
       if (!isRecord(item)) return null
       const id = readString(item.id)
       if (!id) return null
+      const definition = getAiToolDefinition(id)
+      const config = coerceAiToolConfig(id, isRecord(item.config) ? item.config : {})
+      if (definition) {
+        return {
+          id: definition.id,
+          toolId: definition.id,
+          categoryId: definition.categoryId,
+          name: definition.name,
+          description: definition.description,
+          candidates: definition.candidates,
+          multiple: definition.multiple,
+          config,
+          schemaVersion: readFiniteNumber(item.schemaVersion, AI_TOOL_SCHEMA_VERSION),
+        }
+      }
       return {
         id,
+        toolId: readString(item.toolId) || id,
         categoryId: readString(item.categoryId),
         name: readLocalizedText(item.name, id),
+        description: readLocalizedText(item.description, ''),
         candidates: readLocalizedCandidates(item.candidates),
         multiple: item.multiple === true,
+        config,
+        schemaVersion: readFiniteNumber(item.schemaVersion, AI_TOOL_SCHEMA_VERSION),
       }
     })
     .filter((item): item is ZpmtToolInstruction => item !== null)
@@ -6601,7 +8594,7 @@ function createVariableToken(type: VariableType, name: string, detailValue: stri
 }
 
 function createRecipeToken(item: RecipeVariableItem, name: string, defaultValue: string | string[]) {
-  const parts = [`recipe:${name}`, formatEqualsTagParam('source', item.id), formatEqualsTagParam('multi', String(item.multiple))]
+  const parts = [`recipe:${name}`, formatEqualsTagParam('source', formatRecipeVariableSourceId(item)), formatEqualsTagParam('multi', String(item.multiple))]
   const defaultText = (Array.isArray(defaultValue) ? defaultValue : [defaultValue])
     .map((value) => value.trim())
     .filter(Boolean)
@@ -6646,14 +8639,39 @@ function extractZpmtTagNames(...texts: string[]) {
   return names
 }
 
-function createZpmtToolInstruction(payload: Extract<InstructionDragPayload, { kind: 'tool' }>): ZpmtToolInstruction {
+function createZpmtToolInstruction(payload: Extract<InstructionDragPayload, { kind: 'tool' }>, config?: AiToolConfig): ZpmtToolInstruction {
+  const definition = getAiToolDefinition(payload.item.id)
+  if (definition) {
+    return {
+      id: definition.id,
+      toolId: definition.id,
+      categoryId: definition.categoryId,
+      name: definition.name,
+      description: definition.description,
+      candidates: definition.candidates,
+      multiple: definition.multiple,
+      config: coerceAiToolConfig(definition.id, config || getAiToolFieldDefaults(definition.id)),
+      schemaVersion: AI_TOOL_SCHEMA_VERSION,
+    }
+  }
+
   return {
     ...payload.item,
     categoryId: payload.categoryId,
+    toolId: payload.item.id,
+    config: config || {},
+    schemaVersion: AI_TOOL_SCHEMA_VERSION,
   }
 }
 
-function createPendingZpmtTagEdit(sectionKey: ZpmtPromptSectionKey, start: number, end: number, token: string): PendingZpmtTagEdit | null {
+function createPendingZpmtTagEdit(
+  sectionKey: ZpmtPromptSectionKey,
+  start: number,
+  end: number,
+  token: string,
+  categories: RecipeVariableCategory[] = DEFAULT_RECIPE_VARIABLE_CATEGORIES,
+  metadata?: ZpmtRecipeVariableMetadata,
+): PendingZpmtTagEdit | null {
   const parsed = parsePromptToken(token)
   if (!parsed) return null
 
@@ -6672,10 +8690,11 @@ function createPendingZpmtTagEdit(sectionKey: ZpmtPromptSectionKey, start: numbe
   if (parsed.tokenType === 'recipe') {
     const params = getPromptTokenParamMap(parsed.params)
     const sourceId = params.source || ''
-    const item = findRecipeVariableItemById(sourceId) || createFallbackRecipeVariableItem(sourceId || parsed.name, params.multi === 'true')
+    const snapshot = findRecipeVariableSnapshot(metadata, parsed.name, sourceId)
+    const item = findRecipeVariableItemById(sourceId, categories) || createRecipeVariableItemFromSnapshot(snapshot) || createFallbackRecipeVariableItem(sourceId || parsed.name, params.multi === 'true')
     return {
       mode: 'edit',
-      payload: { kind: 'recipe', categoryId: findRecipeVariableCategoryId(sourceId) || 'recipe', item },
+      payload: { kind: 'recipe', categoryId: findRecipeVariableCategoryId(sourceId, categories) || snapshot?.categoryId || 'recipe', item },
       sectionKey,
       start,
       end,
@@ -6733,20 +8752,51 @@ function getZpmtTagDialogInitialValues(dialog: PendingZpmtTagDialog) {
   }
 }
 
-function findRecipeVariableCategoryId(itemId: string) {
-  return recipeVariableCategories.find((category) => category.variables.some((item) => item.id === itemId))?.id || ''
+function findRecipeVariableCategoryId(
+  sourceId: string,
+  categories: RecipeVariableCategory[] = DEFAULT_RECIPE_VARIABLE_CATEGORIES,
+) {
+  return findRecipeVariableBySourceId(categories, sourceId)?.category.id || ''
 }
 
-function findRecipeVariableItemById(itemId: string) {
-  return recipeVariableCategories.flatMap((category) => category.variables).find((item) => item.id === itemId) || null
+function findRecipeVariableItemById(
+  sourceId: string,
+  categories: RecipeVariableCategory[] = DEFAULT_RECIPE_VARIABLE_CATEGORIES,
+) {
+  return findRecipeVariableBySourceId(categories, sourceId)?.variable || null
 }
 
 function createFallbackRecipeVariableItem(id: string, multiple: boolean): RecipeVariableItem {
   return {
     id,
+    scope: 'system',
+    variableName: createIdentifierSeed(id) || id.replace(/[^a-zA-Z0-9_]/g, '_') || 'recipeVariable',
     name: { zh: id, en: id },
+    description: { zh: '', en: '' },
+    content: { zh: '', en: '' },
     candidates: { zh: [], en: [] },
+    defaultValues: [],
     multiple,
+    changeLog: [],
+  }
+}
+
+function createRecipeVariableItemFromSnapshot(snapshot: RecipeVariableSnapshot | null): RecipeVariableItem | null {
+  if (!snapshot) return null
+  return {
+    id: snapshot.id,
+    sourceId: snapshot.sourceId,
+    sourceFilePath: snapshot.sourceFilePath,
+    scope: snapshot.scope,
+    variableName: snapshot.variableName,
+    name: snapshot.name,
+    description: snapshot.description,
+    content: snapshot.content,
+    candidates: snapshot.candidates,
+    defaultValues: snapshot.defaultValues,
+    multiple: snapshot.multiple,
+    updatedAt: snapshot.updatedAt,
+    changeLog: snapshot.changeLog,
   }
 }
 
@@ -6775,38 +8825,60 @@ function findPromptTokenRanges(text: string) {
   }))
 }
 
-function decoratePromptTokensForMarkdown(markdown: string, t: WorkbenchCopy, locale: Locale) {
+function decoratePromptTokensForMarkdown(
+  markdown: string,
+  t: WorkbenchCopy,
+  locale: Locale,
+  categories: RecipeVariableCategory[] = DEFAULT_RECIPE_VARIABLE_CATEGORIES,
+  metadata?: ZpmtRecipeVariableMetadata,
+  modelCapabilities: ZpmtModelCapabilityGate = ALL_ZPMT_MODEL_CAPABILITIES,
+) {
   return markdown.replace(/\{\{[^{}\n]+\}\}/g, (token) => {
-    const label = resolvePromptTokenPresentation(token, t, locale).label
+    const label = resolvePromptTokenPresentation(token, t, locale, categories, metadata, modelCapabilities).label
     return `[${escapeMarkdownLinkLabel(label)}](ccks-token:${encodeURIComponent(token)})`
   })
 }
 
-function resolvePromptTokenPresentation(token: string, t: WorkbenchCopy, locale: Locale) {
+function resolvePromptTokenPresentation(
+  token: string,
+  t: WorkbenchCopy,
+  locale: Locale,
+  categories: RecipeVariableCategory[] = DEFAULT_RECIPE_VARIABLE_CATEGORIES,
+  metadata?: ZpmtRecipeVariableMetadata,
+  modelCapabilities: ZpmtModelCapabilityGate = ALL_ZPMT_MODEL_CAPABILITIES,
+) {
   const parsed = parsePromptToken(token)
   if (!parsed) {
     return {
       label: token,
       tooltip: token,
       styleKey: 'unknown' as PromptTokenStyleKey,
+      unsupported: false,
     }
   }
 
   const styleKey = parsed.variableType || (parsed.tokenType === 'recipe' ? 'recipe' : 'unknown')
+  const unsupported = isPromptTokenUnsupported(parsed, modelCapabilities)
   const params = getPromptTokenParamMap(parsed.params)
-  const recipeItem = parsed.tokenType === 'recipe' ? findRecipeVariableItemById(params.source || '') : null
+  const recipeItem = parsed.tokenType === 'recipe' ? findRecipeVariableItemById(params.source || '', categories) : null
+  const recipeSnapshot = parsed.tokenType === 'recipe' ? findRecipeVariableSnapshot(metadata, parsed.name, params.source || '') : null
   const typeLabel = parsed.variableType
     ? t.variableTypes[parsed.variableType]
     : parsed.tokenType === 'recipe'
-      ? recipeItem?.name[locale] || t.recipeVariableLabel
+      ? recipeItem?.name[locale] || recipeSnapshot?.name[locale] || t.recipeVariableLabel
       : parsed.tokenType
   const label = `${typeLabel}:${parsed.name}`
-  const detailLines = parsed.params.map((param) => formatPromptTokenParam(param, t, locale)).filter(Boolean)
+  const detailLines = parsed.params.map((param) => formatPromptTokenParam(param, t, locale, categories, metadata)).filter(Boolean)
+  if (unsupported) detailLines.unshift(t.unsupportedByModel)
+  if (recipeItem?.content[locale] || recipeSnapshot?.content[locale]) {
+    detailLines.push(recipeItem?.content[locale] || recipeSnapshot?.content[locale] || '')
+  }
 
   return {
     label,
     tooltip: [label, ...detailLines].join('\n'),
     styleKey,
+    unsupported,
   }
 }
 
@@ -6831,7 +8903,13 @@ function parsePromptToken(token: string) {
   }
 }
 
-function formatPromptTokenParam(param: string, t: WorkbenchCopy, locale: Locale) {
+function formatPromptTokenParam(
+  param: string,
+  t: WorkbenchCopy,
+  locale: Locale,
+  categories: RecipeVariableCategory[] = DEFAULT_RECIPE_VARIABLE_CATEGORIES,
+  metadata?: ZpmtRecipeVariableMetadata,
+) {
   const parsed = parsePromptTokenParam(param)
   if (!parsed) return param
   const label = t.promptTokenParams[parsed.key as keyof WorkbenchCopy['promptTokenParams']] || parsed.key
@@ -6839,7 +8917,7 @@ function formatPromptTokenParam(param: string, t: WorkbenchCopy, locale: Locale)
     parsed.key === 'multi' && (parsed.value === 'true' || parsed.value === 'false')
       ? t.booleanText[parsed.value]
       : parsed.key === 'source'
-        ? findRecipeVariableItemById(parsed.value)?.name[locale] || parsed.value
+        ? resolveRecipeVariableSourceLabel(parsed.value, categories, metadata, locale) || parsed.value
       : parsed.value
   return `${label}: ${value}`
 }
@@ -6851,6 +8929,18 @@ function getPromptTokenParamMap(params: string[]) {
       .filter((param): param is { key: string; value: string } => Boolean(param))
       .map((param) => [param.key, param.value]),
   )
+}
+
+function resolveRecipeVariableSourceLabel(
+  sourceId: string,
+  categories: RecipeVariableCategory[],
+  metadata: ZpmtRecipeVariableMetadata | undefined,
+  locale: Locale,
+) {
+  const current = findRecipeVariableItemById(sourceId, categories)
+  if (current) return current.name[locale]
+  const snapshot = metadata?.recipeVariables.find((item) => sourceIdsEqual(item.sourceId, sourceId))
+  return snapshot?.name[locale] || ''
 }
 
 function parsePromptTokenParam(param: string) {
@@ -6969,7 +9059,7 @@ function createDefaultWorkbenchLayout(rowCount = DEFAULT_GRID_ROWS): GridLayoutI
 }
 
 function cloneDefaultWorkbenchLayout(rowCount = DEFAULT_GRID_ROWS) {
-  return createDefaultWorkbenchLayout(rowCount).map((item) => ({ ...item, resizeHandles: RESIZE_HANDLES }))
+  return createDefaultWorkbenchLayout(rowCount).map((item) => clampLayoutItem({ ...item, resizeHandles: RESIZE_HANDLES }))
 }
 
 function isWindowId(value: string): value is WindowId {
@@ -6982,11 +9072,13 @@ function calculateGridRows(height: number) {
 }
 
 function buildRenderableLayout(layout: GridLayoutItem[], minimized: MinimizedState) {
-  return layout.map((item) => ({
-    ...item,
-    isResizable: !minimized[item.i],
-    resizeHandles: minimized[item.i] ? [] : RESIZE_HANDLES,
-  }))
+  return layout.map((item) =>
+    createReactGridLayoutItem({
+      ...item,
+      isResizable: !minimized[item.i],
+      resizeHandles: minimized[item.i] ? [] : RESIZE_HANDLES,
+    }),
+  )
 }
 
 function sanitizeRuntimeLayout(layout: Array<Partial<GridLayoutItem> & { i: string }>, minimized: MinimizedState) {
@@ -7036,7 +9128,7 @@ function clampLayoutItem(item: GridLayoutItem) {
   const x = Math.max(0, Math.min(Math.round(item.x), GRID_COLS - w))
   const y = Math.max(0, Math.round(item.y))
 
-  return {
+  return createReactGridLayoutItem({
     ...item,
     x,
     y,
@@ -7045,6 +9137,21 @@ function clampLayoutItem(item: GridLayoutItem) {
     minW,
     minH,
     resizeHandles: RESIZE_HANDLES,
+  })
+}
+
+function createReactGridLayoutItem(item: GridLayoutItem): GridLayoutItem {
+  return {
+    ...item,
+    maxW: item.maxW,
+    maxH: item.maxH,
+    moved: Boolean(item.moved),
+    static: Boolean(item.static),
+    isDraggable: item.isDraggable,
+    isResizable: item.isResizable,
+    resizeHandles: item.resizeHandles,
+    constraints: item.constraints,
+    isBounded: item.isBounded,
   }
 }
 

@@ -11,6 +11,11 @@ export type ImageModeration = 'auto' | 'low'
 export type ImageStyle = 'vivid' | 'natural'
 export type ToolCallingSupport = 'supported' | 'unsupported' | 'unknown'
 
+export type ReferenceInputSupport = {
+  image?: boolean
+  file?: boolean
+}
+
 export type NumericParameterSchema = {
   min: number
   max: number
@@ -24,6 +29,7 @@ export type TextModelParameterSchema = {
   maxTokens: NumericParameterSchema
   responseFormats: ZpmtResponseFormat[]
   thinking?: ThinkingParameterSchema
+  referenceInput?: ReferenceInputSupport
 }
 
 export type ThinkingParameterSchema = {
@@ -80,6 +86,7 @@ export type ImageModelParameterSchema = {
   }
   imageStyles?: ImageStyle[]
   defaultImageStyle?: ImageStyle
+  referenceInput?: ReferenceInputSupport
 }
 
 export type AiModelParameterSchema = TextModelParameterSchema | ImageModelParameterSchema
@@ -109,6 +116,7 @@ export type AiProviderModel = {
   toolCalling: ToolCallingSupport
   parameterSchema?: AiModelParameterSchema
   defaultResponseConfig?: ZpmtResponseConfig
+  presetRef?: AiModelPresetRef
 }
 
 export type AiProviderSummary = {
@@ -116,6 +124,9 @@ export type AiProviderSummary = {
   name: string
   providerType: string
   baseUrl: string
+  filePath?: string
+  apiKey?: string
+  schemaVersion?: number
   models: AiProviderModel[]
   hasApiKey: boolean
   createdAt?: string
@@ -127,6 +138,19 @@ export type AiProviderPreset = {
   name: string
   baseUrl: string
   models: AiProviderModel[]
+}
+
+export type AiModelPresetOption = {
+  key: string
+  providerType: string
+  providerName: string
+  model: AiProviderModel
+}
+
+export type AiModelPresetRef = {
+  providerType: string
+  providerName?: string
+  modelId: string
 }
 
 export const ZPMT_OUTPUT_TYPES: ZpmtOutputType[] = ['text', 'image']
@@ -152,6 +176,7 @@ const OPENAI_LONG_CONTEXT_TEXT_SCHEMA: TextModelParameterSchema = {
   maxTokens: { min: 1, max: 128000, step: 1, defaultValue: 4096 },
   responseFormats: ['text', 'json_object'],
   thinking: OPENAI_REASONING_SCHEMA,
+  referenceInput: { image: true, file: true },
 }
 
 const DEEPSEEK_THINKING_SCHEMA: ThinkingParameterSchema = {
@@ -217,6 +242,7 @@ const OPENAI_GPT_IMAGE_2_SCHEMA: ImageModelParameterSchema = {
   defaultBackground: 'auto',
   moderationOptions: ['auto', 'low'],
   defaultModeration: 'auto',
+  referenceInput: { image: true },
 }
 
 const OPENAI_GPT_IMAGE_SCHEMA: ImageModelParameterSchema = {
@@ -233,6 +259,7 @@ const OPENAI_GPT_IMAGE_SCHEMA: ImageModelParameterSchema = {
   defaultBackground: 'auto',
   moderationOptions: ['auto', 'low'],
   defaultModeration: 'auto',
+  referenceInput: { image: true },
 }
 
 const OPENAI_DALLE_3_SCHEMA: ImageModelParameterSchema = {
@@ -256,6 +283,7 @@ const OPENAI_DALLE_2_SCHEMA: ImageModelParameterSchema = {
   imageQualities: [],
   responseFormats: ['url', 'b64_json'],
   defaultImageResponseFormat: 'url',
+  referenceInput: { image: true },
 }
 
 const VOLCENGINE_SEEDREAM_COMMON = {
@@ -368,6 +396,7 @@ const VOLCENGINE_SEEDEDIT_30_IMAGE_SCHEMA: ImageModelParameterSchema = {
   responseFormats: ['url', 'b64_json'],
   defaultImageResponseFormat: 'url',
   watermark: { defaultValue: true },
+  referenceInput: { image: true },
 }
 
 const DEFAULT_IMAGE_SCHEMA: ImageModelParameterSchema = {
@@ -424,6 +453,26 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     models: [{ id: 'custom-model', capabilities: ['text'], toolCalling: 'unknown', parameterSchema: DEFAULT_TEXT_SCHEMA }],
   },
 ]
+
+export function inferAiProviderTypeFromBaseUrl(value: unknown, fallback = 'custom') {
+  const raw = typeof value === 'string' ? value.trim() : ''
+  if (!raw) return fallback
+
+  const normalized = raw.toLowerCase()
+  let hostname = ''
+  try {
+    hostname = new URL(raw).hostname.toLowerCase()
+  } catch {
+    hostname = normalized
+  }
+
+  const source = `${hostname} ${normalized}`
+  if (source.includes('openai.com')) return 'openai'
+  if (source.includes('deepseek.com')) return 'deepseek'
+  if (source.includes('volces.com') || source.includes('volcengine')) return 'volcengine'
+
+  return fallback
+}
 
 export function modelsToText(models: AiProviderModel[]) {
   return models.map((model) => `${model.id} | ${model.capabilities.join(',')} | ${serializeToolCalling(model.toolCalling)}`).join('\n')
@@ -539,6 +588,7 @@ export function normalizeAiModelParameterSchema(value: unknown, fallback: AiMode
     const defaultImageResolution = readString(value.defaultImageResolution) || imageFallback.defaultImageResolution
     const defaultImageAspectRatio = readString(value.defaultImageAspectRatio) || imageFallback.defaultImageAspectRatio
     const defaultImageSize = readString(value.defaultImageSize) || imageFallback.defaultImageSize
+    const referenceInput = normalizeReferenceInputSupport(value.referenceInput, imageFallback.referenceInput)
 
     return {
       kind: 'image',
@@ -573,17 +623,20 @@ export function normalizeAiModelParameterSchema(value: unknown, fallback: AiMode
       ...(isRecord(value.watermark) || imageFallback.watermark ? { watermark: { defaultValue: readBoolean((isRecord(value.watermark) ? value.watermark.defaultValue : undefined), imageFallback.watermark?.defaultValue ?? true) } } : {}),
       ...(imageStyles?.length ? { imageStyles } : {}),
       ...(normalizeImageStyle(value.defaultImageStyle, imageStyles || imageFallback.imageStyles) ? { defaultImageStyle: normalizeImageStyle(value.defaultImageStyle, imageStyles || imageFallback.imageStyles) } : {}),
+      ...(referenceInput ? { referenceInput } : {}),
     }
   }
 
   if (value.kind === 'text') {
     const textFallback = fallback.kind === 'text' ? fallback : DEFAULT_TEXT_SCHEMA
+    const referenceInput = normalizeReferenceInputSupport(value.referenceInput, textFallback.referenceInput)
     return {
       kind: 'text',
       temperature: normalizeNumericParameterSchema(value.temperature, textFallback.temperature),
       maxTokens: normalizeNumericParameterSchema(value.maxTokens, textFallback.maxTokens),
       responseFormats: normalizeTextResponseFormats(value.responseFormats, textFallback.responseFormats),
       ...(textFallback.thinking ? { thinking: normalizeThinkingParameterSchema(value.thinking, textFallback.thinking) } : {}),
+      ...(referenceInput ? { referenceInput } : {}),
     }
   }
 
@@ -670,6 +723,99 @@ export function findAiModelPreset(providerType?: string, modelId?: string) {
     if (model) return model
   }
   return null
+}
+
+export function listAiModelPresetOptions(preferredProviderType?: string): AiModelPresetOption[] {
+  const preferred = preferredProviderType ? AI_PROVIDER_PRESETS.filter((provider) => provider.providerType === preferredProviderType) : []
+  const remaining = AI_PROVIDER_PRESETS.filter((provider) => provider.providerType !== preferredProviderType)
+  const seen = new Set<string>()
+
+  return [...preferred, ...remaining].flatMap((provider) =>
+    provider.models.flatMap((model) => {
+      const key = `${provider.providerType}:${model.id}`
+      if (seen.has(key)) return []
+      seen.add(key)
+      return [{ key, providerType: provider.providerType, providerName: provider.name, model }]
+    }),
+  )
+}
+
+export function findAiModelPresetOption(key: string) {
+  return listAiModelPresetOptions().find((option) => option.key === key) || null
+}
+
+export function getAiModelPresetOptionKey(ref: AiModelPresetRef | null | undefined) {
+  return ref?.providerType && ref.modelId ? `${ref.providerType}:${ref.modelId}` : ''
+}
+
+export function createAiModelPresetRef(option: AiModelPresetOption): AiModelPresetRef {
+  return {
+    providerType: option.providerType,
+    providerName: option.providerName,
+    modelId: option.model.id,
+  }
+}
+
+export function normalizeAiModelPresetRef(value: unknown): AiModelPresetRef | undefined {
+  if (!isRecord(value)) return undefined
+  const providerType = readString(value.providerType).toLowerCase()
+  const modelId = readString(value.modelId)
+  if (!/^[a-z][a-z0-9_-]{0,31}$/.test(providerType) || !modelId) return undefined
+  return {
+    providerType,
+    ...(readString(value.providerName) ? { providerName: readString(value.providerName) } : {}),
+    modelId: modelId.slice(0, 96),
+  }
+}
+
+export function hasAiModelPreset(providerType: string | undefined, modelId: string) {
+  return Boolean(findAiModelPreset(providerType, modelId) || findAiModelPreset(undefined, modelId))
+}
+
+export function applyAiModelPreset<
+  T extends {
+    id: string
+    capabilities: AiModelCapability[]
+    toolCalling: ToolCallingSupport
+    parameterSchema?: unknown
+    defaultResponseConfig?: unknown
+    presetRef?: AiModelPresetRef
+  },
+>(model: T, preset: AiProviderModel, presetRef?: AiModelPresetRef): T {
+  const next = {
+    ...model,
+    capabilities: [...preset.capabilities],
+    toolCalling: preset.toolCalling,
+    parameterSchema: preset.parameterSchema,
+    ...(presetRef ? { presetRef } : {}),
+  } as T
+
+  if (preset.defaultResponseConfig) {
+    next.defaultResponseConfig = preset.defaultResponseConfig
+  } else {
+    delete next.defaultResponseConfig
+  }
+
+  return next as T
+}
+
+export function aiModelSupportsThinking(model: { parameterSchema?: unknown } | null | undefined) {
+  const schema = model?.parameterSchema
+  return isRecord(schema) && schema.kind === 'text' && Boolean(schema.thinking)
+}
+
+export function aiModelSupportsReferenceImage(model: { parameterSchema?: unknown } | null | undefined) {
+  return readReferenceInputSupport(model).image === true
+}
+
+export function aiModelSupportsReferenceFile(model: { parameterSchema?: unknown } | null | undefined) {
+  return readReferenceInputSupport(model).file === true
+}
+
+function readReferenceInputSupport(model: { parameterSchema?: unknown } | null | undefined): ReferenceInputSupport {
+  const schema = model?.parameterSchema
+  const referenceInput = isRecord(schema) ? schema.referenceInput : undefined
+  return normalizeReferenceInputSupport(referenceInput) || {}
 }
 
 function normalizeImageResponseConfig(schema: ImageModelParameterSchema, source: Record<string, unknown>): ZpmtResponseConfig {
@@ -825,6 +971,17 @@ function normalizeTextResponseFormats(value: unknown, fallback: ZpmtResponseForm
     ? value.filter((item): item is ZpmtResponseFormat => item === 'text' || item === 'json_object')
     : []
   return formats.length ? formats : fallback
+}
+
+function normalizeReferenceInputSupport(value: unknown, fallback?: ReferenceInputSupport): ReferenceInputSupport | undefined {
+  const source = isRecord(value) ? value : {}
+  const image = typeof source.image === 'boolean' ? source.image : fallback?.image
+  const file = typeof source.file === 'boolean' ? source.file : fallback?.file
+  if (image === undefined && file === undefined) return undefined
+  return {
+    ...(image !== undefined ? { image } : {}),
+    ...(file !== undefined ? { file } : {}),
+  }
 }
 
 function normalizeThinkingParameterSchema(value: unknown, fallback: ThinkingParameterSchema): ThinkingParameterSchema {

@@ -1,5 +1,6 @@
 import path from 'path'
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'fs/promises'
+import { createSystemZlexContent, getDefaultZamfFiles } from '@/lib/project-config-files'
 import { prisma } from '@/lib/prisma'
 
 export type ProjectTreeNode = {
@@ -39,8 +40,8 @@ const PROJECT_ROOT = process.env.CCKS_PROJECT_ROOT || path.join(process.cwd(), '
 const DEFAULT_PROJECT_FILE_NAME = 'example-site'
 
 const examplePrompt = `---
-title: "从词开始 - 让每个想法都有回响"
-description: "从词开始是一个新一代AI驱动的网站生成与内容管理平台"
+title: "ZPMT"
+description: "新时代 AI 代码编辑工具以及编辑框架"
 layout: "base"
 version: "1.2.0"
 updated_at: "{{ now }}"
@@ -50,7 +51,7 @@ tags: ["首页", "营销"]
 # {{ site.title }}
 ### {{ site.description }}
 
-从词开始，帮助团队以更快的速度创建、管理和优化网站。
+ZPMT，帮助团队以更高效率创建、编辑和管理 AI 代码项目。
 
 ## 核心能力
 
@@ -97,6 +98,7 @@ export async function createUserProject(userId: string, input: { name: unknown; 
     throw error
   })
   await copyRepositoryReadme(projectRoot)
+  await ensureProjectConfigFiles(projectRoot)
 
   try {
     const record = await prisma.project.create({
@@ -433,6 +435,7 @@ async function ensureDefaultProject(userId: string) {
 
 async function ensureDefaultProjectFiles(projectRoot: string) {
   await mkdir(resolveInside(projectRoot, '_global'), { recursive: true })
+  await ensureProjectConfigFiles(projectRoot)
   await mkdir(resolveInside(projectRoot, 'pages'), { recursive: true })
   await mkdir(resolveInside(projectRoot, 'blog/文章'), { recursive: true })
   await mkdir(resolveInside(projectRoot, 'api'), { recursive: true })
@@ -459,6 +462,18 @@ async function ensureDefaultProjectFiles(projectRoot: string) {
   ])
 }
 
+async function ensureProjectConfigFiles(projectRoot: string) {
+  const lexiconRoot = resolveInside(projectRoot, '_global/词汇变量')
+  const providerRoot = resolveInside(projectRoot, '_global/供应商')
+  await mkdir(lexiconRoot, { recursive: true })
+  await mkdir(providerRoot, { recursive: true })
+
+  await Promise.all([
+    writeFileIfMissing(resolveInside(lexiconRoot, '系统词汇.zlex'), createSystemZlexContent()),
+    ...getDefaultZamfFiles().map((file) => writeFileIfMissing(resolveInside(providerRoot, file.fileName), file.content)),
+  ])
+}
+
 async function writeFileIfMissing(target: string, content: string) {
   const exists = await stat(target)
     .then((stats) => stats.isFile())
@@ -476,7 +491,7 @@ async function copyRepositoryReadme(projectRoot: string) {
   if (exists) {
     await copyFile(source, target)
   } else {
-    await writeFile(target, '# 从词开始\n\n提示词管理工作台项目。\n', 'utf8')
+    await writeFile(target, '# ZPMT\n\n新时代 AI 代码编辑工具以及编辑框架。\n', 'utf8')
   }
 }
 

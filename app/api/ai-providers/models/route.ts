@@ -24,6 +24,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: false, code: error.code, message: error.message }, { status: 400 })
     }
 
-    return NextResponse.json({ ok: false, message: apiErrorMessage(error, '模型列表拉取失败') }, { status: 500 })
+    return NextResponse.json({ ok: false, message: apiErrorMessage(error, '模型列表获取失败') }, { status: 500 })
   }
 }

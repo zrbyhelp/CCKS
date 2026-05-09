@@ -1,0 +1,419 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorMessage } from '@/lib/api-errors'
+import { readProjectConfigCatalog } from '@/lib/project-config-files'
+import { getProjectWorkingDirectory, isProjectStoreError } from '@/lib/project-store'
+import { getSessionUser } from '@/lib/server-session'
+import { runAiTool } from '@/lib/ai-tool-runner'
+import {
+  createAiToolFunctionSchema,
+  getAiToolDefinition,
+  getAiToolDefinitionByFunctionName,
+  getAiToolFunctionName,
+  type AiToolFunctionSchema,
+} from '@/lib/tool-definitions'
+import type { ProjectAiProviderSummary } from '@/lib/project-config-types'
+import type { ZpmtResponseConfig } from '@/lib/ai-presets'
+
+export const runtime = 'nodejs'
+
+type AgentTestToolBinding = {
+  id: string
+  toolId: string
+  config: Record<string, unknown>
+}
+
+type AgentTestDocument = {
+  config: {
+    outputType: string
+    providerFile: string
+    providerId: string
+    model: string
+    responseConfig: Record<string, unknown>
+  }
+  system: string
+  user: string
+  tools: AgentTestToolBinding[]
+}
+
+type ChatMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: string | null
+  tool_calls?: ChatToolCall[]
+  tool_call_id?: string
+  name?: string
+}
+
+type ChatToolCall = {
+  id: string
+  type: 'function'
+  function: {
+    name: string
+    arguments: string
+  }
+}
+
+const MAX_TOOL_ROUNDS_LIMIT = 20
+
+export async function POST(request: NextRequest) {
+  const user = getSessionUser(request)
+  if (!user) return NextResponse.json({ ok: false, message: '未登录' }, { status: 401 })
+
+  const startedAt = Date.now()
+  const body = await request.json().catch(() => null)
+
+  try {
+    const context = isRecord(body?.context) ? body.context : {}
+    const project = await getProjectWorkingDirectory(user.id, context.projectId)
+    const catalog = await readProjectConfigCatalog(project.localPath)
+    const document = readAgentTestDocument(body?.document)
+    const provider = findProvider(catalog.providers, document.config.providerFile, document.config.providerId)
+    if (!provider) throw new AgentTestError('PROVIDER_NOT_FOUND', '未找到当前 .zpmt 绑定的供应商')
+    if (!provider.apiKey) throw new AgentTestError('PROVIDER_API_KEY_MISSING', '当前供应商未配置 API Key')
+    if (!document.config.model) throw new AgentTestError('MODEL_REQUIRED', '请先选择模型')
+    if (document.config.outputType !== 'text') throw new AgentTestError('OUTPUT_TYPE_UNSUPPORTED', 'Agent 测试当前仅支持文本模型')
+
+    const model = provider.models.find((item) => item.id === document.config.model) || null
+    const maxToolRounds = clampInteger(body?.maxToolRounds, 5, 0, MAX_TOOL_ROUNDS_LIMIT)
+    const toolSchemas = maxToolRounds > 0 ? buildBoundToolSchemas(document.tools) : []
+    if (toolSchemas.length && model?.toolCalling !== 'supported') {
+      throw new AgentTestError('MODEL_TOOLS_UNSUPPORTED', '当前模型不支持工具调用')
+    }
+
+    const variableValues = readVariableValues(body?.variables)
+    const messages: ChatMessage[] = []
+    const systemPrompt = renderZpmtPromptForTest(document.system, variableValues)
+    const userPrompt = renderZpmtPromptForTest(document.user, variableValues)
+    if (systemPrompt.trim()) messages.push({ role: 'system', content: systemPrompt })
+    messages.push({ role: 'user', content: userPrompt })
+
+    const result = await runAgentCompletion({
+      userId: user.id,
+      provider,
+      document,
+      messages,
+      toolSchemas,
+      maxToolRounds,
+      context: {
+        projectId: project.id,
+        path: readString(context.path),
+      },
+    })
+
+    return NextResponse.json({
+      ok: true,
+      ...result,
+      durationMs: Date.now() - startedAt,
+    })
+  } catch (error) {
+    if (error instanceof AgentTestError) {
+      return NextResponse.json(
+        { ok: false, code: error.code, message: error.message, durationMs: Date.now() - startedAt },
+        { status: 400 },
+      )
+    }
+    if (isProjectStoreError(error)) {
+      return NextResponse.json(
+        { ok: false, code: error.code, message: error.message, durationMs: Date.now() - startedAt },
+        { status: 400 },
+      )
+    }
+
+    return NextResponse.json(
+      { ok: false, message: apiErrorMessage(error, 'Agent 测试运行失败'), durationMs: Date.now() - startedAt },
+      { status: 500 },
+    )
+  }
+}
+
+async function runAgentCompletion(input: {
+  userId: string
+  provider: ProjectAiProviderSummary
+  document: AgentTestDocument
+  messages: ChatMessage[]
+  toolSchemas: AiToolFunctionSchema[]
+  maxToolRounds: number
+  context: { projectId: string; path: string }
+}) {
+  const messages = [...input.messages]
+  let toolRounds = 0
+  let toolCallCount = 0
+
+  while (true) {
+    const message = await requestChatCompletion(input.provider, input.document, messages, input.toolSchemas)
+    const toolCalls = normalizeToolCalls(message.tool_calls)
+    const output = readAssistantContent(message.content)
+
+    if (!toolCalls.length || !input.toolSchemas.length) {
+      return { output, toolRounds, toolCallCount }
+    }
+
+    if (toolRounds >= input.maxToolRounds) {
+      throw new AgentTestError('TOOL_ROUNDS_EXCEEDED', `工具调用超过最大循环次数：${input.maxToolRounds}`)
+    }
+
+    messages.push({
+      role: 'assistant',
+      content: output || null,
+      tool_calls: toolCalls,
+    })
+
+    for (const toolCall of toolCalls) {
+      toolCallCount += 1
+      const result = await runBoundTool(input.userId, input.document.tools, toolCall, input.context)
+      messages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        name: toolCall.function.name,
+        content: JSON.stringify(result).slice(0, 60000),
+      })
+    }
+    toolRounds += 1
+  }
+}
+
+async function requestChatCompletion(
+  provider: ProjectAiProviderSummary,
+  document: AgentTestDocument,
+  messages: ChatMessage[],
+  toolSchemas: AiToolFunctionSchema[],
+) {
+  const response = await fetch(`${provider.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      authorization: `Bearer ${provider.apiKey}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: document.config.model,
+      messages,
+      ...createChatResponseConfig(document.config.responseConfig),
+      ...(toolSchemas.length ? { tools: toolSchemas, tool_choice: 'auto' } : {}),
+    }),
+  })
+  const data = await response.json().catch(() => null)
+  if (!response.ok) {
+    throw new AgentTestError('MODEL_REQUEST_FAILED', readRemoteError(data) || `模型请求失败 (${response.status})`)
+  }
+
+  const choice = readArray(readRecord(data).choices)[0]
+  const message = readRecord(readRecord(choice).message)
+  return {
+    content: message.content,
+    tool_calls: message.tool_calls,
+  }
+}
+
+async function runBoundTool(
+  userId: string,
+  tools: AgentTestToolBinding[],
+  toolCall: ChatToolCall,
+  context: { projectId: string; path: string },
+) {
+  const definition = getAiToolDefinitionByFunctionName(toolCall.function.name)
+  if (!definition) return { ok: false, message: `工具不存在：${toolCall.function.name}` }
+
+  const binding = tools.find((tool) => (tool.toolId || tool.id) === definition.id || getAiToolFunctionName(tool.toolId || tool.id) === toolCall.function.name)
+  if (!binding) return { ok: false, message: `当前 Agent 未绑定工具：${toolCall.function.name}` }
+
+  const args = readJsonObject(toolCall.function.arguments)
+  try {
+    const result = await runAiTool(userId, {
+      toolId: definition.id,
+      input: { ...args, ...binding.config },
+      context,
+    })
+    return { ok: true, result }
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : '工具执行失败' }
+  }
+}
+
+function buildBoundToolSchemas(tools: AgentTestToolBinding[]) {
+  const seen = new Set<string>()
+  return tools.flatMap((tool) => {
+    const toolId = tool.toolId || tool.id
+    const definition = getAiToolDefinition(toolId)
+    if (!definition || seen.has(definition.id)) return []
+    const schema = createAiToolFunctionSchema(definition.id, 'zh')
+    if (!schema) return []
+    seen.add(definition.id)
+    return [schema]
+  })
+}
+
+function readAgentTestDocument(value: unknown): AgentTestDocument {
+  if (!isRecord(value)) throw new AgentTestError('DOCUMENT_INVALID', '测试文档无效')
+  const config = isRecord(value.config) ? value.config : {}
+  return {
+    config: {
+      outputType: readString(config.outputType) || 'text',
+      providerFile: readString(config.providerFile),
+      providerId: readString(config.providerId),
+      model: readString(config.model),
+      responseConfig: isRecord(config.responseConfig) ? config.responseConfig : {},
+    },
+    system: readText(value.system),
+    user: readText(value.user),
+    tools: readArray(value.tools).flatMap(readToolBinding),
+  }
+}
+
+function readToolBinding(value: unknown): AgentTestToolBinding[] {
+  if (!isRecord(value)) return []
+  const id = readString(value.id)
+  const toolId = readString(value.toolId) || id
+  if (!id && !toolId) return []
+  return [{
+    id: id || toolId,
+    toolId,
+    config: isRecord(value.config) ? value.config : {},
+  }]
+}
+
+function createChatResponseConfig(config: Record<string, unknown>) {
+  const responseConfig = config as Partial<ZpmtResponseConfig>
+  const next: Record<string, unknown> = {}
+  const temperature = readFiniteNumber(responseConfig.temperature)
+  const maxTokens = readFiniteNumber(responseConfig.maxTokens)
+  if (Number.isFinite(temperature)) next.temperature = temperature
+  if (Number.isFinite(maxTokens)) next.max_tokens = Math.round(maxTokens)
+  if (responseConfig.responseFormat === 'json_object') next.response_format = { type: 'json_object' }
+  if (typeof responseConfig.reasoningEffort === 'string' && responseConfig.reasoningEffort) next.reasoning_effort = responseConfig.reasoningEffort
+  return next
+}
+
+function findProvider(providers: ProjectAiProviderSummary[], providerFile: string, providerId: string) {
+  if (providerFile) return providers.find((provider) => provider.filePath === providerFile) || null
+  return providers.find((provider) => provider.id === providerId) || null
+}
+
+function renderZpmtPromptForTest(text: string, values: Record<string, string>) {
+  return text.replace(/\{\{[^{}\n]+\}\}/g, (token) => {
+    const key = getZpmtTestVariableKey(token)
+    if (!key) return token
+    const parsed = parsePromptToken(token)
+    const params = parsed ? getPromptTokenParamMap(parsed.params) : {}
+    return values[key] ?? params.default ?? ''
+  })
+}
+
+function getZpmtTestVariableKey(token: string) {
+  const parsed = parsePromptToken(token)
+  if (!parsed) return ''
+  const params = getPromptTokenParamMap(parsed.params)
+  return `${parsed.tokenType}:${parsed.name}:${params.source || ''}`
+}
+
+function parsePromptToken(token: string) {
+  const content = token.replace(/^\{\{|\}\}$/g, '').trim()
+  const parts = content.split(';').map((part) => part.trim()).filter(Boolean)
+  const [head, ...params] = parts
+  const match = /^([a-z]+):([a-z][a-zA-Z0-9_]*)$/.exec(head || '')
+  if (!match) return null
+  return { tokenType: match[1], name: match[2], params }
+}
+
+function getPromptTokenParamMap(params: string[]) {
+  return Object.fromEntries(params.map(parsePromptTokenParam).filter((param): param is { key: string; value: string } => Boolean(param)).map((param) => [param.key, param.value]))
+}
+
+function parsePromptTokenParam(param: string) {
+  const equalsIndex = param.indexOf('=')
+  if (equalsIndex > 0) return { key: param.slice(0, equalsIndex).trim(), value: param.slice(equalsIndex + 1).trim() }
+  const prefixMatch = /^(length|count|size)(.+)$/.exec(param)
+  if (!prefixMatch) return null
+  return { key: prefixMatch[1], value: prefixMatch[2].trim() }
+}
+
+function readVariableValues(value: unknown) {
+  const source = isRecord(value) ? value : {}
+  return Object.fromEntries(
+    Object.entries(source).map(([key, item]) => [key, typeof item === 'string' ? item : typeof item === 'number' || typeof item === 'boolean' ? String(item) : '']),
+  )
+}
+
+function normalizeToolCalls(value: unknown): ChatToolCall[] {
+  return readArray(value).flatMap((item, index): ChatToolCall[] => {
+    const record = readRecord(item)
+    const fn = readRecord(record.function)
+    const name = readString(fn.name)
+    if (!name) return []
+    return [{
+      id: readString(record.id) || `tool_call_${index}`,
+      type: 'function',
+      function: {
+        name,
+        arguments: typeof fn.arguments === 'string' ? fn.arguments : JSON.stringify(isRecord(fn.arguments) ? fn.arguments : {}),
+      },
+    }]
+  })
+}
+
+function readAssistantContent(value: unknown) {
+  if (typeof value === 'string') return value
+  if (!Array.isArray(value)) return ''
+  return value.map((item) => {
+    if (typeof item === 'string') return item
+    if (!isRecord(item)) return ''
+    return readText(item.text || item.content)
+  }).filter(Boolean).join('\n')
+}
+
+function readJsonObject(value: unknown) {
+  if (isRecord(value)) return value
+  if (typeof value !== 'string' || !value.trim()) return {}
+  try {
+    const parsed = JSON.parse(value)
+    return isRecord(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function readRemoteError(value: unknown) {
+  const record = readRecord(value)
+  const error = readRecord(record.error)
+  return readString(error.message || error.code) || readString(record.message || record.error)
+}
+
+function clampInteger(value: unknown, fallback: number, min: number, max: number) {
+  const numberValue = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : fallback
+  if (!Number.isFinite(numberValue)) return fallback
+  return Math.min(max, Math.max(min, Math.round(numberValue)))
+}
+
+function readFiniteNumber(value: unknown) {
+  const numberValue = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN
+  return Number.isFinite(numberValue) ? numberValue : Number.NaN
+}
+
+function readArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : []
+}
+
+function readRecord(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {}
+}
+
+function readString(value: unknown) {
+  return typeof value === 'string' ? value.trim() : typeof value === 'number' || typeof value === 'boolean' ? String(value) : ''
+}
+
+function readText(value: unknown) {
+  return typeof value === 'string' ? value : typeof value === 'number' || typeof value === 'boolean' ? String(value) : ''
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+class AgentTestError extends Error {
+  constructor(
+    public code: string,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'AgentTestError'
+  }
+}
