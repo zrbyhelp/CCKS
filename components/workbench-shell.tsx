@@ -939,7 +939,7 @@ const UI_COPY = {
       source: '源码',
     },
     markdownPreview: 'Markdown 阅览',
-    sourceCode: 'ZPMT 源码',
+    sourceCode: 'ccks 源码',
     aiAssist: {
       title: 'AI辅助',
       status: '开发中，敬请期待',
@@ -949,7 +949,7 @@ const UI_COPY = {
     bottomTabs: ['测试面板', '运行结果', '测试用例', '性能分析'],
     success: '成功',
     tokens: '令牌 1,245（输入 528 / 输出 717）',
-    heroTitle: 'ZPMT',
+    heroTitle: 'ccks',
     heroDesc: '新时代 AI 代码编辑工具以及编辑框架',
     coreTitle: '核心能力',
     coreItems: [
@@ -1125,7 +1125,7 @@ const UI_COPY = {
       branch: 'main',
       saved: '已保存',
       activeFile: '首页.prompt',
-      hint: 'ZPMT 工作台 · 当前为本地 mock 数据',
+      hint: 'ccks 工作台 · 当前为本地 mock 数据',
       portalReady: '门户已配置',
       portalMissing: '门户未配置',
       lineColumn: '行 1, 列 1',
@@ -1433,7 +1433,7 @@ const UI_COPY = {
       source: 'Source',
     },
     markdownPreview: 'Markdown Preview',
-    sourceCode: 'ZPMT Source',
+    sourceCode: 'ccks Source',
     aiAssist: {
       title: 'AI Assist',
       status: 'In development. Stay tuned.',
@@ -1619,7 +1619,7 @@ const UI_COPY = {
       branch: 'main',
       saved: 'Saved',
       activeFile: 'Home.prompt',
-      hint: 'ZPMT workbench · local mock data',
+      hint: 'ccks workbench · local mock data',
       portalReady: 'Portal configured',
       portalMissing: 'Portal missing',
       lineColumn: 'Ln 1, Col 1',
@@ -1632,7 +1632,7 @@ const UI_COPY = {
 type WorkbenchCopy = (typeof UI_COPY)['zh']
 
 const promptCode = `---
-title: "ZPMT"
+title: "ccks"
 description: "新时代 AI 代码编辑工具以及编辑框架"
 layout: "base"
 version: "1.2.0"
@@ -1643,7 +1643,7 @@ tags: ["首页", "营销"]
 # {{ site.title }}
 ### {{ site.description }}
 
-ZPMT，帮助团队以更高效率创建、编辑和管理 AI 代码项目。
+ccks，帮助团队以更高效率创建、编辑和管理 AI 代码项目。
 
 ## 核心能力
 
@@ -2515,7 +2515,7 @@ function getZpmtPromptIconMeta(kind?: ZpmtPromptKind | null): { icon: LucideIcon
   if (kind === 'chat') return { icon: MessageSquare, className: 'text-emerald-600', badge: 'CHAT' }
   if (kind === 'agent') return { icon: Workflow, className: 'text-cyan-600', badge: 'AGENT' }
   if (kind === 'image') return { icon: WandSparkles, className: 'text-[#d95a1b]', badge: 'IMG' }
-  return { icon: WandSparkles, className: 'text-[#d95a1b]', badge: 'ZPMT' }
+  return { icon: WandSparkles, className: 'text-[#d95a1b]', badge: 'ccks' }
 }
 
 function getFileIconMeta(filePath: string, promptKind?: ZpmtPromptKind | null): { icon: LucideIcon; className: string; badge?: string } {
@@ -2924,7 +2924,7 @@ function InputPanel() {
   const form = useForm<InputForm>({
     resolver: zodResolver(inputSchema),
     defaultValues: {
-      siteTitle: 'ZPMT',
+      siteTitle: 'ccks',
       description: '新时代 AI 代码编辑工具以及编辑框架',
       getStarted: '/pricing',
       primary: '#FB7E3D',

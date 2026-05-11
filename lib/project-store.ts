@@ -53,7 +53,7 @@ const PROJECT_ROOT = process.env.CCKS_PROJECT_ROOT || path.join(process.cwd(), '
 const DEFAULT_PROJECT_FILE_NAME = 'example-site'
 
 const examplePrompt = `---
-title: "ZPMT"
+title: "ccks"
 description: "新时代 AI 代码编辑工具以及编辑框架"
 layout: "base"
 version: "1.2.0"
@@ -64,7 +64,7 @@ tags: ["首页", "营销"]
 # {{ site.title }}
 ### {{ site.description }}
 
-ZPMT，帮助团队以更高效率创建、编辑和管理 AI 代码项目。
+ccks，帮助团队以更高效率创建、编辑和管理 AI 代码项目。
 
 ## 核心能力
 
@@ -692,7 +692,7 @@ async function copyRepositoryReadme(projectRoot: string) {
   if (exists) {
     await copyFile(source, target)
   } else {
-    await writeFile(target, '# ZPMT\n\n新时代 AI 代码编辑工具以及编辑框架。\n', 'utf8')
+    await writeFile(target, '# ccks\n\n新时代 AI 代码编辑工具以及编辑框架。\n', 'utf8')
   }
 }
 
