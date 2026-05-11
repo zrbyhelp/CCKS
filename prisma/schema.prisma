@@ -36,6 +36,32 @@ model AiProvider {
   @@index([userId])
 }
 
+model SystemAiSetting {
+  id              String   @id @default("global")
+  providerType    String   @default("custom")
+  baseUrl         String   @default("")
+  apiKeyEncrypted String?  @db.Text
+  models          Json
+  model           String   @default("")
+  reasoningEffort String   @default("auto")
+  maxToolRounds   Int      @default(5)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model UserApiToken {
+  id           String    @id @default(cuid())
+  userId       String    @unique
+  tokenHash    String    @unique
+  tokenPrefix  String
+  tokenMasked  String
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  lastUsedAt   DateTime?
+
+  @@index([tokenPrefix])
+}
+
 model RecipeVariableCategory {
   id            String           @id @default(cuid())
   userId        String

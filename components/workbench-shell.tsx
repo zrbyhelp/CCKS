@@ -1,7 +1,7 @@
 'use client'
 
 import dynamic from 'next/dynamic'
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { createPortal } from 'react-dom'
 import type { BeforeMount } from '@monaco-editor/react'
 import {
@@ -46,6 +46,7 @@ import {
   Home,
   LogOut,
   Maximize2,
+  MessageSquare,
   Minus,
   MessageSquareWarning,
   MoreHorizontal,
@@ -61,6 +62,7 @@ import {
   Upload,
   UserRound,
   WandSparkles,
+  Workflow,
   X,
   type LucideIcon,
 } from 'lucide-react'
@@ -72,9 +74,11 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { AppHeader } from '@/components/app-header'
+import { CommonAiProviderManager } from '@/components/common-ai-provider-manager'
 import { PortalBackground } from '@/components/portal-background'
 import { cn } from '@/lib/utils'
 import {
+  AI_PROVIDER_PRESETS,
   aiModelSupportsReferenceFile,
   aiModelSupportsReferenceImage,
   aiModelSupportsThinking,
@@ -82,17 +86,20 @@ import {
   createAiModelPresetRef,
   defaultAiResponseConfig,
   findAiModelPresetOption,
-  getAiModelPresetOptionKey,
+  getAiModelPresetOptionKeyForModel,
   getImageAspectRatioOptions,
   getImageSizeForResolution,
-  hasAiModelPreset,
   inferAiProviderTypeFromBaseUrl,
   listAiModelPresetOptions,
+  normalizeAiModelPromptSurface,
   normalizeAiResponseConfig,
   normalizeAiModelPresetRef,
+  resolveAiModelPromptSurface,
   resolveAiModelParameterSchema,
   ZPMT_OUTPUT_TYPES,
+  type AiModelPromptSurface,
   type AiModelParameterSchema,
+  type ImageStyleInputType,
   type AiModelPresetRef,
   type AiProviderModel,
   type AiProviderSummary,
@@ -176,12 +183,51 @@ type TreeNode = {
   kind?: 'folder' | 'file'
   path?: string
   projectId?: string
+  promptKind?: 'chat' | 'agent' | 'image'
   children?: TreeNode[]
+}
+
+type ProjectEntryConflict = {
+  path: string
+  targetPath: string
+}
+type ProjectEntryMove = {
+  oldPath: string
+  nextPath: string
+}
+type ProjectUploadEntry = {
+  file: File
+  relativePath: string
+}
+type ProjectEntryDragPayload = {
+  kind: 'project-entry'
+  projectId: string
+  paths: string[]
+}
+type ZipImportDialogState = {
+  file: File
+  name: string
+  fileName: string
+  busy: boolean
+}
+type ProjectConflictAction = 'overwrite' | 'skip' | 'cancel'
+
+type BrowserFileSystemEntry = {
+  isFile: boolean
+  isDirectory: boolean
+  name: string
+  file?: (successCallback: (file: File) => void, errorCallback?: (error: DOMException) => void) => void
+  createReader?: () => {
+    readEntries: (successCallback: (entries: BrowserFileSystemEntry[]) => void, errorCallback?: (error: DOMException) => void) => void
+  }
 }
 
 type VariableType = 'string' | 'number' | 'array' | 'color' | 'boolean' | 'image' | 'file'
 type VariableTokenType = 'str' | 'num' | 'arr' | 'color' | 'bool' | 'img' | 'file'
-type PromptTokenStyleKey = VariableType | 'recipe' | 'unknown'
+const ARRAY_ITEM_TYPES = ['string', 'number', 'boolean', 'object'] as const
+type ArrayItemType = (typeof ARRAY_ITEM_TYPES)[number]
+type PromptTokenStyleKey = VariableType | 'recipe' | 'constant' | 'unknown'
+type ZpmtPromptKind = 'chat' | 'agent' | 'image'
 
 type ThemeMode = 'light' | 'dark'
 type Locale = 'zh' | 'en'
@@ -201,11 +247,38 @@ type InstructionCatalogCategory = {
   description: LocalizedText
   variables: InstructionCatalogItem[]
 }
+type ConstantInstructionItem = {
+  id: ZpmtConstantKind
+  name: LocalizedText
+  description: LocalizedText
+  tokenName: LocalizedText
+}
+type ZpmtConstantKind = 'now' | 'today' | 'time' | 'weekday' | 'iso' | 'timestamp' | 'uuid' | 'shortId'
 type InstructionCategoryKind = 'recipe' | 'tool'
+type PromptTemplateBuildContext = {
+  categories: RecipeVariableCategory[]
+}
+type PromptTemplateContent = {
+  system?: string
+  user?: string
+  prompt?: string
+  negativePrompt?: string
+  styleText?: string
+}
+type PromptTemplateDefinition = {
+  id: string
+  kind: ZpmtPromptKind
+  categoryId: string
+  categoryName: LocalizedText
+  name: LocalizedText
+  description: LocalizedText
+  preview: LocalizedText
+  build: (context: PromptTemplateBuildContext) => PromptTemplateContent
+}
 type EditorMode = 'normal' | 'preview' | 'assist' | 'source'
-type PromptFileType = 'simple' | 'agent'
-type ZpmtSectionKey = 'config' | 'system' | 'user'
-type ZpmtPromptSectionKey = Extract<ZpmtSectionKey, 'system' | 'user'>
+type PromptFileType = Extract<ZpmtPromptKind, 'chat' | 'agent'>
+type ZpmtSectionKey = 'config' | 'system' | 'user' | 'prompt' | 'negativePrompt' | 'style'
+type ZpmtPromptSectionKey = Extract<ZpmtSectionKey, 'system' | 'user' | 'prompt' | 'negativePrompt' | 'style'>
 type ZpmtCollapsedSections = Partial<Record<ZpmtSectionKey, boolean>>
 type ZpmtToolInstruction = InstructionCatalogItem & {
   categoryId: string
@@ -218,6 +291,7 @@ type InstructionDragPayload =
   | { kind: 'variable'; variableType: VariableType }
   | { kind: 'recipe'; categoryId: string; item: RecipeVariableItem }
   | { kind: 'tool'; categoryId: string; item: InstructionCatalogItem }
+  | { kind: 'constant'; item: ConstantInstructionItem }
 type ProviderFileDragPayload = {
   kind: 'provider-file'
   projectId: string
@@ -338,7 +412,7 @@ type EntryDialogState =
       mode: 'prompt'
       folder: TreeNode
       name: string
-      promptType: PromptFileType
+      promptKind: ZpmtPromptKind
       outputType: ZpmtOutputType
       providerId: string
       model: string
@@ -347,6 +421,9 @@ type EntryDialogState =
   | { mode: 'rename'; node: TreeNode; name: string }
 
 type ZpmtDocument = {
+  schema: 'ccks.zpmt'
+  version: 3
+  kind: ZpmtPromptKind
   config: {
     outputType: ZpmtOutputType
     providerFile: string
@@ -357,8 +434,16 @@ type ZpmtDocument = {
   }
   system: string
   user: string
+  prompt: string
+  negativePrompt: string
+  style: ZpmtImageStyle
   tools: ZpmtToolInstruction[]
   metadata: ZpmtRecipeVariableMetadata
+}
+type ZpmtImageStyle = {
+  mode: ImageStyleInputType
+  value: string
+  extraText: string
 }
 type ZpmtTestVariable = {
   key: string
@@ -366,8 +451,31 @@ type ZpmtTestVariable = {
   name: string
   label: string
   typeLabel: string
+  variableType?: VariableType
+  mediaKind?: 'image' | 'file'
   defaultValue: string
   source?: string
+  recipe?: {
+    candidates: string[]
+    defaultValues: string[]
+    multiple: boolean
+  }
+}
+type ZpmtTestMediaFile = {
+  filename: string
+  mimeType: string
+  size: number
+  dataUrl: string
+}
+type PromptTestPanelState = {
+  activeTab: string
+  variableValues: Record<string, string>
+  variableErrors: Record<string, string>
+  mediaVariableValues: Record<string, ZpmtTestMediaFile[]>
+  maxToolRounds: number
+  runLoading: boolean
+  randomLoading: boolean
+  runResponse: Record<string, unknown> | null
 }
 type ZpmtModelCapabilityGate = {
   supportsTools: boolean
@@ -401,6 +509,7 @@ type ZamfModel = {
   capabilities: ZpmtOutputType[]
   toolCalling: AiProviderModel['toolCalling']
   parameterSchema?: unknown
+  promptSurface?: unknown
   defaultResponseConfig?: unknown
   presetRef?: AiModelPresetRef
 }
@@ -429,12 +538,63 @@ const SOURCE_CONTROL_REFRESH_EVENT = 'ccks-source-control-refresh'
 const ZPMT_INSTRUCTION_DRAG_EVENT = 'ccks-zpmt-instruction-drag'
 const ZPMT_INSTRUCTION_DROP_EVENT = 'ccks-zpmt-instruction-drop'
 const ZPMT_CLEAR_DRAG_CARET_EVENT = 'ccks-zpmt-clear-drag-caret'
-const TAG_NAME_PATTERN = /^[a-z][a-zA-Z0-9_]*$/
+const TAG_NAME_PATTERN = /^[\p{L}\p{N}_-]{1,64}$/u
 const ALL_ZPMT_MODEL_CAPABILITIES: ZpmtModelCapabilityGate = {
   supportsTools: true,
   supportsReferenceImage: true,
   supportsReferenceFile: true,
 }
+
+const ZPMT_CONSTANTS: ConstantInstructionItem[] = [
+  {
+    id: 'now',
+    name: { zh: '当前日期时间', en: 'Current date and time' },
+    tokenName: { zh: '当前时间', en: 'currentTime' },
+    description: { zh: '自动渲染为当前本地日期和时间。', en: 'Automatically renders the current local date and time.' },
+  },
+  {
+    id: 'today',
+    name: { zh: '当前日期', en: 'Current date' },
+    tokenName: { zh: '当前日期', en: 'currentDate' },
+    description: { zh: '自动渲染为当前本地日期。', en: 'Automatically renders the current local date.' },
+  },
+  {
+    id: 'time',
+    name: { zh: '当前时间', en: 'Current time' },
+    tokenName: { zh: '当前时刻', en: 'currentClock' },
+    description: { zh: '自动渲染为当前本地时分秒。', en: 'Automatically renders the current local clock time.' },
+  },
+  {
+    id: 'weekday',
+    name: { zh: '当前星期', en: 'Current weekday' },
+    tokenName: { zh: '当前星期', en: 'currentWeekday' },
+    description: { zh: '自动渲染为当前星期。', en: 'Automatically renders the current weekday.' },
+  },
+  {
+    id: 'iso',
+    name: { zh: 'ISO 时间', en: 'ISO time' },
+    tokenName: { zh: 'ISO时间', en: 'isoTime' },
+    description: { zh: '自动渲染为 ISO 8601 时间戳。', en: 'Automatically renders an ISO 8601 timestamp.' },
+  },
+  {
+    id: 'timestamp',
+    name: { zh: 'Unix 时间戳', en: 'Unix timestamp' },
+    tokenName: { zh: '时间戳', en: 'timestamp' },
+    description: { zh: '自动渲染为毫秒级时间戳。', en: 'Automatically renders the millisecond timestamp.' },
+  },
+  {
+    id: 'uuid',
+    name: { zh: 'UUID', en: 'UUID' },
+    tokenName: { zh: 'UUID', en: 'uuid' },
+    description: { zh: '每次测试渲染时生成一个 UUID。', en: 'Generates a UUID on each test render.' },
+  },
+  {
+    id: 'shortId',
+    name: { zh: '短随机 ID', en: 'Short random ID' },
+    tokenName: { zh: '短ID', en: 'shortId' },
+    description: { zh: '每次测试渲染时生成一个短随机标识。', en: 'Generates a short random id on each test render.' },
+  },
+]
 
 type ZpmtDropPoint = { x: number; y: number }
 type ZpmtInstructionPointEventDetail = {
@@ -456,8 +616,11 @@ const GRID_MARGIN: [number, number] = [8, 8]
 const GRID_PADDING: [number, number] = [8, 8]
 const RESIZE_HANDLES: ResizeHandle[] = ['s', 'w', 'e', 'n', 'sw', 'nw', 'se', 'ne']
 const WINDOW_IDS: WindowId[] = ['files', 'editor', 'tests', 'inspector']
-const PROMPT_FILE_TYPES: PromptFileType[] = ['simple', 'agent']
+const PROMPT_FILE_TYPES: PromptFileType[] = ['chat', 'agent']
 const ZPMT_PROMPT_EDITOR_MIN_HEIGHT = 160
+const COMMON_AI_PROVIDER_ID_PREFIX = 'common:'
+const PROJECT_ENTRY_DRAG_MIME = 'application/x-ccks-project-entry'
+const PROJECT_ARCHIVE_MIME = 'application/zip'
 
 const DEFAULT_MINIMIZED: MinimizedState = {
   files: false,
@@ -479,6 +642,10 @@ const UI_COPY = {
   zh: {
     nav: ['网页管理', '变量管理', '社区', '配置中心'],
     settings: '系统设置',
+    settingsGeneral: '通用',
+    settingsGeneralDesc: '管理工作台主题、语言和基础偏好。',
+    commonProviderManagement: '通用供应商管理',
+    commonProviderManagementDesc: '管理员维护的供应商可被所有用户选择，密钥只在服务端使用。',
     themeToDark: '暗色模式',
     themeToLight: '亮色模式',
     language: 'English',
@@ -505,6 +672,24 @@ const UI_COPY = {
     githubLoginRequired: '请先连接 GitHub',
     createProject: '创建项目',
     importProject: '导入项目',
+    importZipProject: '导入 ZIP 项目',
+    exportProjectZip: '导出项目 ZIP',
+    downloadArchive: '打包下载',
+    downloadSelected: '下载所选',
+    uploadFiles: '上传文件',
+    dropFilesHere: '拖入文件或文件夹上传到这里',
+    moveHere: '移动到这里',
+    zipImportTitle: '导入 ZIP 项目',
+    zipFile: 'ZIP 文件',
+    conflictCount: '发现 {count} 个同名冲突。',
+    conflictOverwritePrompt: '确定覆盖冲突项？取消后可选择跳过冲突项。',
+    conflictSkipPrompt: '是否跳过冲突项并继续处理其余内容？',
+    uploadSuccess: '文件已上传',
+    moveSuccess: '文件位置已更新',
+    archiveDownloadFailed: '打包下载失败',
+    zipImportSuccess: 'ZIP 项目已导入',
+    noFilesToUpload: '没有可上传的文件',
+    dragDownloadHint: '可拖到桌面下载；浏览器不支持时请使用右键打包下载。',
     fileList: '文件列表',
     sourceControl: '源代码管理',
     activity: {
@@ -514,13 +699,14 @@ const UI_COPY = {
     newFolder: '新建文件夹',
     newPromptFile: '新建提示词文件',
     promptFileType: '提示词类型',
-    simplePrompt: '简单提示词',
+    simplePrompt: '文本提示词',
     agentPrompt: 'Agent 提示词',
+    imagePromptFile: '图片提示词',
     outputType: '输出类型',
     aiProvider: 'AI 供应商',
     aiModel: '模型',
     responseConfig: '响应配置',
-    noAiProvider: '暂无 .zamf 供应商文件，请先在文件树创建',
+    noAiProvider: '暂无可用供应商，请先创建 .zamf 或联系管理员配置通用供应商',
     noModelForOutput: '当前输出类型没有可用模型',
     unsupportedByModel: '当前模型不支持',
     aiProviderConfig: 'AI 供应商配置',
@@ -563,6 +749,7 @@ const UI_COPY = {
     imageBackground: '背景',
     imageModeration: '审核强度',
     imageStyle: '图片风格',
+    imageGenerateCount: '生成张数',
     watermark: '添加水印',
     imageOutputFormats: {
       png: 'PNG',
@@ -605,6 +792,9 @@ const UI_COPY = {
     },
     fileConfig: '文件配置',
     providerFile: '供应商文件',
+    projectProviderGroup: '项目供应商',
+    commonProviderGroup: '通用供应商',
+    providerUnavailable: '当前绑定的供应商不可用',
     dropProviderFile: '拖拽 .zamf 到这里替换供应商',
     newLexiconFile: '新建词汇变量文件',
     newProviderModelFile: '新建供应商模型文件',
@@ -628,7 +818,7 @@ const UI_COPY = {
     variableList: '变量列表',
     actions: '操作',
     variableId: '变量 ID',
-    variableName: '变量名',
+    variableName: '名称',
     content: '内容',
     description: '描述',
     candidates: '候选值',
@@ -660,6 +850,12 @@ const UI_COPY = {
     referenceFile: '参考文件',
     systemPrompt: 'System 提示词',
     userPrompt: 'User 提示词',
+    imagePrompt: '主提示词',
+    negativePrompt: '负面提示词',
+    promptStyle: '风格描述',
+    promptStylePreset: '风格预设',
+    promptStyleExtra: '风格补充',
+    unsupportedFieldUnused: '当前模型不支持，测试请求不会发送该字段',
     openFile: '打开文件',
     rename: '重命名',
     delete: '删除',
@@ -746,7 +942,7 @@ const UI_COPY = {
     sourceCode: 'ZPMT 源码',
     aiAssist: {
       title: 'AI辅助',
-      status: '基于当前提示词草稿生成建议',
+      status: '开发中，敬请期待',
       items: ['补充变量默认值说明', '检查 CTA 链接是否存在', '为核心能力增加结构化输出约束'],
       action: '生成优化建议',
     },
@@ -762,7 +958,7 @@ const UI_COPY = {
       '强大集成：丰富的工具与API，扩展无限可能',
     ],
     cta: '立即体验',
-    inspectorTabs: ['变量', '配方变量', '工具'],
+    inspectorTabs: ['变量', '配方变量', '模板', '工具'],
     variables: '变量',
     addVariable: '新增变量',
     variableTypes: {
@@ -775,15 +971,28 @@ const UI_COPY = {
       file: '文件变量',
     },
     recipeVariableLabel: '配方变量',
+    constantVariableLabel: '常量',
+    constantVariables: '常量',
+    constantVariableEmpty: '没有可用常量',
+    constantVariableHint: '拖拽后自动渲染，不会出现在测试变量里。',
     insertInstructionTag: '插入指令标签',
-    instructionName: '英文名称',
-    instructionNamePlaceholder: '例如 heroTitle',
+    instructionName: '名称',
+    instructionNamePlaceholder: '例如 标题 / heroTitle',
     defaultValue: '默认值',
     noDefaultValue: '不设置默认值',
     editTag: '编辑标签',
     saveTag: '保存标签',
     textLength: '文本长度',
     numberRange: '数值范围',
+    arrayType: '数组类型',
+    selectArrayType: '选择数组类型',
+    arrayTypeRequired: '请选择数组类型',
+    arrayItemTypes: {
+      string: '字符串数组',
+      number: '数值数组',
+      boolean: '布尔数组',
+      object: '对象数组',
+    },
     arrayLength: '数组长度',
     imageCount: '图片数量',
     fileSize: '文件大小',
@@ -795,23 +1004,26 @@ const UI_COPY = {
       default: '默认值',
       range: '范围',
       length: '长度',
+      itemType: '数组类型',
       count: '数量',
       size: '文件大小',
+      kind: '类型',
     },
     booleanText: {
       true: '是',
       false: '否',
     },
     cancel: '取消',
+    close: '关闭',
     insertTag: '插入标签',
-    tagNameInvalid: '名称必须以小写英文字母开头，只能包含英文、数字和下划线',
+    tagNameInvalid: '名称可使用中文、英文、数字、下划线或连字符，长度 1-64 个字符',
     tagNameDuplicate: '名称已存在，请重新输入',
     tagInfoRequired: '请填写必要信息',
     fixedTools: '已绑定工具',
     configureTool: '绑定工具',
     bindTool: '绑定工具',
-    toolBindingConfig: '系统上限',
-    toolBindingNoConfig: '该工具没有需要配置的系统上限。确认后，AI 会在调用时提供参数。',
+    toolBindingConfig: '运行配置',
+    toolBindingNoConfig: '该工具没有需要预先填写的运行配置。确认后，AI 会在调用时提供参数。',
     editTool: '编辑工具',
     addTool: '添加工具',
     saveTool: '保存工具',
@@ -823,23 +1035,59 @@ const UI_COPY = {
     toolRunNoTools: '请先从指令集拖拽工具到当前提示词',
     toolRunSuccess: '工具运行成功',
     toolRunFailed: '工具运行失败',
-    toolConfigRequired: '请填写必填工具参数',
+    toolConfigRequired: '请填写必填运行配置',
     downloadFile: '下载文件',
     generatedFile: '生成文件',
     duration: '耗时',
-    runAgent: '运行 Agent',
+    runAgent: '运行测试',
+    generateImage: '生成图片',
     runningAgent: '运行中',
     agentRunNoFile: '打开 .zpmt 文件后可运行测试',
     agentRunNoProvider: '请先绑定供应商和模型',
-    agentRunSuccess: 'Agent 运行成功',
-    agentRunFailed: 'Agent 运行失败',
+    agentRunSuccess: '测试运行成功',
+    agentRunFailed: '测试运行失败',
     testVariables: '测试变量',
     testVariableEmpty: '当前提示词没有变量',
     testValue: '测试值',
+    requiredVariable: '必填',
+    addArrayItem: '添加一项',
+    removeArrayItem: '删除项',
+    arrayItemPlaceholder: '数组项',
+    compactEdit: '点击编辑',
+    selectedCount: '已选 {count} 项',
+    emptySelected: '未选择',
+    editArrayValues: '编辑数组值',
+    editMultiValues: '编辑多选值',
+    extractPromptContent: '提取提示词内容',
+    extractPromptContentTitle: '提取提示词内容',
+    extractPromptContentHint: '复制内容包含当前区域完整提示词和识别到的变量清单。',
+    copyExtractedPromptContent: '复制内容',
+    copiedToClipboard: '已复制到剪切板',
+    extractionVariables: '变量清单',
+    extractionNoVariables: '未识别到变量',
+    generatingImage: '图片生成中',
+    thinkingOutput: '思考内容',
+    toolEvents: '工具过程',
+    runFailedReason: '失败原因',
+    streamDisconnected: '流式连接中断',
+    uploadMedia: '上传文件',
+    replaceMedia: '重新选择',
+    removeMedia: '移除',
+    uploadedMedia: '已上传',
+    mediaUploadHint: '仅用于本次测试，不会保存到项目。',
+    mediaReadFailed: '文件读取失败，请重新选择',
+    mediaInvalidType: '请选择图片文件',
+    mediaTooLarge: '文件超过变量大小限制',
+    mediaCountExceeded: '选择的文件数量超过变量限制',
+    mediaUnsupportedByModel: '当前模型不支持该媒体变量',
     runSettings: '运行设置',
     maxToolRounds: '工具调用最大循环',
     maxToolRoundsHint: '0 表示不执行工具调用；运行时可调整。',
     assistantOutput: 'AI 输出',
+    generatedImages: '生成图片',
+    previewImage: '放大预览',
+    downloadImage: '下载图片',
+    requestPreview: '请求预览',
     noAgentOutput: '暂无运行结果',
     renderedPrompt: '渲染后的提示词',
     removeTool: '移除工具',
@@ -849,6 +1097,12 @@ const UI_COPY = {
       multi: '可多选',
       single: '单选',
     },
+    promptTemplateSearch: '搜索分类、模板或说明',
+    promptTemplateEmpty: '没有匹配的模板',
+    promptTemplateNoFile: '打开 .zpmt 文件后可使用模板',
+    promptTemplateReplaceConfirm: '确认用模板「{name}」替换当前编辑区内容？当前文件会变为未保存状态。',
+    promptTemplateApply: '使用模板',
+    promptTemplatePreview: '替换内容',
     tools: '工具',
     toolInstructionSearch: '搜索分类、工具或指令字段',
     toolInstructionEmpty: '没有匹配的工具指令',
@@ -882,6 +1136,10 @@ const UI_COPY = {
   en: {
     nav: ['Sites', 'Variables', 'Community', 'Config'],
     settings: 'Settings',
+    settingsGeneral: 'General',
+    settingsGeneralDesc: 'Manage workbench theme, language, and basic preferences.',
+    commonProviderManagement: 'Common provider management',
+    commonProviderManagementDesc: 'Admin-managed providers are available to all users. Secrets stay server-side.',
     themeToDark: 'Dark mode',
     themeToLight: 'Light mode',
     language: '中文',
@@ -908,6 +1166,24 @@ const UI_COPY = {
     githubLoginRequired: 'Connect GitHub first',
     createProject: 'Create project',
     importProject: 'Import project',
+    importZipProject: 'Import ZIP project',
+    exportProjectZip: 'Export project ZIP',
+    downloadArchive: 'Download archive',
+    downloadSelected: 'Download selected',
+    uploadFiles: 'Upload files',
+    dropFilesHere: 'Drop files or folders here to upload',
+    moveHere: 'Move here',
+    zipImportTitle: 'Import ZIP project',
+    zipFile: 'ZIP file',
+    conflictCount: '{count} name conflicts found.',
+    conflictOverwritePrompt: 'Overwrite conflicting items? Cancel to choose whether to skip them.',
+    conflictSkipPrompt: 'Skip conflicting items and continue with the rest?',
+    uploadSuccess: 'Files uploaded',
+    moveSuccess: 'File locations updated',
+    archiveDownloadFailed: 'Archive download failed',
+    zipImportSuccess: 'ZIP project imported',
+    noFilesToUpload: 'No files to upload',
+    dragDownloadHint: 'Drag to desktop to download; use right-click archive download if unsupported by your browser.',
     fileList: 'Files',
     sourceControl: 'Source Control',
     activity: {
@@ -917,13 +1193,14 @@ const UI_COPY = {
     newFolder: 'New folder',
     newPromptFile: 'New prompt file',
     promptFileType: 'Prompt type',
-    simplePrompt: 'Simple prompt',
+    simplePrompt: 'Text prompt',
     agentPrompt: 'Agent prompt',
+    imagePromptFile: 'Image prompt',
     outputType: 'Output type',
     aiProvider: 'AI provider',
     aiModel: 'Model',
     responseConfig: 'Response config',
-    noAiProvider: 'No .zamf provider files. Create one in the file tree.',
+    noAiProvider: 'No providers available. Create a .zamf file or ask an admin to configure a common provider.',
     noModelForOutput: 'No available model for this output type',
     unsupportedByModel: 'Not supported by the current model',
     aiProviderConfig: 'AI provider config',
@@ -966,6 +1243,7 @@ const UI_COPY = {
     imageBackground: 'Background',
     imageModeration: 'Moderation',
     imageStyle: 'Image style',
+    imageGenerateCount: 'Image count',
     watermark: 'Watermark',
     imageOutputFormats: {
       png: 'PNG',
@@ -1008,6 +1286,9 @@ const UI_COPY = {
     },
     fileConfig: 'File config',
     providerFile: 'Provider file',
+    projectProviderGroup: 'Project providers',
+    commonProviderGroup: 'Common providers',
+    providerUnavailable: 'The bound provider is unavailable',
     dropProviderFile: 'Drop a .zamf file here to replace the provider',
     newLexiconFile: 'New lexicon file',
     newProviderModelFile: 'New provider model file',
@@ -1031,7 +1312,7 @@ const UI_COPY = {
     variableList: 'Variables',
     actions: 'Actions',
     variableId: 'Variable ID',
-    variableName: 'Variable name',
+    variableName: 'Name',
     content: 'Content',
     description: 'Description',
     candidates: 'Candidates',
@@ -1063,6 +1344,12 @@ const UI_COPY = {
     referenceFile: 'Reference file',
     systemPrompt: 'System prompt',
     userPrompt: 'User prompt',
+    imagePrompt: 'Main prompt',
+    negativePrompt: 'Negative prompt',
+    promptStyle: 'Style notes',
+    promptStylePreset: 'Style preset',
+    promptStyleExtra: 'Style extra',
+    unsupportedFieldUnused: 'The current model does not support this field; it will not be sent in tests.',
     openFile: 'Open file',
     rename: 'Rename',
     delete: 'Delete',
@@ -1149,7 +1436,7 @@ const UI_COPY = {
     sourceCode: 'ZPMT Source',
     aiAssist: {
       title: 'AI Assist',
-      status: 'Suggestions based on the current prompt draft',
+      status: 'In development. Stay tuned.',
       items: ['Document variable defaults', 'Check whether CTA links exist', 'Add structured output rules to capabilities'],
       action: 'Generate suggestions',
     },
@@ -1165,7 +1452,7 @@ const UI_COPY = {
       'Integrations: extend workflows with tools and APIs',
     ],
     cta: 'Start',
-    inspectorTabs: ['Variables', 'Recipes', 'Tools'],
+    inspectorTabs: ['Variables', 'Recipes', 'Templates', 'Tools'],
     variables: 'Variables',
     addVariable: 'Add variable',
     variableTypes: {
@@ -1178,15 +1465,28 @@ const UI_COPY = {
       file: 'File',
     },
     recipeVariableLabel: 'Recipe',
+    constantVariableLabel: 'Constant',
+    constantVariables: 'Constants',
+    constantVariableEmpty: 'No constants available',
+    constantVariableHint: 'Constants render automatically and are not shown as test variables.',
     insertInstructionTag: 'Insert instruction tag',
-    instructionName: 'English name',
-    instructionNamePlaceholder: 'e.g. heroTitle',
+    instructionName: 'Name',
+    instructionNamePlaceholder: 'e.g. 标题 / heroTitle',
     defaultValue: 'Default value',
     noDefaultValue: 'No default',
     editTag: 'Edit tag',
     saveTag: 'Save tag',
     textLength: 'Text length',
     numberRange: 'Number range',
+    arrayType: 'Array type',
+    selectArrayType: 'Select array type',
+    arrayTypeRequired: 'Select an array type',
+    arrayItemTypes: {
+      string: 'String array',
+      number: 'Number array',
+      boolean: 'Boolean array',
+      object: 'Object array',
+    },
     arrayLength: 'Array length',
     imageCount: 'Image count',
     fileSize: 'File size',
@@ -1198,23 +1498,26 @@ const UI_COPY = {
       default: 'Default',
       range: 'Range',
       length: 'Length',
+      itemType: 'Array type',
       count: 'Count',
       size: 'File size',
+      kind: 'Kind',
     },
     booleanText: {
       true: 'Yes',
       false: 'No',
     },
     cancel: 'Cancel',
+    close: 'Close',
     insertTag: 'Insert tag',
-    tagNameInvalid: 'Name must start with a lowercase letter and only include letters, numbers, and underscores',
+    tagNameInvalid: 'Use Chinese, English, numbers, underscores, or hyphens; 1-64 characters',
     tagNameDuplicate: 'Name already exists. Enter another name.',
     tagInfoRequired: 'Fill in the required information',
     fixedTools: 'Bound tools',
     configureTool: 'Bind tool',
     bindTool: 'Bind tool',
-    toolBindingConfig: 'System limits',
-    toolBindingNoConfig: 'This tool has no system limits to configure. After binding, the AI supplies call arguments at runtime.',
+    toolBindingConfig: 'Run config',
+    toolBindingNoConfig: 'This tool has no run config to fill in. After binding, the AI supplies call arguments at runtime.',
     editTool: 'Edit tool',
     addTool: 'Add tool',
     saveTool: 'Save tool',
@@ -1226,23 +1529,59 @@ const UI_COPY = {
     toolRunNoTools: 'Drag tools from the instruction set into the current prompt first',
     toolRunSuccess: 'Tool run succeeded',
     toolRunFailed: 'Tool run failed',
-    toolConfigRequired: 'Fill in required tool parameters',
+    toolConfigRequired: 'Fill in required run config',
     downloadFile: 'Download file',
     generatedFile: 'Generated file',
     duration: 'Duration',
-    runAgent: 'Run Agent',
+    runAgent: 'Run test',
+    generateImage: 'Generate image',
     runningAgent: 'Running',
     agentRunNoFile: 'Open a .zpmt file to run tests',
     agentRunNoProvider: 'Bind a provider and model first',
-    agentRunSuccess: 'Agent run succeeded',
-    agentRunFailed: 'Agent run failed',
+    agentRunSuccess: 'Test run succeeded',
+    agentRunFailed: 'Test run failed',
     testVariables: 'Test variables',
     testVariableEmpty: 'The current prompt has no variables',
     testValue: 'Test value',
+    requiredVariable: 'Required',
+    addArrayItem: 'Add item',
+    removeArrayItem: 'Remove item',
+    arrayItemPlaceholder: 'Array item',
+    compactEdit: 'Click to edit',
+    selectedCount: '{count} selected',
+    emptySelected: 'None selected',
+    editArrayValues: 'Edit array values',
+    editMultiValues: 'Edit multi-select values',
+    extractPromptContent: 'Extract prompt content',
+    extractPromptContentTitle: 'Extract prompt content',
+    extractPromptContentHint: 'The copy includes this full prompt section and the detected variable list.',
+    copyExtractedPromptContent: 'Copy content',
+    copiedToClipboard: 'Copied to clipboard',
+    extractionVariables: 'Variables',
+    extractionNoVariables: 'No variables detected',
+    generatingImage: 'Generating image',
+    thinkingOutput: 'Thinking',
+    toolEvents: 'Tool events',
+    runFailedReason: 'Failure reason',
+    streamDisconnected: 'Stream disconnected',
+    uploadMedia: 'Upload file',
+    replaceMedia: 'Choose again',
+    removeMedia: 'Remove',
+    uploadedMedia: 'Uploaded',
+    mediaUploadHint: 'Used only for this test run; not saved to the project.',
+    mediaReadFailed: 'Failed to read the file. Choose it again.',
+    mediaInvalidType: 'Choose an image file',
+    mediaTooLarge: 'File exceeds the variable size limit',
+    mediaCountExceeded: 'Selected files exceed the variable limit',
+    mediaUnsupportedByModel: 'The current model does not support this media variable',
     runSettings: 'Run settings',
     maxToolRounds: 'Max tool-call loops',
     maxToolRoundsHint: '0 disables tool calls; adjustable per run.',
     assistantOutput: 'AI output',
+    generatedImages: 'Generated images',
+    previewImage: 'Preview image',
+    downloadImage: 'Download image',
+    requestPreview: 'Request preview',
     noAgentOutput: 'No run result yet',
     renderedPrompt: 'Rendered prompt',
     removeTool: 'Remove tool',
@@ -1252,6 +1591,12 @@ const UI_COPY = {
       multi: 'Multi-select',
       single: 'Single-select',
     },
+    promptTemplateSearch: 'Search categories, templates, or descriptions',
+    promptTemplateEmpty: 'No matching templates',
+    promptTemplateNoFile: 'Open a .zpmt file to use templates',
+    promptTemplateReplaceConfirm: 'Replace the current editor content with "{name}"? The current file will become unsaved.',
+    promptTemplateApply: 'Use template',
+    promptTemplatePreview: 'Replacement content',
     tools: 'Tools',
     toolInstructionSearch: 'Search categories, tools, or instruction fields',
     toolInstructionEmpty: 'No matching tool instructions',
@@ -1402,6 +1747,761 @@ const DEFAULT_RECIPE_VARIABLE_CATEGORIES = getDefaultRecipeVariableCategories()
 
 const toolInstructionCategories: InstructionCatalogCategory[] = AI_TOOL_CATEGORIES
 
+const PROMPT_TEMPLATES: PromptTemplateDefinition[] = [
+  {
+    id: 'text-long-article',
+    kind: 'chat',
+    categoryId: 'text-writing',
+    categoryName: { zh: '内容写作', en: 'Content Writing' },
+    name: { zh: '长文文章', en: 'Long-form article' },
+    description: { zh: '适合公众号、博客、知识文章和观点稿。', en: 'For WeChat articles, blogs, knowledge posts, and opinion pieces.' },
+    preview: { zh: '含标题、导语、正文、结尾、摘要和事实边界。', en: 'Includes title, lead, body, ending, abstract, and factual boundaries.' },
+    build: (context) => ({
+      system: `你是一名资深中文长文编辑，负责把零散主题和资料整理成可直接发布的完整文章。你必须先判断资料可信度，再组织观点和叙事，不得编造未提供的数据、人物、案例或引用。\n\n写作变量：\n- 文本类型：${templateRecipeToken(context, 'text-type')}\n- 目标读者：${templateRecipeToken(context, 'target-audience')}\n- 写作语气：${templateRecipeToken(context, 'writing-tone')}\n- 内容结构：${templateRecipeToken(context, 'content-structure')}\n- 长度密度：${templateRecipeToken(context, 'length-density')}\n- 信息来源：${templateRecipeToken(context, 'source-handling')}\n- 输出格式：${templateRecipeToken(context, 'text-output-format')}\n- 禁用项：${templateRecipeToken(context, 'text-avoidance')}\n\n工作要求：\n1. 先提炼中心论点和读者收益，再展开正文。\n2. 事实、推断、建议要分开表达；资料不足时写明“待补充”。\n3. 每个小节都要有清晰主题句，避免空泛形容词堆叠。\n4. 保留可直接发布的标题、导语、正文和结尾，不输出写作过程。`,
+      user: `请根据以下信息写一篇完整长文。\n\n主题：{{str:主题;length<120}}\n核心观点：{{str:核心观点;length<240}}\n目标读者补充：{{str:读者背景;length<300}}\n参考资料：{{str:素材资料;length<5000}}\n必须覆盖的要点：{{arr:关键点;itemType=string;length<10}}\n需要避免的表达：{{arr:避免表达;itemType=string;length<8}}\n\n输出结构：\n1. 标题备选 3 个。\n2. 一段 80-150 字导语，直接说明读者为什么要看。\n3. 正文，按 3-6 个二级标题组织，每节有结论和论据。\n4. 结尾，给出可执行建议或明确判断。\n5. 发布摘要，80 字以内。\n6. 事实边界，列出资料不足或需要核实的点。`,
+    }),
+  },
+  {
+    id: 'text-summary',
+    kind: 'chat',
+    categoryId: 'text-writing',
+    categoryName: { zh: '内容写作', en: 'Content Writing' },
+    name: { zh: '摘要提炼', en: 'Summary extraction' },
+    description: { zh: '从长材料中提炼重点、结论和下一步。', en: 'Extracts key points, conclusions, and next steps from long material.' },
+    preview: { zh: '输出 TL;DR、事实清单、行动项、风险和证据定位。', en: 'Outputs TL;DR, facts, actions, risks, and evidence pointers.' },
+    build: (context) => ({
+      system: `你是一名信息压缩与结构化整理助手。你只能基于用户提供的材料总结，不能补充外部知识或猜测事实。遇到材料冲突、缺失或无法判断的信息，必须单独标注。\n\n整理约束：\n- 信息来源：${templateRecipeToken(context, 'source-handling')}\n- 内容结构：${templateRecipeToken(context, 'content-structure')}\n- 长度密度：${templateRecipeToken(context, 'length-density')}\n- 输出格式：${templateRecipeToken(context, 'text-output-format')}\n- 文本禁用项：${templateRecipeToken(context, 'text-avoidance')}\n\n输出要求：保留高信息密度，删除重复铺垫；行动项必须包含负责人、动作和截止时间，缺失时写“待确认”。`,
+      user: `请总结以下材料。\n\n材料标题：{{str:来源标题;length<120}}\n使用场景：{{str:总结目的;length<200}}\n原始材料：{{str:原始文本;length<8000}}\n重点关注：{{arr:关注点;itemType=string;length<8}}\n\n请按以下结构输出：\n1. TL;DR：用 1-2 句话说明核心结论。\n2. 关键事实：列出 5-10 条，只写材料中出现的信息。\n3. 结构化摘要：按主题分组，每组说明背景、结论、影响。\n4. 行动项表格：事项 / 负责人 / 截止时间 / 依赖 / 当前状态。\n5. 风险与不确定信息：标明冲突、缺失、待核实。\n6. 可追溯证据：为重要结论附上原文关键词或段落位置。`,
+    }),
+  },
+  {
+    id: 'text-product-copy',
+    kind: 'chat',
+    categoryId: 'marketing-copy',
+    categoryName: { zh: '营销转化', en: 'Marketing Conversion' },
+    name: { zh: '产品文案', en: 'Product copy' },
+    description: { zh: '生成卖点清晰、面向转化的商品或服务文案。', en: 'Creates conversion-focused product or service copy.' },
+    preview: { zh: '含标题、卖点、详情页、FAQ、CTA 和合规检查。', en: 'Includes headline, benefits, detail page, FAQ, CTA, and compliance check.' },
+    build: (context) => ({
+      system: `你是一名转化文案策划，擅长把产品参数、使用场景和用户痛点转成可信、具体、可直接上架的销售文案。不要使用绝对化承诺，不夸大功效，不编造认证、销量和评价。\n\n转化变量：\n- 核心卖点：${templateRecipeToken(context, 'selling-point')}\n- 购买动机：${templateRecipeToken(context, 'purchase-motivation')}\n- 促销语气：${templateRecipeToken(context, 'campaign-tone')}\n- 转化渠道：${templateRecipeToken(context, 'commerce-channel')}\n- 目标读者：${templateRecipeToken(context, 'target-audience')}\n- 文本禁用项：${templateRecipeToken(context, 'text-avoidance')}\n\n写作方法：先把参数翻译成用户收益，再把收益落到场景；每条卖点都要对应证据或使用理由。`,
+      user: `请为以下产品生成可直接使用的转化文案。\n\n产品名称：{{str:产品名称;length<100}}\n目标人群：{{str:目标读者;length<200}}\n产品资料/参数：{{str:产品资料;length<2500}}\n核心卖点补充：{{arr:核心卖点;itemType=string;length<10}}\n使用场景：{{arr:使用场景;itemType=string;length<8}}\n价格/活动：{{str:优惠信息;length<200}}\n平台/渠道：{{str:发布渠道;length<120}}\n\n输出：\n1. 主标题 5 个，分别偏理性、场景、促销、品牌、短视频口播。\n2. 副标题 3 个，每个 20-35 字。\n3. 卖点卡片 5 条：卖点标题 / 用户收益 / 支撑证据。\n4. 详情页正文：开头痛点、产品方案、场景说明、购买理由。\n5. FAQ：至少 5 个真实购买疑问及回答。\n6. CTA：短按钮文案 5 个。\n7. 合规自检：列出可能夸大或缺证据的表达并给出替换建议。`,
+    }),
+  },
+  {
+    id: 'text-email-notice',
+    kind: 'chat',
+    categoryId: 'business-text',
+    categoryName: { zh: '商务文本', en: 'Business Text' },
+    name: { zh: '邮件通知', en: 'Email notice' },
+    description: { zh: '生成清晰、礼貌、有行动指向的邮件或通知。', en: 'Creates clear, polite, action-oriented emails or notices.' },
+    preview: { zh: '含邮件主题、正文、行动项、截止时间和跟进语。', en: 'Includes subject, body, action items, deadline, and follow-up text.' },
+    build: (context) => ({
+      system: `你是一名商务沟通编辑。你的邮件必须让收件人快速理解背景、影响、需要做什么、何时完成、如何反馈。语气礼貌但不绕弯，不使用情绪化表达。\n\n文本控制：\n- 目标读者：${templateRecipeToken(context, 'target-audience')}\n- 写作语气：${templateRecipeToken(context, 'writing-tone')}\n- 输出格式：${templateRecipeToken(context, 'text-output-format')}\n- 禁用项：${templateRecipeToken(context, 'text-avoidance')}\n\n要求：重要信息前置；复杂事项拆成清单；没有明确截止时间时标记“待确认”。`,
+      user: `请撰写一封邮件/通知。\n\n邮件目的：{{str:用途;length<120}}\n收件人/对象：{{str:收件人;length<120}}\n背景：{{str:背景;length<1000}}\n需要对方完成的事项：{{arr:行动项;itemType=string;length<8}}\n截止时间：{{str:截止时间;length<80}}\n需要附带的资料/链接：{{arr:附件;itemType=string;length<6}}\n参考文件：{{file:参考文件;size<20MB}}\n补充说明：{{str:补充记录;length<1000}}\n\n输出：\n1. 邮件主题 3 个。\n2. 正文：称呼、背景、事项清单、截止时间、反馈方式、结束语。\n3. 极简版通知，适合发 IM 群。\n4. 跟进提醒文案，适合未回复时二次发送。`,
+    }),
+  },
+  {
+    id: 'text-prd-section',
+    kind: 'chat',
+    categoryId: 'business-text',
+    categoryName: { zh: '商务文本', en: 'Business Text' },
+    name: { zh: 'PRD 段落', en: 'PRD section' },
+    description: { zh: '把需求描述整理为可评审的产品文档段落。', en: 'Turns requirements into reviewable product document sections.' },
+    preview: { zh: '输出目标、范围、流程、字段、规则、异常和验收标准。', en: 'Outputs goal, scope, flow, fields, rules, failures, and acceptance criteria.' },
+    build: (context) => ({
+      system: `你是一名产品经理，负责把口语化需求整理成工程、设计和测试都能评审的 PRD 片段。不要擅自扩大范围；所有不确定信息必须显式标为“待确认”。\n\n结构偏好：${templateRecipeToken(context, 'content-structure')}\n信息来源：${templateRecipeToken(context, 'source-handling')}\n输出格式：${templateRecipeToken(context, 'text-output-format')}\n\n要求：\n1. 区分本期范围、非本期范围和后续扩展。\n2. 规则要写到可实现、可测试的颗粒度。\n3. 验收标准必须能被 QA 直接转成测试用例。`,
+      user: `请整理以下需求为 PRD 段落。\n\n需求原文：{{str:需求原文;length<5000}}\n目标用户：{{str:用户角色;length<200}}\n业务目标：{{str:业务目标;length<300}}\n已有约束：{{arr:约束条件;itemType=string;length<10}}\n相关页面/模块：{{arr:相关模块;itemType=string;length<10}}\n\n输出结构：\n1. 背景与问题。\n2. 目标与成功指标。\n3. 本期范围 / 非本期范围。\n4. 用户故事。\n5. 主流程，按步骤描述触发、操作、系统响应和状态变化。\n6. 字段与规则表：字段 / 类型 / 必填 / 默认值 / 校验 / 权限。\n7. 边界与异常情况。\n8. 验收标准，使用 Given / When / Then。\n9. 待确认问题，按影响程度排序。`,
+    }),
+  },
+  {
+    id: 'text-meeting-notes',
+    kind: 'chat',
+    categoryId: 'business-text',
+    categoryName: { zh: '商务文本', en: 'Business Text' },
+    name: { zh: '会议纪要', en: 'Meeting notes' },
+    description: { zh: '整理会议内容、决议、行动项和风险。', en: 'Organizes meeting content, decisions, action items, and risks.' },
+    preview: { zh: '按议题、决议、行动项、风险、待确认问题整理。', en: 'Organizes topics, decisions, actions, risks, and open questions.' },
+    build: (context) => ({
+      system: `你是一名会议纪要助手。你只记录会议材料中出现的信息，不推断发言人意图，不补充不存在的决议。缺少负责人、截止时间或结论时写“待确认”。\n\n输出格式：${templateRecipeToken(context, 'text-output-format')}\n信息来源：${templateRecipeToken(context, 'source-handling')}\n长度密度：${templateRecipeToken(context, 'length-density')}\n\n要求：纪要要可执行，行动项必须从讨论内容中抽取，不要把普通讨论包装成决议。`,
+      user: `请整理会议纪要。\n\n会议主题：{{str:会议主题;length<120}}\n参会人：{{arr:参会人;itemType=string;length<20}}\n会议记录/转写：{{str:会议记录;length<8000}}\n重点关注：{{arr:关注点;itemType=string;length<8}}\n\n输出结构：\n1. 会议概览：主题、时间、参会人、会议目的。\n2. 结论摘要：不超过 5 条。\n3. 议题记录：每个议题包含讨论要点、结论、分歧。\n4. 行动项表格：事项 / 负责人 / 协作人 / 截止时间 / 依赖 / 验收口径。\n5. 风险与阻塞。\n6. 待确认问题。\n7. 会后同步版：100 字以内，可直接发群。`,
+    }),
+  },
+  {
+    id: 'text-weekly-report',
+    kind: 'chat',
+    categoryId: 'business-text',
+    categoryName: { zh: '商务文本', en: 'Business Text' },
+    name: { zh: '周报', en: 'Weekly report' },
+    description: { zh: '把零散进展整理为面向管理者的周报。', en: 'Turns scattered progress into a manager-facing weekly report.' },
+    preview: { zh: '含本周成果、指标、风险、协同需求和下周计划。', en: 'Includes results, metrics, risks, collaboration needs, and next-week plan.' },
+    build: (context) => ({
+      system: `你是一名项目汇报编辑，负责把零散进展整理成管理者能快速判断进度、价值、风险和资源需求的周报。表达要具体，避免“持续推进、积极沟通”等空话。\n\n写作语气：${templateRecipeToken(context, 'writing-tone')}\n目标读者：${templateRecipeToken(context, 'target-audience')}\n文本禁用项：${templateRecipeToken(context, 'text-avoidance')}\n\n要求：成果要对应影响或数据；风险要说明影响、概率、责任人和缓解方案；下周计划要可验证。`,
+      user: `请生成周报。\n\n汇报周期：{{str:周期;length<80}}\n本周完成：{{arr:已完成事项;itemType=string;length<12}}\n关键数据：{{str:指标;length<1200}}\n重要进展背景：{{str:背景;length<1000}}\n问题风险：{{arr:风险;itemType=string;length<10}}\n下周计划：{{arr:下步事项;itemType=string;length<10}}\n需要协同/决策：{{str:所需帮助;length<800}}\n\n输出：\n1. 一句话总览。\n2. 本周核心成果，按“事项 / 价值 / 证据”写。\n3. 数据变化，说明口径。\n4. 风险与阻塞，给出处理建议。\n5. 下周计划，按优先级排序。\n6. 需要上级或协作方支持的事项。\n7. 30 秒口头汇报版。`,
+    }),
+  },
+  {
+    id: 'text-storyboard-prompt-compiler',
+    kind: 'chat',
+    categoryId: 'visual-prompt',
+    categoryName: { zh: '视觉提示词', en: 'Visual Prompts' },
+    name: { zh: '故事转分镜提示词', en: 'Story to storyboard prompt' },
+    description: { zh: '把故事梗概整理成可用于图片/视频关键帧生成的分镜提示词。', en: 'Turns a story brief into image/video keyframe prompts.' },
+    preview: { zh: '从主体、环境、情绪弧线、镜头和关键帧输出分镜提示词。', en: 'Outputs storyboard prompts from subjects, setting, arc, camera, and keyframes.' },
+    build: (context) => ({
+      system: `你是一名预告片导演、摄影指导和分镜提示词编译器。你的任务不是直接生成图片，而是把故事、参考图和创意要求转成可执行的图像或视频关键帧提示词。\n\n视觉变量：\n- 画面风格：${templateRecipeToken(context, 'visual-style-direction')}\n- 镜头景别：${templateRecipeToken(context, 'shot-size')}\n- 拍摄角度：${templateRecipeToken(context, 'camera-angle')}\n- 光线：${templateRecipeToken(context, 'lighting')}\n- 色调：${templateRecipeToken(context, 'color-tone')}\n- 情绪氛围：${templateRecipeToken(context, 'mood')}\n- 质量描述：${templateRecipeToken(context, 'image-quality')}\n- 分镜流程：${templateRecipeToken(context, 'storyboard-workflow', ['场景拆解', '关键帧列表', '联络单输出'])}\n- 镜头字段：${templateRecipeToken(context, 'storyboard-shot-fields', ['镜头号', '建议时长', '镜头类型', '画面调度/动作'])}\n- 连续性约束：${templateRecipeToken(context, 'storyboard-continuity', ['角色身份一致', '服装道具一致', '轴线原则', '视线匹配'])}\n\n要求：\n1. 先拆解主体、环境、视觉锚点和叙事节拍。\n2. 每个关键帧必须有可画出来的动作、构图、镜头、光影和一致性要求。\n3. 不写无法视觉化的抽象句；需要抽象概念时转成可见符号。\n4. 输出的每帧提示词可以直接复制到图片模型或视频关键帧工作流。`,
+      user: `请把以下故事整理成分镜提示词。\n\n故事梗概：{{str:故事梗概;length<3000}}\n参考图：{{img:参考图;count<=6}}\n参考图/角色说明：{{str:参考说明;length<1500}}\n目标时长或页数：{{str:目标时长或页数;length<120}}\n必须出现的元素：{{arr:必须出现;itemType=string;length<12}}\n需要避免的元素：{{arr:必须避免;itemType=string;length<12}}\n\n输出：\n1. 场景拆解：主体、环境、道具、光影、风格锚点。\n2. 故事主题和 4 段情绪弧线。\n3. 镜头策略：景别变化、相机运动、焦段和景深建议。\n4. 关键帧列表：默认 9-12 帧，每帧包含编号、时长、镜头类型、构图、动作、相机、光影、提示词。\n5. 一致性锁定：角色、服装、道具、背景、色调不能漂移的部分。\n6. 负面提示词：低质量、身份漂移、构图错误、文字错误等。`,
+    }),
+  },
+  {
+    id: 'text-image-prompt-optimizer',
+    kind: 'chat',
+    categoryId: 'visual-prompt',
+    categoryName: { zh: '视觉提示词', en: 'Visual Prompts' },
+    name: { zh: '图片提示词优化', en: 'Image prompt optimizer' },
+    description: { zh: '把口语需求改写成结构完整、可直接使用的图片生成提示词。', en: 'Rewrites rough requests into complete image-generation prompts.' },
+    preview: { zh: '输出主体、构图、材质、光影、用途、负面词和质量检查。', en: 'Outputs subject, composition, material, lighting, use, negatives, and QA.' },
+    build: (context) => ({
+      system: `你是一名图像提示词编译器和质量审查员。你要把用户的口语化需求整理成可直接提交给图片生成模型的提示词，并修复需求中的含糊、冲突和不可画内容。\n\n配方变量：\n- 主体类型：${templateRecipeToken(context, 'subject-type')}\n- 场景类型：${templateRecipeToken(context, 'scene-type')}\n- 构图：${templateRecipeToken(context, 'composition')}\n- 画面风格：${templateRecipeToken(context, 'visual-style-direction')}\n- 渲染方式：${templateRecipeToken(context, 'render-method')}\n- 质量描述：${templateRecipeToken(context, 'image-quality')}\n- 负面约束：${templateRecipeToken(context, 'negative-quality')}\n\n要求：输出必须可直接使用，不要只给建议；如果原始需求存在风险，先给“修正说明”，再给最终提示词。`,
+      user: `请优化以下图片生成需求。\n\n原始需求：{{str:原始提示词;length<3000}}\n参考图：{{img:参考图;count<=4}}\n生成用途：{{str:使用方式;length<160}}\n画幅/比例：{{str:画幅比例;length<80}}\n必须保留：{{arr:必须保留;itemType=string;length<10}}\n需要去掉：{{arr:需要去掉;itemType=string;length<10}}\n\n输出：\n1. 修正说明：指出含糊、冲突或不可画内容。\n2. 最终正向提示词：按主体、动作、场景、构图、光影、材质、风格、质量排序。\n3. 负面提示词：质量问题、构图问题、身份漂移、文字错误等。\n4. 参数建议：比例、镜头、风格强度、参考图使用注意。\n5. 质量检查清单：生成后需要检查的 5-8 项。`,
+    }),
+  },
+  {
+    id: 'text-image-style-reverse-prompt',
+    kind: 'chat',
+    categoryId: 'visual-prompt',
+    categoryName: { zh: '视觉提示词', en: 'Visual Prompts' },
+    name: { zh: '参考图风格反推 Prompt', en: 'Reference style reverse prompt' },
+    description: { zh: '人工整理自“提示词专家分析参考图并输出通用 Prompt”的样本。', en: 'Manually distilled from prompts that analyze a reference image and produce reusable prompts.' },
+    preview: { zh: '先拆视觉风格、构图、色彩、材质和负面项，再输出可复用提示词。', en: 'Breaks down style, composition, color, material, and negatives, then outputs a reusable prompt.' },
+    build: (context) => ({
+      system: `你是一名顶级 AI 绘画提示词专家和视觉风格分析师。你要从用户提供的参考图、说明或旧提示词中提炼可复用的风格规律，而不是机械复述原文。必须区分“画面中实际存在的特征”和“可迁移的生成规则”。\n\n分析变量：\n- 信息来源：${templateRecipeToken(context, 'source-handling', ['仅基于提供材料', '区分事实与推断'])}\n- 画面风格：${templateRecipeToken(context, 'visual-style-direction')}\n- 构图：${templateRecipeToken(context, 'composition')}\n- 光线：${templateRecipeToken(context, 'lighting')}\n- 色调：${templateRecipeToken(context, 'color-tone')}\n- 材质：${templateRecipeToken(context, 'material')}\n- 纸张/印刷质感：${templateRecipeToken(context, 'print-texture', ['纸张颗粒', '印刷质感'])}\n- 负面约束：${templateRecipeToken(context, 'negative-quality')}\n\n要求：输出要能被直接复制用于新主题；保留风格方法，不绑定原图里不可迁移的具体对象，除非用户要求保留。`,
+      user: `请分析参考图或旧提示词，并反推出一套可复用的图片生成 Prompt。\n\n参考图：{{img:参考图;count<=6}}\n旧提示词/说明：{{str:旧提示词或说明;length<5000}}\n新主题/主体：{{str:新主题;length<300}}\n必须保留的风格点：{{arr:必须保留风格;itemType=string;length<10}}\n不要继承的元素：{{arr:不要继承;itemType=string;length<10}}\n用途/比例：{{str:用途比例;length<160}}\n\n请输出：\n1. 视觉风格拆解：媒介、构图、镜头、光影、色彩、材质、细节密度。\n2. 可迁移规律：哪些表达可以换主题复用。\n3. 不应复用内容：原图特定人物、品牌、文字、水印、偶然缺陷等。\n4. 通用正向 Prompt：替换为新主题后可直接使用。\n5. 负面 Prompt：质量、构图、文字、身份漂移和风格跑偏项。\n6. 参数建议：比例、景别、参考图权重、文字使用策略。\n7. 质量检查清单。`,
+    }),
+  },
+  {
+    id: 'image-portrait',
+    kind: 'image',
+    categoryId: 'image-creation',
+    categoryName: { zh: '图片生成', en: 'Image Creation' },
+    name: { zh: '人物肖像', en: 'Portrait' },
+    description: { zh: '生成角色、头像或人物宣传图。', en: 'Creates character, avatar, or people promo images.' },
+    preview: { zh: '可直接生成头像、角色宣传照或人物视觉主图。', en: 'Directly creates avatar, character promo, or people hero visuals.' },
+    build: (context) => ({
+      prompt: `生成一张高完成度人物肖像图。主体为{{str:角色简述;length<800}}，${templateRecipeToken(context, 'subject-type')}，${templateRecipeToken(context, 'pose')}，${templateRecipeToken(context, 'shot-size')}，${templateRecipeToken(context, 'camera-angle')}。人物应占据画面主视觉，脸部识别清晰，五官比例自然，姿态可信，服装与身份设定一致。\n\n画面风格：${templateRecipeToken(context, 'visual-style-direction')}，${templateRecipeToken(context, 'mood')}，${templateRecipeToken(context, 'color-tone')}。光线采用${templateRecipeToken(context, 'lighting')}，保留自然明暗层次和眼神光。细节要求：${templateRecipeToken(context, 'detail-level')}，皮肤、发丝、服饰纹理和边缘轮廓清晰。质量要求：${templateRecipeToken(context, 'image-quality')}。\n\n背景与构图：{{str:背景与构图;length<700}}\n补充要求：{{str:视觉要求;length<800}}\n\n最终效果应像一张可用于头像、角色宣传或人物主视觉的成片，而不是随手草图。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，脸部崩坏，手部错误，多余手指，不自然皮肤，眼神涣散，五官漂移，肢体比例错误，主体被裁切，背景抢主体`,
+      styleText: '人物主体清晰，脸部和眼神优先，背景服务人物，整体适合头像、角色宣传或人物主视觉。',
+    }),
+  },
+  {
+    id: 'image-product-hero',
+    kind: 'image',
+    categoryId: 'image-creation',
+    categoryName: { zh: '图片生成', en: 'Image Creation' },
+    name: { zh: '产品主图', en: 'Product hero' },
+    description: { zh: '生成电商主图、产品展示或广告物料。', en: 'Creates ecommerce hero images, product displays, or ad assets.' },
+    preview: { zh: '适合电商主图、广告 KV、产品详情页首屏。', en: 'For ecommerce hero images, ad key visuals, and product detail hero sections.' },
+    build: (context) => ({
+      prompt: `生成一张商业级产品主图。产品主体：{{str:产品名称;length<120}}，产品资料：{{str:产品资料;length<1200}}。画面必须让产品第一眼可识别，主体边缘清晰，比例真实，材质表现准确：${templateRecipeToken(context, 'material')}，${templateRecipeToken(context, 'detail-level')}。\n\n商业表达：突出${templateRecipeToken(context, 'selling-point')}，适用于${templateRecipeToken(context, 'design-use')}。场景为${templateRecipeToken(context, 'scene-type')}，构图采用${templateRecipeToken(context, 'composition')}，主体占比合理，留出标题、卖点或价格信息的安全区域。\n\n视觉风格：${templateRecipeToken(context, 'visual-style-direction')}，${templateRecipeToken(context, 'lighting')}，${templateRecipeToken(context, 'color-tone')}，${templateRecipeToken(context, 'render-method')}，${templateRecipeToken(context, 'image-quality')}。\n\n品牌/包装要求：{{str:品牌要求;length<500}}\n补充要求：{{str:产品补充要求;length<1000}}`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，杂乱背景，错误透视，产品变形，品牌标识错误，参数文字乱码，低质反光，主体过小，阴影脏乱，包装结构错误`,
+      styleText: '商业棚拍和广告成片质感，产品可信、材质真实、信息区域清楚。',
+    }),
+  },
+  {
+    id: 'image-commercial-poster',
+    kind: 'image',
+    categoryId: 'image-creation',
+    categoryName: { zh: '图片生成', en: 'Image Creation' },
+    name: { zh: '商业海报', en: 'Commercial poster' },
+    description: { zh: '生成活动、品牌或营销海报画面。', en: 'Creates campaign, brand, or marketing poster visuals.' },
+    preview: { zh: '适合活动海报、品牌宣传图和营销 KV。', en: 'For campaign posters, brand promos, and marketing key visuals.' },
+    build: (context) => ({
+      prompt: `生成一张商业海报主视觉。活动/品牌主题：{{str:活动主题;length<160}}。核心信息：{{str:核心信息;length<260}}。必须出现的视觉元素：{{arr:视觉元素;itemType=string;length<10}}。\n\n画面用途：${templateRecipeToken(context, 'design-use')}，画幅：${templateRecipeToken(context, 'image-aspect-ratio')}。整体采用${templateRecipeToken(context, 'visual-style-direction')}，${templateRecipeToken(context, 'composition')}，层级清晰：主视觉最强，标题区明确，辅助元素围绕主题展开，不能喧宾夺主。\n\n氛围与质感：${templateRecipeToken(context, 'mood')}，${templateRecipeToken(context, 'lighting')}，${templateRecipeToken(context, 'color-tone')}，${templateRecipeToken(context, 'detail-level')}，${templateRecipeToken(context, 'image-quality')}。\n\n排版要求：{{str:排版要求;length<800}}\n如果需要文字，只保留短标题和少量关键信息，文字区域要干净、可读、不要生成大段小字。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，文字错误，排版混乱，标题被遮挡，信息拥挤，主体过小，低质素材拼贴，透视错误，色彩脏乱`,
+      styleText: '海报式中心构图，主视觉强，标题安全区清楚，适合活动和品牌传播。',
+    }),
+  },
+  {
+    id: 'image-social-cover',
+    kind: 'image',
+    categoryId: 'image-creation',
+    categoryName: { zh: '图片生成', en: 'Image Creation' },
+    name: { zh: '社媒封面', en: 'Social cover' },
+    description: { zh: '生成小红书、公众号、视频封面等首图。', en: 'Creates covers for social posts, articles, and videos.' },
+    preview: { zh: '适合移动端首图，强调主体、标题区和点击吸引力。', en: 'For mobile covers with strong subject, title area, and click appeal.' },
+    build: (context) => ({
+      prompt: `生成一张社媒封面首图。封面主题：{{str:封面主题;length<140}}，目标读者：${templateRecipeToken(context, 'target-audience')}。视觉关键词：{{arr:关键词;itemType=string;length<10}}。\n\n用途和比例：${templateRecipeToken(context, 'design-use')}，${templateRecipeToken(context, 'image-aspect-ratio')}。画面需要在移动端小尺寸下仍然一眼可读：主体突出，标题区留白明确，背景不抢信息，色块和对比关系清楚。\n\n视觉方向：${templateRecipeToken(context, 'visual-style-direction')}，${templateRecipeToken(context, 'composition')}，${templateRecipeToken(context, 'color-tone')}，${templateRecipeToken(context, 'lighting')}，${templateRecipeToken(context, 'image-quality')}。\n\n封面标题建议：{{str:封面标题;length<80}}\n补充要求：{{str:封面补充要求;length<700}}`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，主体过小，信息拥挤，标题区杂乱，小字过多，低对比，裁切关键信息，错别字`,
+      styleText: '移动端第一眼可读，主体和标题区稳定，适合小红书、公众号、视频封面。',
+    }),
+  },
+  {
+    id: 'image-concept-scene',
+    kind: 'image',
+    categoryId: 'image-creation',
+    categoryName: { zh: '图片生成', en: 'Image Creation' },
+    name: { zh: '场景概念图', en: 'Concept scene' },
+    description: { zh: '生成空间、环境、世界观或氛围概念图。', en: 'Creates space, environment, worldbuilding, or mood concept art.' },
+    preview: { zh: '适合空间设定、世界观、电影感环境和无人场景。', en: 'For space design, worldbuilding, cinematic environments, and no-human scenes.' },
+    build: (context) => ({
+      prompt: `生成一张电影级场景概念图。场景描述：{{str:场景描述;length<1400}}。关键元素：{{arr:关键物件;itemType=string;length<12}}。画面以环境叙事为主，空间关系清晰，前景、中景、远景有层次。\n\n场景类型：${templateRecipeToken(context, 'scene-type')}，情绪氛围：${templateRecipeToken(context, 'mood')}。镜头语言：${templateRecipeToken(context, 'shot-size')}，${templateRecipeToken(context, 'camera-angle')}，${templateRecipeToken(context, 'composition')}。光影与色彩：${templateRecipeToken(context, 'lighting')}，${templateRecipeToken(context, 'color-tone')}。\n\n视觉风格：${templateRecipeToken(context, 'visual-style-direction')}，渲染方式：${templateRecipeToken(context, 'render-method')}，质量：${templateRecipeToken(context, 'image-quality')}。\n\n限制：{{str:场景限制;length<800}}\n如果要求无人物，画面必须保持 empty scene / no humans / landscape only，不能出现路人、剪影或拟人主体。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，透视错误，空间关系混乱，主体不明，人物误入，杂乱堆砌，低清晰度，画面过曝，构图失衡`,
+      styleText: '空间层次清楚，环境氛围明确，可用于影视、美术、游戏和世界观概念设计。',
+    }),
+  },
+  {
+    id: 'image-character-sheet',
+    kind: 'image',
+    categoryId: 'image-creation',
+    categoryName: { zh: '图片生成', en: 'Image Creation' },
+    name: { zh: '角色设定图', en: 'Character sheet' },
+    description: { zh: '生成角色设定、服装、姿态和视觉风格参考。', en: 'Creates character references for outfit, pose, and style.' },
+    preview: { zh: '适合 IP、游戏、动画和虚拟人设定板。', en: 'For IP, game, animation, and virtual persona design sheets.' },
+    build: (context) => ({
+      prompt: `生成一张角色设定图，适合导演、建模师、插画师或游戏美术继续使用。角色设定：{{str:角色设定;length<1400}}。角色类型：${templateRecipeToken(context, 'subject-type')}，核心气质：{{str:核心气质;length<300}}。\n\n画面内容：至少包含主视图和 2-4 个辅助视图或局部细节，可包括正面、侧面、背面、表情、武器、道具、服装纹理。姿态：${templateRecipeToken(context, 'pose')}。服装/道具：{{arr:服装道具;itemType=string;length<12}}。\n\n视觉风格：${templateRecipeToken(context, 'visual-style-direction')}，材质：${templateRecipeToken(context, 'material')}，细节：${templateRecipeToken(context, 'detail-level')}，色调：${templateRecipeToken(context, 'color-tone')}，质量：${templateRecipeToken(context, 'image-quality')}。\n\n版式要求：干净设定板背景，角色轮廓清楚，细节标注区域不要遮挡主体；整体像高预算项目的角色 pitch board，不是普通立绘拼贴。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，比例错误，多余手指，服装结构混乱，视图不一致，身份漂移，设定元素缺失，低质草图，文字乱码`,
+      styleText: '角色轮廓清晰，设定元素完整，适合 IP、游戏、动画和虚拟人后续延展。',
+    }),
+  },
+  {
+    id: 'image-chibi-transparent',
+    kind: 'image',
+    categoryId: 'zrimgs-image',
+    categoryName: { zh: 'ZrImgs 蒸馏模板', en: 'ZrImgs Templates' },
+    name: { zh: 'Q 版透明背景角色', en: 'Chibi transparent character' },
+    description: { zh: '从高频 Q 版透明背景样本蒸馏，适合表情包、头像贴纸和吉祥物。', en: 'Distilled from frequent chibi transparent-background samples.' },
+    preview: { zh: 'Q 版可爱、动作夸张、透明背景、适合贴纸使用。', en: 'Cute chibi, exaggerated action, transparent background, sticker-ready.' },
+    build: (context) => ({
+      prompt: `绘制一个 Q 版可爱角色贴纸，透明背景。角色主体：{{str:角色主体;length<300}}。动作和情绪：{{str:动作情绪;length<300}}。画面要夸张、有记忆点，适合头像、表情包、贴纸或应用内插图。\n\n风格：动漫 Q 版可爱，${templateRecipeToken(context, 'visual-style-direction')}，${templateRecipeToken(context, 'color-tone')}，${templateRecipeToken(context, 'mood')}。主体姿态：${templateRecipeToken(context, 'pose')}，构图：居中构图，主体完整不裁切，轮廓清晰，边缘干净。\n\n细节：可加入少量道具、动作线、情绪符号或短文字气泡：{{str:短文字;length<80}}。如果没有明确要求，不要生成复杂背景，只保留透明背景或极简阴影。\n\n质量：${templateRecipeToken(context, 'detail-level')}，${templateRecipeToken(context, 'image-quality')}，高辨识度，适合抠图和复用。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，复杂背景，主体被裁切，边缘脏，文字乱码，低清晰度，过度写实，恐怖表情，手部错误，多余肢体`,
+      styleText: 'Q 版透明背景贴纸，轮廓干净，动作表情夸张，适合表情包和头像复用。',
+    }),
+  },
+  {
+    id: 'image-ecommerce-russian',
+    kind: 'image',
+    categoryId: 'zrimgs-image',
+    categoryName: { zh: 'ZrImgs 蒸馏模板', en: 'ZrImgs Templates' },
+    name: { zh: '白底俄语电商图', en: 'Russian ecommerce image' },
+    description: { zh: '适合白底商品主图、俄语卖点标签和跨境电商素材。', en: 'For white-background product images with Russian selling-point labels.' },
+    preview: { zh: '白底产品图、俄语标签、参数卖点、清晰主体。', en: 'White product image, Russian labels, specs, clear subject.' },
+    build: (context) => ({
+      prompt: `生成一张白底俄语电商商品图。产品：{{str:产品名称;length<120}}。产品参数与特性：{{arr:产品特性;itemType=string;length<12}}。商品应清晰完整，主体占画面 65%-80%，白底干净，阴影自然，角度能展示关键结构。\n\n信息排版：左侧或右侧放置俄语短标签和参数模块，标签要简洁、可读，颜色与产品风格一致。俄语文案参考：{{arr:俄语标签;itemType=string;length<8}}。如果提供品牌或商标位置，保持原商标排版稳定：{{str:品牌锁定;length<300}}。\n\n视觉质量：${templateRecipeToken(context, 'design-use')}，${templateRecipeToken(context, 'composition')}，${templateRecipeToken(context, 'lighting')}，${templateRecipeToken(context, 'material')}，${templateRecipeToken(context, 'image-quality')}。比例：${templateRecipeToken(context, 'image-aspect-ratio')}。\n\n补充要求：{{str:电商补充要求;length<800}}`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，非白底，背景杂乱，俄语错别字，乱码文字，品牌变形，产品角度错误，参数堆太密，主体过小，阴影脏，低质抠图`,
+      styleText: '白底跨境电商图，产品清楚，俄语标签短而醒目，参数模块不遮挡主体。',
+    }),
+  },
+  {
+    id: 'image-product-parameter-card',
+    kind: 'image',
+    categoryId: 'zrimgs-image',
+    categoryName: { zh: 'ZrImgs 蒸馏模板', en: 'ZrImgs Templates' },
+    name: { zh: '产品参数卖点图', en: 'Product spec card' },
+    description: { zh: '适合详情页参数图、卖点图、功能说明图。', en: 'For detail-page spec cards, selling-point images, and feature explainers.' },
+    preview: { zh: '商品主体 + 参数标签 + 功能说明 + 详情页版式。', en: 'Product subject, spec labels, feature callouts, detail-page layout.' },
+    build: (context) => ({
+      prompt: `生成一张产品参数卖点说明图。产品：{{str:产品名称;length<120}}。核心卖点：{{arr:核心卖点;itemType=string;length<8}}。参数：{{arr:参数清单;itemType=string;length<10}}。\n\n版式：产品主体放在{{str:产品位置;length<80}}，周围用清晰的信息模块说明功能、尺寸、材质、使用场景和优势。信息层级要像成熟电商详情页：主标题醒目，参数短标签清楚，辅助说明不拥挤。\n\n视觉风格：${templateRecipeToken(context, 'visual-style-direction')}，${templateRecipeToken(context, 'composition')}，${templateRecipeToken(context, 'color-tone')}，${templateRecipeToken(context, 'lighting')}，${templateRecipeToken(context, 'material')}。用途：${templateRecipeToken(context, 'design-use')}。质量：${templateRecipeToken(context, 'image-quality')}。\n\n背景与场景：{{str:背景要求;length<700}}\n品牌/文字要求：{{str:文字要求;length<700}}`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，参数错误，文字乱码，小字过密，排版混乱，产品变形，品牌标识错误，信息遮挡主体，低端模板感`,
+      styleText: '详情页参数图逻辑，主体和卖点标签清楚，适合产品功能说明和跨境电商素材。',
+    }),
+  },
+  {
+    id: 'image-reference-edit',
+    kind: 'image',
+    categoryId: 'image-editing',
+    categoryName: { zh: '图生图修改', en: 'Image Editing' },
+    name: { zh: '局部修改保留主体', en: 'Local edit preserving subject' },
+    description: { zh: '适合换装、去物、修正局部、保持主体身份的图生图任务。', en: 'For outfit swaps, object removal, local fixes, and subject-preserving edits.' },
+    preview: { zh: '明确保留不变区域，只修改指定局部。', en: 'Keeps locked areas unchanged and edits only specified regions.' },
+    build: (context) => ({
+      prompt: `基于参考图进行局部修改，只改指定区域，其他部分保持不变。参考图：{{img:参考图;count<=4}}。参考图说明：{{str:参考图说明;length<1000}}。\n\n必须保留：{{arr:必须保留;itemType=string;length<12}}。这些内容包括主体身份、脸部辨识度、身体比例、姿势、镜头角度、光线方向、背景结构、品牌/文字/包装位置等，除非修改要求明确涉及，不得改变。\n\n需要修改：{{arr:修改指令;itemType=string;length<12}}。修改要自然融入原图，透视、材质、阴影、边缘、颜色和清晰度必须匹配原始画面。\n\n目标效果：${templateRecipeToken(context, 'visual-style-direction')}，${templateRecipeToken(context, 'lighting')}，${templateRecipeToken(context, 'material')}，${templateRecipeToken(context, 'detail-level')}，${templateRecipeToken(context, 'image-quality')}。\n\n最终结果应像同一张照片/设计稿的自然编辑版本，而不是重新生成一张不同图片。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，改变主体身份，换脸，背景重绘，姿势改变，构图改变，品牌错位，边缘破损，局部修补痕迹，颜色不一致，透视不匹配`,
+      styleText: '图生图局部编辑，保留主体和原图结构，只修改指定区域。',
+    }),
+  },
+  {
+    id: 'image-game-screenshot',
+    kind: 'image',
+    categoryId: 'zrimgs-image',
+    categoryName: { zh: 'ZrImgs 蒸馏模板', en: 'ZrImgs Templates' },
+    name: { zh: '游戏实机宣传截图', en: 'Game promo screenshot' },
+    description: { zh: '适合次世代游戏实机感、宣传截图和官方概念画面。', en: 'For next-gen in-game-style promo screenshots and official concept visuals.' },
+    preview: { zh: '强调实机演出、城市/场景识别、速度感、logo 和宣传文案区域。', en: 'Emphasizes gameplay staging, recognizable setting, motion, logo, and copy area.' },
+    build: (context) => ({
+      prompt: `创作一张像官方发布的游戏实机宣传截图，而不是普通海报。游戏/项目名：{{str:游戏名称;length<120}}。场景设定：{{str:游戏场景;length<1000}}。时代/地点/世界观：{{str:世界观背景;length<500}}。\n\n画面要体现真实次世代游戏实机演出效果：可玩空间、真实环境细节、动态瞬间、镜头运动感、物理材质和空气透视。主体：{{str:主体;length<400}}。关键元素：{{arr:关键元素;itemType=string;length<12}}。\n\n视觉：${templateRecipeToken(context, 'visual-style-direction')}，${templateRecipeToken(context, 'shot-size')}，${templateRecipeToken(context, 'camera-angle')}，${templateRecipeToken(context, 'lighting')}，${templateRecipeToken(context, 'color-tone')}，${templateRecipeToken(context, 'render-method')}，${templateRecipeToken(context, 'image-quality')}。\n\n宣传信息：在合适位置保留 logo 或标题区：{{str:标志文案要求;length<300}}，整体像官方概念宣传截图，画面高级、震撼、写实。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，普通海报感，UI 杂乱，logo 乱码，场景空洞，低端手游质感，车辆/角色变形，速度感不足，画面糊，透视错误`,
+      styleText: '官方游戏宣传截图质感，实机场景可信，光影、材质和动态瞬间明确。',
+    }),
+  },
+  {
+    id: 'image-comic-story-page',
+    kind: 'image',
+    categoryId: 'zrimgs-image',
+    categoryName: { zh: 'ZrImgs 蒸馏模板', en: 'ZrImgs Templates' },
+    name: { zh: '漫画分镜故事页', en: 'Comic story page' },
+    description: { zh: '适合单页漫画、故事书插画、多格分镜。', en: 'For single-page comics, storybook illustrations, and multi-panel storyboards.' },
+    preview: { zh: '固定风格前缀、页面结构、主格和 inset panels。', en: 'Uses style prefix, page structure, main panel, and inset panels.' },
+    build: (context) => ({
+      prompt: `生成一页完整漫画/故事书分镜图。页码/场景：{{str:页码场景;length<180}}。故事内容：{{str:故事内容;length<1200}}。角色与身份锁定：{{str:角色锁定;length<1200}}。\n\n页面结构：{{str:页面结构;length<300}}，例如 single full-page panel、main panel + 3 inset panels、grid style。每个分格都要有清晰动作、视线方向、前中后景和叙事功能；分格之间保持同一角色、服装、时间、空间和光线逻辑。\n\n统一风格：${templateRecipeToken(context, 'visual-style-direction')}，${templateRecipeToken(context, 'mood')}，${templateRecipeToken(context, 'lighting')}，${templateRecipeToken(context, 'color-tone')}，${templateRecipeToken(context, 'detail-level')}，${templateRecipeToken(context, 'image-quality')}。镜头：${templateRecipeToken(context, 'shot-size')}，${templateRecipeToken(context, 'camera-angle')}。\n\n每格提示：{{arr:分格节拍;itemType=string;length<8}}\n补充要求：成熟、精致、电影感，线条和色彩统一，分镜信息清楚，不要生成无关旁白大段文字。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，分格混乱，角色不一致，服装漂移，文字乱码，脸部崩坏，手部错误，故事顺序错误，过度拥挤，低质草图`,
+      styleText: '单页漫画或故事书分镜，角色和风格一致，主格与小格叙事清楚。',
+    }),
+  },
+  {
+    id: 'image-logo-typography',
+    kind: 'image',
+    categoryId: 'zrimgs-image',
+    categoryName: { zh: 'ZrImgs 蒸馏模板', en: 'ZrImgs Templates' },
+    name: { zh: '字体 Logo 概念图', en: 'Typography logo concept' },
+    description: { zh: '适合品牌字标、字体美学概念和文字主视觉。', en: 'For wordmarks, typography concepts, and text-led key visuals.' },
+    preview: { zh: '让目标字词成为最大、最醒目、最可读的主体。', en: 'Makes the target word the largest, clearest, most memorable subject.' },
+    build: (context) => ({
+      prompt: `请以「{{str:目标字词;length<80}}」为核心，生成一张顶级字体美学概念图像。首要原则：${templateRecipeToken(context, 'typography-role')}。目标字词必须成为画面中最强、最大、最醒目、最有记忆点的视觉主体，第一眼必须能被读懂。\n\n先理解词义，再生成画面。主题/品牌含义：{{str:品牌含义;length<1000}}。分析维度：${templateRecipeToken(context, 'word-meaning-analysis', ['字面含义', '情绪气质', '隐喻与象征', '空间感与力量感'])}。请把目标字词从表层含义推进到更深层视觉隐喻：${templateRecipeToken(context, 'semantic-metaphor')}。视觉隐喻逻辑：${templateRecipeToken(context, 'visual-metaphor-logic', ['空间关系', '尺度反差', '象征关系'])}。画面不是给词配背景，而是让文字本身成为视觉思想。\n\n字形必须表达含义，而不是普通字体贴图。字形互动方式：${templateRecipeToken(context, 'font-interaction')}。可以让笔画生长、断裂、被拉扯、被框架限制、形成负形或成为空间结构。字形可读性护栏：${templateRecipeToken(context, 'type-legibility-guardrails', ['中文结构准确', '英文拼写准确', '变形不破坏可读性'])}。\n\n画幅逻辑：${templateRecipeToken(context, 'adaptive-aspect')}。不要机械固定竖版；根据词义选择方形、竖版、横版、超宽或超竖比例，让画幅成为隐喻的一部分。构图：${templateRecipeToken(context, 'composition')}，文字层级始终高于背景和装饰。\n\n字体风格系统：${templateRecipeToken(context, 'typography-style-system', ['实验字体设计', '高级极简平面设计'])}。视觉方向：${templateRecipeToken(context, 'visual-style-direction')}，色彩：${templateRecipeToken(context, 'color-tone')}，光影：${templateRecipeToken(context, 'lighting')}，材质：${templateRecipeToken(context, 'material')}，文字清晰策略：${templateRecipeToken(context, 'text-clarity-policy')}，质量：${templateRecipeToken(context, 'image-quality')}。补充排版要求：{{str:字体要求;length<1200}}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，目标字词不可读，错别字，文字变形，背景抢主体，小字过多，低端模板，杂乱装饰，logo 被遮挡`,
+      styleText: '文字是绝对主视觉，背景和装饰服务字标，适合品牌概念和字体美学探索。',
+    }),
+  },
+  {
+    id: 'image-world-map-lore',
+    kind: 'image',
+    categoryId: 'zrimgs-image',
+    categoryName: { zh: 'ZrImgs 蒸馏模板', en: 'ZrImgs Templates' },
+    name: { zh: '世界地图设定图', en: 'World map lore' },
+    description: { zh: '适合奇幻/科幻世界地图、势力分布和地理设定。', en: 'For fantasy/sci-fi world maps, factions, and geography lore.' },
+    preview: { zh: '含地理、政治、势力、标注和地图风格约束。', en: 'Includes geography, politics, factions, labels, and map style constraints.' },
+    build: (context) => ({
+      prompt: `生成一张完整世界地图设定图。世界名称：{{str:世界名称;length<120}}。世界观概括：{{str:世界观;length<2000}}。\n\n地图必须包含主要大陆、海洋、山脉、河流、城市、国家/势力边界、重要遗迹或资源点。地理设定：{{arr:地理元素;itemType=string;length<14}}。势力设定：{{arr:势力设定;itemType=string;length<12}}。重要标注：{{arr:地图标注;itemType=string;length<16}}。\n\n风格：${templateRecipeToken(context, 'visual-style-direction')}，${templateRecipeToken(context, 'color-tone')}，${templateRecipeToken(context, 'detail-level')}，${templateRecipeToken(context, 'render-method')}，${templateRecipeToken(context, 'image-quality')}。构图：地图整体完整，边框、比例尺、罗盘、图例清楚，留有标题区。\n\n标注要求：地图文字尽量少而清晰，重点地名优先；如果文字生成不稳定，保持图形符号和区域分布准确。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，地图断裂，边界混乱，文字乱码，地理关系不合理，区域过度拥挤，主体被裁切，低清晰度，没有图例`,
+      styleText: '完整世界地图设定图，地理和势力分布清楚，适合小说、游戏和桌游世界观。',
+    }),
+  },
+  {
+    id: 'image-video-keyframe-sheet',
+    kind: 'image',
+    categoryId: 'zrimgs-image',
+    categoryName: { zh: 'ZrImgs 蒸馏模板', en: 'ZrImgs Templates' },
+    name: { zh: '视频关键帧联络单', en: 'Video keyframe contact sheet' },
+    description: { zh: '从视频分镜样本蒸馏，适合生成 3x3/4x3 关键帧索引图。', en: 'Distilled from video storyboard samples for 3x3/4x3 keyframe sheets.' },
+    preview: { zh: '同一环境、同一主体、镜头连贯、每格标注 KF。', en: 'Same setting and subject, coherent camera sequence, KF labels per panel.' },
+    build: (context) => ({
+      prompt: `生成一张 AI 视频关键帧联络单，用于展示一个连贯短片序列。故事/需求：{{str:视频故事;length<1600}}。主体与身份锁定：{{str:主体锁定;length<1200}}。环境与视觉锚点：{{str:视觉锚点;length<1200}}。\n\n联络单结构：{{str:联络单结构;length<120}}，默认 3x3 或 4x3。分镜生产流程：${templateRecipeToken(context, 'storyboard-workflow', ['场景拆解', '关键帧列表', '联络单输出'])}。每一格代表一个关键帧，并在安全区域清晰标注 KF 编号、镜头类型和建议时长。分镜镜头字段：${templateRecipeToken(context, 'storyboard-shot-fields', ['镜头号', '建议时长', '镜头类型', '画面调度/动作'])}。\n\n所有关键帧必须在同一故事逻辑下连贯延续。连续性约束：${templateRecipeToken(context, 'storyboard-continuity', ['角色身份一致', '服装道具一致', '轴线原则', '视线匹配'])}。\n\n每帧要求：主体位置、前/中/背景、动作节拍、相机高度和角度、焦距/景深、光影调色一致。镜头语言：${templateRecipeToken(context, 'shot-size')}，${templateRecipeToken(context, 'camera-angle')}。版式密度：${templateRecipeToken(context, 'production-board-density', ['结构清晰网格', '模块化排版'])}。风格：${templateRecipeToken(context, 'visual-style-direction')}，${templateRecipeToken(context, 'lighting')}，${templateRecipeToken(context, 'color-tone')}，${templateRecipeToken(context, 'image-quality')}。\n\n情绪弧线：{{arr:情绪节拍;itemType=string;length<6}}\n补充要求：{{str:关键帧要求;length<800}}`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，关键帧不连贯，角色漂移，服装变化，环境变化，KF 标注乱码，分格混乱，轴线错误，画面裁切，低质草图`,
+      styleText: '视频关键帧联络单，3x3 或 4x3 分格，角色、环境、光影和镜头逻辑一致。',
+    }),
+  },
+  {
+    id: 'image-film-storyboard-production-board',
+    kind: 'image',
+    categoryId: 'storyboard-production',
+    categoryName: { zh: '分镜与设定板', en: 'Storyboard and Production Boards' },
+    name: { zh: '影视前期分镜设定板', en: 'Film storyboard production board' },
+    description: { zh: '人工读取影视前期制作板样本后整理，适合中文电影分镜信息图。', en: 'Manually distilled from film preproduction board samples for Chinese storyboard infographics.' },
+    preview: { zh: '顶部项目栏、角色/场景/调度图、8 镜头分镜、灯光声音摄影说明。', en: 'Project bar, character/scene/blocking panels, 8 shots, lighting, sound, and cinematography notes.' },
+    build: (context) => ({
+      prompt: `生成一张高度精细的中文电影分镜信息图海报，专业影视前期制作设定板。项目名称：{{str:项目名称;default=XXX;length<120}}，类型：{{str:影片类型;default=动作 / 爱情 / 科幻;length<120}}，时长：{{str:时长;default=2-3分钟;length<80}}，限制条件：{{str:限制条件;default=8个镜头 / 2个角色 / 1个场景;length<220}}。\n\n整体版式：${templateRecipeToken(context, 'infographic-layout', ['标题栏分区', '分区网格', '8镜头分镜区', '俯视镜头调度图'])}。设定板信息密度：${templateRecipeToken(context, 'production-board-density', ['信息密集但排版整洁', '结构清晰网格', '深色标题栏'])}。报告模块：${templateRecipeToken(context, 'report-sections', ['项目标题', '角色设计区', '场景设计区', '俯视镜头调度图', '分镜故事区', '灯光与风格', '情绪关键词', '声音设计', '摄影说明', '色彩方案'])}。\n\n【角色设计区】展示主要角色正面、背面、侧面、特写、动作姿态和服装道具。角色设定：{{str:角色设定;length<1200}}。角色在所有格子中保持一致，写实摄影风格，高细节面部。\n\n【场景设计区】展示电影级场景概念图，空间细节丰富，真实光影和电影剧照质感。主场景：{{str:场景设定;length<1000}}，关键道具：{{arr:关键道具;itemType=string;length<10}}。\n\n【俯视镜头调度图】生成场景俯视平面图，标注 1-8 编号镜头，用箭头表示人物移动与镜头运动轨迹，类似电影拍摄蓝图/建筑平面图。分镜连续性：${templateRecipeToken(context, 'storyboard-continuity', ['角色身份一致', '服装道具一致', '轴线原则', '视线匹配'])}。\n\n【分镜故事区】默认 8 镜头，每格需要包含：${templateRecipeToken(context, 'storyboard-shot-fields', ['镜头号', '建议时长', '镜头类型', '焦段', '运动方式', '画面调度/动作', '音效/音乐'])}。逐镜故事：{{arr:逐镜文案;itemType=string;length<8}}。\n\n【底部说明区】包含灯光与风格、情绪关键词、声音设计、摄影说明和统一色彩方案。风格标签：{{arr:风格标签;itemType=string;length<12}}。色彩方案：{{str:色彩方案;default=深蓝、灰黑、暖米色、冷青色点缀;length<220}}。文字清晰策略：${templateRecipeToken(context, 'text-clarity-policy', ['标题必须可读', '只保留短标签', '不要密集多行小字'])}。画幅：${templateRecipeToken(context, 'image-aspect-ratio', ['16:9 横版'])}，视觉风格：${templateRecipeToken(context, 'visual-style-direction', ['电影海报', '商业海报'])}，质量：${templateRecipeToken(context, 'image-quality')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，漫画草图风，粗糙分镜，模块混乱，中文乱码，小字密集不可读，角色不一致，服装道具漂移，俯视调度图缺失，镜头编号错误，摄像机设备出现在镜头中，信息过满无层级`,
+      styleText: '专业中文影视前期制作设定板，16:9 横版，模块化网格、角色设定、场景设定、俯视调度和 8 镜头分镜。',
+    }),
+  },
+  {
+    id: 'image-group-portrait-era',
+    kind: 'image',
+    categoryId: 'zrimgs-portrait',
+    categoryName: { zh: '人物与叙事', en: 'People and Story' },
+    name: { zh: '年代群像合影', en: 'Era group portrait' },
+    description: { zh: '从多人合影、年代街景和亲密互动样本蒸馏。', en: 'Distilled from group portrait, era street, and relationship samples.' },
+    preview: { zh: '控制人物数量、关系、站位、年代地点和背景建筑。', en: 'Controls people count, relationship, pose, era location, and background.' },
+    build: (context) => ({
+      prompt: `生成一张真实年代感多人合影。人物数量与关系：{{str:人物关系;length<500}}。站位与动作：{{str:站位姿态;length<600}}。年代地点：{{str:年代地点;length<500}}，背景建筑与街道细节：{{str:背景要求;length<900}}。\n\n人物应表情自然、互动可信、服装发型符合时代背景。构图：${templateRecipeToken(context, 'composition')}，景别：${templateRecipeToken(context, 'shot-size')}，拍摄角度：${templateRecipeToken(context, 'camera-angle')}，光线：${templateRecipeToken(context, 'lighting')}，色调：${templateRecipeToken(context, 'color-tone')}，质量：${templateRecipeToken(context, 'image-quality')}。\n\n必须保留/强调：{{arr:必须保留;itemType=string;length<10}}\n补充要求：{{str:视觉要求;length<800}}`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，人物数量错误，脸部崩坏，手部错误，年代错位，背景穿帮，表情僵硬，关系不清`,
+      styleText: '真实年代感群像，人物关系和时代环境都要可信。',
+    }),
+  },
+  {
+    id: 'image-character-anime-game',
+    kind: 'image',
+    categoryId: 'zrimgs-portrait',
+    categoryName: { zh: '人物与叙事', en: 'People and Story' },
+    name: { zh: '动漫游戏角色主视觉', en: 'Anime game character key visual' },
+    description: { zh: '适合游戏人物、民族风少女、东方玄幻和角色宣传图。', en: 'For game characters, ethnic styling, fantasy, and promo visuals.' },
+    preview: { zh: '锁定角色身份、外观、服装道具、画风和场景主题。', en: 'Locks identity, appearance, outfit, style, and setting.' },
+    build: (context) => ({
+      prompt: `生成一张角色主视觉。角色身份：{{str:角色主体;length<500}}。外观特征：{{str:外观特征;length<800}}。服装、道具和配饰：{{arr:服装道具;itemType=string;length<12}}。场景主题：{{str:场景描述;length<900}}。\n\n人物辨识度要高，姿态：${templateRecipeToken(context, 'pose')}，景别：${templateRecipeToken(context, 'shot-size')}，角度：${templateRecipeToken(context, 'camera-angle')}。画风：${templateRecipeToken(context, 'visual-style-direction')}，材质：${templateRecipeToken(context, 'material')}，情绪：${templateRecipeToken(context, 'mood')}，质量：${templateRecipeToken(context, 'image-quality')}。\n\n补充要求：{{str:视觉要求;length<800}}`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，身份漂移，服装错误，比例错误，脸部崩坏，手部错误，低清晰度，廉价手游感`,
+      styleText: '角色宣传主视觉，身份、服装和场景气质统一。',
+    }),
+  },
+  {
+    id: 'image-reference-cosplay',
+    kind: 'image',
+    categoryId: 'image-edit',
+    categoryName: { zh: '图生图修改', en: 'Image Editing' },
+    name: { zh: '参考图角色一致性 Cosplay', en: 'Reference identity cosplay' },
+    description: { zh: '严格保持参考图发型、配饰、服装和身份识别点。', en: 'Strictly preserves hairstyle, accessories, outfit, and identity cues.' },
+    preview: { zh: '适合参考图角色复刻、随拍和 Cosplay 场景。', en: 'For reference-character recreation, snapshots, and cosplay scenes.' },
+    build: (context) => ({
+      prompt: `基于参考图生成角色一致性照片。参考图：{{img:参考图;count<=4}}。身份锁定点：{{arr:身份锁定点;itemType=string;length<12}}。发型、发色、配饰、服装结构必须与参考图一致：{{str:参考说明;length<1500}}。\n\n拍摄方式/场景：{{str:拍摄场景;length<800}}。画面应像自然照片或随拍，但不能改变参考角色的核心识别特征。镜头：${templateRecipeToken(context, 'shot-size')}，${templateRecipeToken(context, 'camera-angle')}；光线：${templateRecipeToken(context, 'lighting')}；质量：${templateRecipeToken(context, 'image-quality')}。\n\n禁止改变：{{arr:必须避免;itemType=string;length<10}}`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，身份不一致，发型错误，配饰缺失，服装漂移，脸部不一致，过度美化，不像随拍`,
+      styleText: '参考图身份一致性优先，像真实拍摄而不是重新设计角色。',
+    }),
+  },
+  {
+    id: 'image-product-angle-lock',
+    kind: 'image',
+    categoryId: 'ecommerce-image',
+    categoryName: { zh: '产品与电商', en: 'Product and Ecommerce' },
+    name: { zh: '产品角度替换/模板锁定', en: 'Product angle with locked template' },
+    description: { zh: '适合换产品角度、保持 logo/文字模板、尺寸标注和包装区域。', en: 'For changing product angle while locking logos, text templates, and package regions.' },
+    preview: { zh: '明确哪些区域不动，哪些产品结构需要替换。', en: 'Declares locked regions and product structures to replace.' },
+    build: (context) => ({
+      prompt: `对产品图做角度或包装替换。参考图：{{img:参考图;count<=4}}。产品资料：{{str:产品资料;length<1200}}。目标角度/状态：{{str:目标角度;length<300}}。\n\n必须保持不变的区域：{{arr:必须保留;itemType=string;length<12}}，包括 logo、文字模板、包装位置、背景结构或尺寸标注。需要修改：{{arr:修改指令;itemType=string;length<10}}。产品透视、材质、阴影和边缘必须自然。\n\n材质：${templateRecipeToken(context, 'material')}，构图：${templateRecipeToken(context, 'composition')}，光线：${templateRecipeToken(context, 'lighting')}，质量：${templateRecipeToken(context, 'image-quality')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，模板改变，logo 变形，尺寸错误，产品透视错误，文字乱码，包装错位，整体重绘`,
+      styleText: '产品角度替换但模板锁定，适合电商改图和包装修正。',
+    }),
+  },
+  {
+    id: 'image-camping-product',
+    kind: 'image',
+    categoryId: 'ecommerce-image',
+    categoryName: { zh: '产品与电商', en: 'Product and Ecommerce' },
+    name: { zh: '户外露营产品场景图', en: 'Outdoor camping product scene' },
+    description: { zh: '适合露营灯、户外装备、功能标签和使用场景结合。', en: 'For camping lights, outdoor gear, feature labels, and usage scenes.' },
+    preview: { zh: '突出工作时间、亮度、防水、供电等功能参数。', en: 'Highlights runtime, brightness, waterproofing, charging, and feature specs.' },
+    build: (context) => ({
+      prompt: `生成一张户外装备商品图。产品：{{str:产品名称;length<160}}。使用场景：{{str:使用场景;length<800}}。功能参数：{{arr:参数清单;itemType=string;length<10}}。标签文案：{{arr:标签文案;itemType=string;length<8}}。\n\n产品主体必须清晰完整，户外/露营元素真实可信，功能标签短而清楚，不能遮挡主体。视觉：${templateRecipeToken(context, 'visual-style-direction')}，构图：${templateRecipeToken(context, 'composition')}，光线：${templateRecipeToken(context, 'lighting')}，材质：${templateRecipeToken(context, 'material')}，用途：${templateRecipeToken(context, 'design-use')}，质量：${templateRecipeToken(context, 'image-quality')}。比例：${templateRecipeToken(context, 'image-aspect-ratio')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，场景不相关，参数错误，标签乱码，主体过小，低质抠图，材质不真实，背景杂乱`,
+      styleText: '户外产品场景图，产品清楚、功能标签清楚、露营氛围可信。',
+    }),
+  },
+  {
+    id: 'image-marker-style',
+    kind: 'image',
+    categoryId: 'style-conversion',
+    categoryName: { zh: '风格转换', en: 'Style Conversion' },
+    name: { zh: '马克笔手绘风格转换', en: 'Marker sketch style conversion' },
+    description: { zh: '适合把现有画面改成马克笔、手绘草图或设计表现图。', en: 'For marker, sketch, and design-rendering style conversion.' },
+    preview: { zh: '保留主体构图，改变线条、色块和纸张质感。', en: 'Preserves subject layout while changing linework, color blocks, and paper texture.' },
+    build: (context) => ({
+      prompt: `将画面转换为马克笔/手绘设计表现风格。参考图：{{img:参考图;count<=4}}。原始画面说明：{{str:参考说明;length<1200}}。必须保留：{{arr:必须保留;itemType=string;length<10}}。\n\n线条要求：{{str:线条要求;length<300}}。上色方式：{{str:上色方式;length<300}}。整体要有清晰手绘线条、马克笔色块、适度纸张纹理和专业设计表现图完成度。风格：${templateRecipeToken(context, 'visual-style-direction')}，色调：${templateRecipeToken(context, 'color-tone')}，细节：${templateRecipeToken(context, 'detail-level')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，主体改变，线条杂乱，颜色脏，低完成度，过度写实，丢失原构图`,
+      styleText: '马克笔手绘表现图，保留原主体和构图，只转换视觉语言。',
+    }),
+  },
+  {
+    id: 'image-industrial-cleanup',
+    kind: 'image',
+    categoryId: 'image-edit',
+    categoryName: { zh: '图生图修改', en: 'Image Editing' },
+    name: { zh: '工业产品局部校正', en: 'Industrial product local fix' },
+    description: { zh: '适合零件歪斜修正、去除遮挡物和产品局部清理。', en: 'For fixing crooked parts, removing blockers, and local product cleanup.' },
+    preview: { zh: '只改指定零件，整体产品、背景和品牌保持不动。', en: 'Changes only specified parts while keeping product, background, and branding.' },
+    build: (context) => ({
+      prompt: `对工业/商品图进行局部校正。参考图：{{img:参考图;count<=4}}。修正部位：{{str:修正部位;length<300}}。目标状态：{{str:目标状态;length<300}}。\n\n必须不动区域：{{arr:必须保留;itemType=string;length<12}}。只修改指定部位，其他区域全部保持不动。修正后的结构、材质、阴影、边缘和清晰度必须匹配原图。材质：${templateRecipeToken(context, 'material')}，细节：${templateRecipeToken(context, 'detail-level')}，质量：${templateRecipeToken(context, 'image-quality')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，整体重绘，产品变形，边缘破损，材质不一致，背景改变，品牌错位`,
+      styleText: '局部修图优先，不重新生成整张图。',
+    }),
+  },
+  {
+    id: 'image-vehicle-racing',
+    kind: 'image',
+    categoryId: 'game-visual',
+    categoryName: { zh: '游戏与载具', en: 'Games and Vehicles' },
+    name: { zh: '赛车车辆速度场景', en: 'Racing vehicle speed scene' },
+    description: { zh: '适合赛车游戏截图、车辆广告、城市道路和速度感画面。', en: 'For racing screenshots, car ads, city roads, and speed shots.' },
+    preview: { zh: '强调车辆材质、道路环境、城市天际线和运动瞬间。', en: 'Emphasizes vehicle material, road setting, skyline, and motion.' },
+    build: (context) => ({
+      prompt: `生成一张车辆速度场景图。车辆主体：{{str:主体;length<500}}。城市/地点：{{str:场景描述;length<900}}。道路环境：{{str:道路环境;length<600}}。速度动作：{{str:动作情绪;length<300}}。\n\n画面要有真实可玩空间、动态瞬间、车漆反射、路面细节和空气透视。镜头：${templateRecipeToken(context, 'shot-size')}，${templateRecipeToken(context, 'camera-angle')}，构图：${templateRecipeToken(context, 'composition')}。光线：${templateRecipeToken(context, 'lighting')}，色调：${templateRecipeToken(context, 'color-tone')}，渲染：${templateRecipeToken(context, 'render-method')}，质量：${templateRecipeToken(context, 'image-quality')}。\n\n宣传/Logo 要求：{{str:标志文案要求;length<300}}`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，车辆变形，速度感不足，路面虚假，反射错误，透视错误，普通海报感，logo 乱码`,
+      styleText: '车辆高速运动场景，真实材质和道路速度感优先。',
+    }),
+  },
+  {
+    id: 'image-fantasy-wuxia-promo',
+    kind: 'image',
+    categoryId: 'game-visual',
+    categoryName: { zh: '游戏与载具', en: 'Games and Vehicles' },
+    name: { zh: '东方玄幻宽屏宣传图', en: 'Eastern fantasy widescreen promo' },
+    description: { zh: '适合黑神话风、东方玄幻、角色阵容和宽屏宣传图。', en: 'For dark mythic eastern fantasy, character lineups, and widescreen promos.' },
+    preview: { zh: '控制世界观、角色阵容、形象一致性、宽屏比例和场景真实感。', en: 'Controls world, lineup, identity consistency, widescreen ratio, and realism.' },
+    build: (context) => ({
+      prompt: `生成一张东方玄幻游戏宣传图。作品/世界观：{{str:世界观背景;length<900}}。角色阵容：{{arr:角色阵容;itemType=string;length<8}}。角色一致性要求：{{str:角色锁定;length<1200}}。\n\n场景主题：{{str:场景描述;length<900}}。画幅：${templateRecipeToken(context, 'image-aspect-ratio', ['21:9 电影宽屏'])}。人物和场景要贴合世界观，质感超清，像官方宣传图。风格：${templateRecipeToken(context, 'visual-style-direction')}，光线：${templateRecipeToken(context, 'lighting')}，色调：${templateRecipeToken(context, 'color-tone')}，质量：${templateRecipeToken(context, 'image-quality')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，角色不像原设，阵容数量错误，低俗过度，场景不符，脸部崩坏，低清晰度，普通拼贴`,
+      styleText: '东方玄幻宽屏宣传图，角色阵容和场景世界观统一。',
+    }),
+  },
+  {
+    id: 'image-ink-myth-bridge-poster',
+    kind: 'image',
+    categoryId: 'narrative-poster',
+    categoryName: { zh: '收藏叙事海报', en: 'Collectible Narrative Posters' },
+    name: { zh: '水墨神话孤行海报', en: 'Ink myth lone journey poster' },
+    description: { zh: '从悟空石桥、佛面背景、黑白水墨和金红点缀中蒸馏。', en: 'Distilled from mythic bridge, Buddha-face backdrop, ink wash, and gold/red accents.' },
+    preview: { zh: '适合神话人物、孤独前行、巨大精神象征和极简水墨海报。', en: 'For mythic figures, lone journey, massive spiritual symbols, and minimalist ink posters.' },
+    build: (context) => ({
+      prompt: `生成一张极简中国神话水墨数字艺术海报。画面尺寸/比例：{{str:画面尺寸;default=600x800 像素竖版;length<80}}。主体：{{str:神话角色;default=孙悟空;length<120}}，从侧面看正在沿一座狭窄古石桥向前行走，姿态孤独、坚定、带有离开巨大命运的感觉。\n\n角色用粗犷黑色水墨笔触表现，轮廓简洁但动态强。角色拖拽的标志性武器/道具：{{str:标志道具;default=金箍棒;length<160}}，道具擦过地面，留下火花、金色光迹和轻微烟尘。桥面无栏杆，漂浮在无尽白色虚空之上，空间安静、空旷、压迫。\n\n背景是一张占据整幅画面的巨大褪色水彩神性面孔或象征物：{{str:背景象征;default=闭眼佛面;length<240}}，表情宁静，但表面像旧墙漆一样开裂、剥落。叙事载体：${templateRecipeToken(context, 'narrative-carrier', ['巨大精神象征背景', '桥梁行走动线'])}。海报层级：${templateRecipeToken(context, 'poster-hierarchy', ['主视觉最强', '大面积留白'])}。动线与留白：${templateRecipeToken(context, 'visual-flow-whitespace', ['桥梁行走动线', '大面积白色虚空', '视线从主体走向背景象征'])}。\n\n色彩以白色、黑色水墨为主，只允许金色用于道具/火花/光迹，朱红用于少量血迹、印记或墨点。纸张质感：${templateRecipeToken(context, 'print-texture', ['墨迹晕染', '边缘飞白'])}。构图：${templateRecipeToken(context, 'composition')}，情绪：${templateRecipeToken(context, 'mood', ['孤独', '坚定', '宿命感'])}，细节：${templateRecipeToken(context, 'detail-level')}。\n\n署名：在底部中央加入小号黑色毛笔字作者名“{{str:作者署名;default=晚睡自愈丸;length<80}}”，笔触自然，不能喧宾夺主。除署名外不要出现其他文字。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，多余文字，彩色过多，廉价武侠游戏感，背景拥挤，佛面表情夸张，角色比例错误，火花过度，桥梁透视错误，卡通化，3D 塑料感`,
+      styleText: '极简黑白水墨，金色和朱红只作点睛；孤独前行、巨大精神象征和海报留白优先。',
+    }),
+  },
+  {
+    id: 'image-city-summer-ribbon-poster',
+    kind: 'image',
+    categoryId: 'city-poster',
+    categoryName: { zh: '城市与国潮海报', en: 'City and Guochao Posters' },
+    name: { zh: '夏日城市绸带双曝海报', en: 'Summer city ribbon double exposure' },
+    description: { zh: '从夏日城市宣传、S 型绸带河流、国潮手绘地标和大留白中蒸馏。', en: 'Distilled from summer city promotion, S-curve ribbon river, guochao landmarks, and large whitespace.' },
+    preview: { zh: '适合城市文旅、节气海报、地标集合和清爽夏日宣传。', en: 'For city tourism, seasonal posters, landmark collages, and summer promotion.' },
+    build: (context) => ({
+      prompt: `生成一张高雅清爽的城市夏日宣传海报。城市：{{str:城市名称;default=武汉;length<120}}，年份：{{str:年份;default=2026;length<40}}，画幅：${templateRecipeToken(context, 'image-aspect-ratio', ['9:16 手机竖屏'])}。整体是纯白纹理纸背景，双重曝光构图，视觉动线保持优雅的 S 型流动感。叙事载体：${templateRecipeToken(context, 'narrative-carrier', ['S形绸带河流'])}。动线与留白：${templateRecipeToken(context, 'visual-flow-whitespace', ['S形流动感', '丝带变河流', '左下标题安全区'])}。\n\n画面右下角安排一个身穿轻盈中国传统夏季服饰的微缩人物：{{str:人物动作;default=挥舞翠绿色丝绸舞带;length<220}}。舞带在空中向左上方飘动，并在流动过程中奇幻地变形成一条波光粼粼的清澈河流。河流内部叠加城市手绘图，呈现国潮、水汽、云雾、夏日光泽和俯瞰式壮阔空间。双曝融合方式：${templateRecipeToken(context, 'double-exposure-fusion', ['边界雾化过渡', '水彩晕染过渡', '拼贴但不硬裁切'])}。\n\n城市地标：{{arr:城市地标;itemType=string;length<12;default=黄鹤楼,武汉长江大桥,江汉关钟楼,光谷马蹄莲,东湖荷花,珞珈山深绿森林}}。地标与河流、绿意、云雾自然融合，结构复杂但层级清楚，细节丰富但不拥挤。海报层级：${templateRecipeToken(context, 'poster-hierarchy', ['左下角宣传标题', '大面积留白'])}，纸张印刷质感：${templateRecipeToken(context, 'print-texture', ['纸张颗粒', '水彩刷痕'])}。\n\n左下角排版主标题“{{str:主标题;default=SUMMER 2026;length<80}}”和竖排宣传语“{{str:宣传语;default=江城夏日，万物生光;length<120}}”。文字排版优美、大方、清晰完整，文字策略：${templateRecipeToken(context, 'text-clarity-policy', ['标题必须可读', '少量关键信息'])}。视觉风格：${templateRecipeToken(context, 'visual-style-direction', ['国潮', '水彩', '商业海报'])}，色调：${templateRecipeToken(context, 'color-tone', ['清新明亮'])}，构图：${templateRecipeToken(context, 'composition')}，质量：${templateRecipeToken(context, 'image-quality')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，城市地标错误，文字乱码，文字断裂，留白不足，色彩浑浊，地标堆砌，绸带不像河流，河流透视混乱，人物过大，商业模板感`,
+      styleText: '城市文旅竖版海报，S 型丝绸变河流，地标国潮手绘和大面积留白并重。',
+    }),
+  },
+  {
+    id: 'image-guochao-character-double-exposure',
+    kind: 'image',
+    categoryId: 'narrative-poster',
+    categoryName: { zh: '收藏叙事海报', en: 'Collectible Narrative Posters' },
+    name: { zh: '国风角色双曝主视觉', en: 'Guochao character double-exposure key visual' },
+    description: { zh: '从上大下小人物层级、巨型头部剪影、内部叙事拼贴和流动线索中蒸馏。', en: 'Distilled from giant head silhouettes, lower full-body hero, narrative collage, and flowing motifs.' },
+    preview: { zh: '适合 IP 角色、游戏人物、系列海报和东方留白叙事构图。', en: 'For IP characters, game heroes, series posters, and eastern whitespace narrative layouts.' },
+    build: (context) => ({
+      prompt: `生成一张竖版国风游戏人物宣传海报。角色主题：{{str:角色主题;length<180}}。统一采用上大下小的主视觉层级：${templateRecipeToken(context, 'poster-hierarchy', ['上大下小层级', '巨型轮廓第一主体', '完整人物第二主体'])}。画面上半部分以角色最具辨识度的头部轮廓、标志性帽饰/发型/表情作为巨大的剪影式主形，形成第一眼识别；中下部安排完整人物作为第二主体，身着与主题匹配的国风战袍或仪式服装，站姿自信或轻动作姿态，成为画面视觉核心。\n\n大轮廓内部以及角色周围采用双重曝光与拼贴式叙事构图，叙事载体：${templateRecipeToken(context, 'narrative-carrier', ['巨型头部剪影'])}，双曝融合方式：${templateRecipeToken(context, 'double-exposure-fusion', ['轮廓内部生长', '剪影填充式叙事', '外轮廓保持清晰'])}，内部世界组织：${templateRecipeToken(context, 'inner-world-composition', ['标志性场景', '角色关系', '叙事拼贴但不杂乱'])}。融合角色能力释放、载具/阵营/伙伴羁绊、航行或冒险环境、辅助符号和世界观场景：{{arr:内部叙事元素;itemType=string;length<14}}。左右两侧安排呼应性辅景：{{arr:左右辅景;itemType=string;length<8}}。\n\n用一条贯穿画面上下的流动线索连接上方大轮廓、内部拼贴和中下部角色：{{str:流动线索;length<240}}。动线与留白：${templateRecipeToken(context, 'visual-flow-whitespace', ['垂直上升动线', '边缘呼吸感'])}。边缘采用水墨晕染、云雾、虚化破碎和留白处理：${templateRecipeToken(context, 'print-texture', ['墨迹晕染', '边缘飞白'])}，形成东方美学的虚实关系。整体高级、克制、系列化，强调层次、叙事、主视觉冲击和呼吸感。\n\n视觉风格：${templateRecipeToken(context, 'visual-style-direction', ['国风', '商业海报', '游戏宣传'])}，构图：${templateRecipeToken(context, 'composition', ['海报式中心构图', '层次分明'])}，光线：${templateRecipeToken(context, 'lighting')}，色调：${templateRecipeToken(context, 'color-tone')}，质量：${templateRecipeToken(context, 'image-quality')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，角色身份漂移，轮廓不清，内部拼贴杂乱，留白不足，廉价手游感，文字乱码，脸部崩坏，手部错误，元素互相遮挡，普通背景拼接`,
+      styleText: '国风角色系列海报，上方巨型识别轮廓和下方完整人物双主视觉，内部叙事拼贴但保持留白。',
+    }),
+  },
+  {
+    id: 'image-paper-cut-s-landscape',
+    kind: 'image',
+    categoryId: 'city-poster',
+    categoryName: { zh: '城市与国潮海报', en: 'City and Guochao Posters' },
+    name: { zh: '新中式撕纸 S 形山水', en: 'New Chinese paper-tear S landscape' },
+    description: { zh: '从极简新中式、S 形撕纸裂口、内部东方山水和题字落款中蒸馏。', en: 'Distilled from minimalist new Chinese style, S-shaped paper tear, inner landscape, and inscription.' },
+    preview: { zh: '适合东方美学、文旅、节气、城市山水和收藏版装饰画。', en: 'For eastern aesthetics, tourism, seasonal posters, city landscape, and collectible prints.' },
+    build: (context) => ({
+      prompt: `生成一张极简新中式纸艺山水海报。背景为淡雅灰白色纹理纸，具有纸艺剪影般的浅浮雕立体感。叙事载体：${templateRecipeToken(context, 'narrative-carrier', ['S形撕纸裂口'])}。动线与留白：${templateRecipeToken(context, 'visual-flow-whitespace', ['S形流动感', '撕纸裂口引导', '底部落款安全区'])}。画面由一条 S 形蜿蜒的撕纸裂痕边缘分割，像撕开表层纸面，露出内部色彩斑斓但克制的东方山水世界。\n\n裂口内部景观：{{str:内部景观;default=东方山水、河流、山丘、梯田、古风建筑和小船;length<700}}。内部世界组织：${templateRecipeToken(context, 'inner-world-composition', ['远中近景递进', '内部场景通透过渡'])}。一条蜿蜒河流自上而下贯穿构图，河水用深浅不一的蓝色渲染，像流动丝带。河岸两侧有青翠山丘、梯田、树木和柔和红绿点缀，展现田园宁静。古风建筑沿河错落，飞檐翘角、白墙黛瓦、光影古朴。\n\n整体构图保持 S 型韵律，自然与人文和谐共生。撕纸边缘要有真实纸张层次和浮雕阴影：${templateRecipeToken(context, 'print-texture', ['撕纸浮雕', '纸张颗粒'])}，内部风景细节丰富但外部留白干净。下方题字“{{str:主题题字;default=东方美学;length<80}}”使用黑色楷体或书法字体；日期“{{str:日期;default=2026/05/20;length<40}}”、红色印章“{{str:印章文字;default=追梦AI;length<60}}”和底部英文“{{str:底部英文;default=CHINA;length<80}}”低调排布，文字策略：${templateRecipeToken(context, 'text-clarity-policy', ['标题必须可读', '少量关键信息'])}。\n\n风格：${templateRecipeToken(context, 'visual-style-direction', ['国风', '水彩', '商业海报'])}，色调：${templateRecipeToken(context, 'color-tone', ['低饱和', '清新明亮'])}，细节：${templateRecipeToken(context, 'detail-level')}，质量：${templateRecipeToken(context, 'image-quality')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，撕纸效果不明显，S 形断裂，画面拥挤，文字乱码，题字过大，颜色廉价高饱和，透视混乱，纸张质感塑料化，山水像普通插画`,
+      styleText: '极简新中式撕纸山水，外部灰白留白，内部 S 形河流和东方建筑景观。',
+    }),
+  },
+  {
+    id: 'image-anime-washi-double-exposure',
+    kind: 'image',
+    categoryId: 'narrative-poster',
+    categoryName: { zh: '收藏叙事海报', en: 'Collectible Narrative Posters' },
+    name: { zh: '和纸动漫双曝角色海报', en: 'Washi anime double-exposure poster' },
+    description: { zh: '从暗黑奇幻动漫半身肖像、月夜山水、浮世绘和旧宣纸质感中蒸馏。', en: 'Distilled from dark fantasy anime portraits, moonlit landscapes, ukiyo-e, and aged washi texture.' },
+    preview: { zh: '适合动漫角色、浪漫史诗感、发丝/身体轮廓内部世界叙事。', en: 'For anime characters, romantic epic mood, and inner-world silhouette storytelling.' },
+    build: (context) => ({
+      prompt: `生成一张高质量动漫插画收藏海报，9:16 竖版构图。角色：{{str:角色名称;length<120}}，人物为侧面仰头半身肖像，面向{{str:朝向;default=右侧;length<40}}，眼神温柔坚定。外观特征：{{str:角色外观;length<900}}，服装/武器/标志物：{{arr:服装道具;itemType=string;length<12}}。\n\n采用双重曝光构图：叙事载体：${templateRecipeToken(context, 'narrative-carrier', ['人物侧脸剪影', '主题轮廓宇宙'])}。双曝融合方式：${templateRecipeToken(context, 'double-exposure-fusion', ['主体局部与场景融合', '边界雾化过渡', '轮廓内部生长'])}。人物的头发、肩部、衣服和身体轮廓内部融合一整片月夜和风山水世界。内部世界组织：${templateRecipeToken(context, 'inner-world-composition', ['内部场景通透过渡', '角色关系', '远中近景递进'])}。内部叙事元素：{{arr:内部叙事元素;itemType=string;length<16;default=巨大满月,樱花树,神社鸟居,雾气山峦,瀑布,传统楼阁,同伴剪影,小型战斗场景,山间灯火,花海,飘落花瓣}}。画面下方可以有动态战斗剪影，周围有樱花花瓣、蝴蝶、水墨飞白和烟雾流动。\n\n整体色调柔和、梦幻、忧伤但有史诗感：${templateRecipeToken(context, 'color-tone', ['粉彩色', '低饱和'])}。视觉融合细腻动漫线稿、水墨画、水彩晕染、浮世绘质感和旧宣纸背景：${templateRecipeToken(context, 'print-texture', ['旧宣纸', '水彩刷痕', '边缘飞白'])}，边缘保留大量留白。动线与留白：${templateRecipeToken(context, 'visual-flow-whitespace', ['边缘呼吸感', '底部落款安全区'])}。左侧加入竖排毛笔书法装饰“{{str:竖排题字;length<120}}”、红色印章“{{str:印章文字;length<60}}”和小字题跋，文字必须克制、清晰：${templateRecipeToken(context, 'text-clarity-policy', ['标题必须可读', '少量关键信息'])}。\n\n风格：${templateRecipeToken(context, 'visual-style-direction', ['二次元', '国风', '水彩'])}，光线：${templateRecipeToken(context, 'lighting', ['暖色主光', '柔和光'])}，细节：${templateRecipeToken(context, 'detail-level')}，质量：${templateRecipeToken(context, 'image-quality')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，模糊，畸形脸，五官崩坏，手指错误，多余肢体，比例错误，头发杂乱成团，画面过暗，过度饱和，现代城市，科幻机械，3D 渲染，写实照片风，文字乱码，大面积脏污，水印，logo`,
+      styleText: '和纸质感动漫双曝海报，人物轮廓内生长月夜山水世界，浪漫、忧伤、史诗。',
+    }),
+  },
+  {
+    id: 'image-realistic-cosplay-magazine-cover',
+    kind: 'image',
+    categoryId: 'portrait-cover',
+    categoryName: { zh: '人物与封面', en: 'Portraits and Covers' },
+    name: { zh: '真人化 Cosplay 杂志封面', en: 'Realistic cosplay magazine cover' },
+    description: { zh: '从角色真人化、商业摄影、封面排版和高级定制服装中蒸馏。', en: 'Distilled from realistic character cosplay, commercial photography, cover typography, and couture costume translation.' },
+    preview: { zh: '适合游戏/动漫角色真人化、写真封面、商业摄影和角色识别锁定。', en: 'For game/anime character realism, editorial covers, commercial photography, and identity locking.' },
+    build: (context) => ({
+      prompt: `生成一张电影级真人化 Cosplay 杂志封面。角色名称：{{str:角色名称;default=Chun-Li;length<120}}。参考图：{{img:角色参考图;count<=4}}。目标是保留原作识别特征，并转化为真实人类质感、高端写真出道氛围和克制的商业摄影张力。身份保真策略：${templateRecipeToken(context, 'identity-lock-policy', ['保留脸部辨识度', '保留五官比例', '不要网红脸'])}。角色真人化转译：${templateRecipeToken(context, 'character-realism-translation', ['保留原作识别特征', '真实人类皮肤质感', '服装高级定制转译'])}。\n\n角色识别锁定：{{arr:角色识别特征;itemType=string;length<14}}，包括五官气质、眼神、发型轮廓、发色、标志性服装轮廓、配色、饰品、道具或阵营符号。人物比例优雅修长，身体线条自然，真实皮肤质感，保留毛孔、柔和绒毛、自然高光和不过度磨皮的精修质感。姿态：${templateRecipeToken(context, 'pose')}，近景到中景，身体语言开放但不夸张，保持高级、干净、克制。\n\n服装将原作设计转译为高级定制质感：真实奢华面料、精致纹样、自然贴合身体结构，不做廉价 Cosplay 塑料感。发型像高端沙龙造型，符合真实重力和发丝重量。环境：{{str:世界观场景;length<900}}，应绑定角色所属作品、身份背景和气质，像高预算电影布景，包含相关建筑、符号、道具、阵营或世界观元素，轻微雾气和浅景深散景。\n\n封面排版：{{str:封面文字系统;default=日语主标题、罗马音名称、英文短标语、圆形徽章、虚构杂志名、期号、条形码和出版信息;length<900}}。版式：${templateRecipeToken(context, 'infographic-layout', ['杂志封面网格'])}，海报层级：${templateRecipeToken(context, 'poster-hierarchy', ['主视觉最强', '标题区低调清晰'])}，文字清晰策略：${templateRecipeToken(context, 'text-clarity-policy', ['英文拼写准确', '少量关键信息'])}。文字采用高端杂志网格系统，日语/罗马字/英文混排，字重递减，层级清晰；人物局部可遮挡文字形成真实封面层次。不要文字重复、阴影、描边和发光字效。构图：${templateRecipeToken(context, 'composition', ['海报式中心构图'])}，光线：${templateRecipeToken(context, 'lighting', ['工作室布光', '轮廓光'])}，色调：${templateRecipeToken(context, 'color-tone')}，质量：${templateRecipeToken(context, 'image-quality')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，低俗性感，过度暴露，廉价 Cosplay 服装，塑料质感，假发感，五官崩坏，身体比例错误，手指错误，文字重复，乱码文字，文字阴影，发光文字，描边文字，过度磨皮，AI 感皮肤，廉价玄幻背景，无关装饰堆砌，模板化背景，过度锐化，低清晰度`,
+      styleText: '高端商业摄影和杂志封面排版，角色真人化但识别点稳定，服装材质高级克制。',
+    }),
+  },
+  {
+    id: 'image-face-feature-analysis-card',
+    kind: 'image',
+    categoryId: 'portrait-analysis',
+    categoryName: { zh: '人像分析图卡', en: 'Portrait Analysis Cards' },
+    name: { zh: '面部特征分析图卡', en: 'Face feature analysis card' },
+    description: { zh: '根据上传人像自动分析脸型、五官和局部特征，生成标注式信息图。', en: 'Analyzes uploaded portraits and creates annotated face-feature infographics.' },
+    preview: { zh: '中心人像、细箭头、圆角信息卡、短标签和 2-3 条真实特征要点。', en: 'Centered portrait, thin arrows, rounded cards, short labels, and 2-3 factual notes.' },
+    build: (context) => ({
+      prompt: `根据上传人像生成一张“面部特征分析”信息图卡。人像照片：{{img:人像照片;count<=1}}。参考图角色：${templateRecipeToken(context, 'reference-image-role', ['Image 1 唯一身份基准', '只识别最大最清晰主角色'])}。身份保真策略：${templateRecipeToken(context, 'identity-lock-policy', ['唯一身份锚点', '保留脸部辨识度', '保留五官比例'])}。必须严格保留主角真实五官、脸型、肤色、年龄感、发型和表情特征，不要美化成另一个人。\n\n构图：将人像置于画面中心位置，背景干净、现代、留白充足。自动分析面部特征，不要使用固定或预先写死的标签；分析维度：${templateRecipeToken(context, 'portrait-analysis-focus', ['脸型', '眼睛', '眉毛', '鼻子', '脸颊', '嘴唇'])}。根据实际图像检测并标注脸型、眼睛、眉毛、鼻子、脸颊和嘴唇。每个特征用细箭头指向准确位置，箭头轻薄、清晰、不遮挡五官。\n\n每个特征旁边使用小型圆角信息卡片，卡片内包含一个简单线性图标、一个简短标签，以及 2-3 个简短要点来描述真实可见特征。标签示例只作风格参考：柔和椭圆脸、杏仁眼、自然眉峰、立体鼻梁、饱满唇形；实际输出必须根据上传照片自动判断。\n\n版式要求：${templateRecipeToken(context, 'infographic-layout', ['中心人像环绕标注', '圆角信息卡', '细箭头标注'])}。标题“{{str:标题;default=面部特征分析;length<60}}”清晰完整；卡片排布有秩序，左右平衡，避免拥挤。文字清晰策略：${templateRecipeToken(context, 'text-clarity-policy', ['只保留短标签', '标题必须可读', '卡片文字最多两行'])}。整体像专业形象顾问报告或高级杂志信息图，极简、干净、视觉为主。风格：${templateRecipeToken(context, 'visual-style-direction', ['商业海报', '极简主义'])}，构图：${templateRecipeToken(context, 'composition', ['留白构图', '层次分明'])}，色调：${templateRecipeToken(context, 'color-tone', ['高端灰', '清新明亮'])}，质量：${templateRecipeToken(context, 'image-quality')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，身份不一致，五官被改变，固定模板标签，箭头指错位置，卡片遮挡面部，文字乱码，长段文字，信息拥挤，低端医美广告感，过度磨皮，脸部变形`,
+      styleText: '人像居中，自动识别真实面部特征，用细箭头和圆角信息卡做专业分析图卡。',
+    }),
+  },
+  {
+    id: 'image-glasses-fit-guide',
+    kind: 'image',
+    categoryId: 'portrait-analysis',
+    categoryName: { zh: '人像分析图卡', en: 'Portrait Analysis Cards' },
+    name: { zh: '眼镜搭配指南图卡', en: 'Glasses fit guide card' },
+    description: { zh: '保留上传人像真实特征，自动分析脸型并生成适合/不适合眼镜试戴对比。', en: 'Preserves uploaded portrait identity, analyzes face shape, and compares suitable/unsuitable glasses.' },
+    preview: { zh: '并排试戴、推荐/避免眼镜、极简杂志风信息图。', en: 'Side-by-side try-ons, recommended/avoid frames, and minimalist editorial infographic.' },
+    build: (context) => ({
+      prompt: `使用上传人像生成一张“眼镜搭配指南”信息图海报。人像照片：{{img:人像照片;count<=1}}。参考图角色：${templateRecipeToken(context, 'reference-image-role', ['Image 1 唯一身份基准', '忽略背景路人'])}。身份保真策略：${templateRecipeToken(context, 'identity-lock-policy', ['唯一身份锚点', '保留脸部辨识度', '只改变服装/配饰/场景'])}。主体必须 100% 还原上传人像的面部特征、脸型比例、肤色、发型、表情和身份识别点，只改变眼镜款式展示，不改变人物本身。\n\n自动分析脸型、五官比例、眉眼距离、鼻梁高度和面部线条：${templateRecipeToken(context, 'portrait-analysis-focus', ['脸型', '眉眼距离', '鼻梁高度', '脸宽比例'])}，然后生成适合与不适合的眼镜推荐。试穿试戴展示策略：${templateRecipeToken(context, 'tryon-display-policy', ['同一张脸并排对比', '只改变眼镜款式', '眼镜贴合鼻梁耳部'])}。使用同一张脸展示并排的眼镜试戴效果对比：${templateRecipeToken(context, 'infographic-layout', ['并排对比', '圆角信息卡'])}。对比标签：${templateRecipeToken(context, 'comparison-labels', ['推荐', '普通', '避免', '修饰脸型'])}。每组可展示 2-4 种镜框，镜框示例应根据实际脸型自动判断，包括圆框、方框、猫眼、飞行员、细金属框、粗框、半框或无框等。\n\n版面设计干净、现代、极简，以视觉呈现为主。标题“{{str:标题;default=眼镜搭配指南;length<60}}”清晰完整；使用圆角卡片、细线条、微妙阴影、清晰标签和高级杂志风排版。文字策略：${templateRecipeToken(context, 'text-clarity-policy', ['只保留短标签', '标题必须可读'])}，不要长段说明。\n\n必须让眼镜真实贴合脸部透视、鼻梁、耳部和脸宽，不要漂浮或遮挡眼睛。风格：${templateRecipeToken(context, 'visual-style-direction', ['极简主义', '商业海报'])}，构图：${templateRecipeToken(context, 'composition', ['对称构图', '层次分明'])}，色调：${templateRecipeToken(context, 'color-tone', ['高端灰', '清新明亮'])}，质量：${templateRecipeToken(context, 'image-quality')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，人物不像原图，脸型改变，眼镜漂浮，镜框透视错误，镜腿缺失，遮挡眼睛，推荐不分组，文字乱码，长段文字，卡片拥挤，低端广告模板，过度美颜`,
+      styleText: '同一张脸做眼镜试戴对比，适合/不适合分组清楚，极简高级信息图。',
+    }),
+  },
+  {
+    id: 'image-personal-color-analysis-card',
+    kind: 'image',
+    categoryId: 'portrait-analysis',
+    categoryName: { zh: '人像分析图卡', en: 'Portrait Analysis Cards' },
+    name: { zh: '个人色彩分析图卡', en: 'Personal color analysis card' },
+    description: { zh: '根据上传人像保留真实特征，展示适合色与不适合色的服装上身对比。', en: 'Preserves portrait identity and compares flattering vs unflattering clothing colors.' },
+    preview: { zh: '左右/并排对比、推荐/普通/避免短标签、专业形象顾问报告风。', en: 'Side-by-side comparison, recommendation labels, and professional image-consultant report style.' },
+    build: (context) => ({
+      prompt: `根据上传人像制作一张高质感个人色彩分析图卡。人像照片：{{img:人像照片;count<=1}}。参考图角色：${templateRecipeToken(context, 'reference-image-role', ['Image 1 唯一身份基准', '辅助图只校正光线角度', '多宫格同一张脸'])}。人像报告类型：${templateRecipeToken(context, 'portrait-report-type', ['个人色彩分析报告'])}。身份保真策略：${templateRecipeToken(context, 'identity-lock-policy', ['唯一身份锚点', '保留脸部辨识度', '多图保持同一张脸'])}。必须保留主角原本五官、肤色、脸型、真实气质、发型和身份识别点，不要改变成另一个人。\n\n自动分析主角肤色冷暖、明度、饱和度、发色和五官对比度：${templateRecipeToken(context, 'portrait-analysis-focus', ['肤色冷暖', '肤色明度', '发色', '瞳色', '面部对比度', '气质关键词'])}。色彩分析结果策略：${templateRecipeToken(context, 'color-analysis-result-policy', ['自动分析但标注维度', '展示个人季型', '推荐/普通/避免色'])}。通过左右或并排对比方式展示不同服装颜色穿在主角身上的效果。试穿展示策略：${templateRecipeToken(context, 'tryon-display-policy', ['同一张脸并排对比', '只改变衣服颜色', '头颈肩关系协调'])}。清楚区分对比标签：${templateRecipeToken(context, 'comparison-labels', ['最适合', '普通', '不建议', '显白', '显暗沉'])}，让人一眼看出哪些颜色最衬肤色、提升气色与整体质感，哪些颜色显暗沉、显疲惫或压低气质。\n\n画面主体可以使用同一人像的 3-6 个并排小试穿效果，也可以使用中心人像搭配两侧色彩推荐卡。版式：${templateRecipeToken(context, 'infographic-layout', ['并排对比', '色板矩阵', '竖版报告页'])}。报告模块：${templateRecipeToken(context, 'report-sections', ['个人特征分析', '色彩季型判断', '上身颜色对比', '专属色盘'])}。服装颜色由系统根据照片自动选择，也可参考用户指定色组：{{arr:指定色组;itemType=string;length<12}}。\n\n版面设计干净时尚，像专业形象顾问报告或高级社群分享图卡。使用清晰排版、圆角卡片、色板/色块、细线条和微妙阴影；信息以视觉呈现为主。标题“{{str:标题;default=个人色彩分析;length<80}}”清晰完整。文字策略：${templateRecipeToken(context, 'text-clarity-policy', ['只保留短标签', '标题必须可读', '色卡只写颜色名'])}。风格：${templateRecipeToken(context, 'visual-style-direction', ['商业海报', '极简主义'])}，构图：${templateRecipeToken(context, 'composition', ['层次分明', '留白构图'])}，色调：${templateRecipeToken(context, 'color-tone', ['清新明亮', '高端灰'])}，质量：${templateRecipeToken(context, 'image-quality')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，人物不像原图，肤色被严重改变，脸型变化，服装颜色对比不明显，推荐和避免混乱，长段文字，文字乱码，卡片拥挤，低端模板感，过度美颜，色块脏乱`,
+      styleText: '上传人像真实保留，做适合色/普通/避免色的服装上身对比，专业形象顾问图卡风。',
+    }),
+  },
+  {
+    id: 'image-personal-color-report-visualization',
+    kind: 'image',
+    categoryId: 'portrait-analysis',
+    categoryName: { zh: '人像分析图卡', en: 'Portrait Analysis Cards' },
+    name: { zh: '个人色彩报告结果可视化', en: 'Personal color report visualization' },
+    description: { zh: '从已确认个人色彩报告样本人工整理，重点是结果排版而不是重新判断。', en: 'Manually distilled from confirmed personal color report samples, focusing on visualizing results rather than re-judging.' },
+    preview: { zh: '身份保真、已确认季型、适合/普通/不建议色、妆发饰品建议和中文短标签。', en: 'Identity lock, confirmed season type, recommended/ordinary/avoid colors, styling advice, and short Chinese labels.' },
+    build: (context) => ({
+      prompt: `根据上传人像和已确认的个人色彩分析结果，生成一张高质感「个人色彩分析报告」海报。人像照片：{{img:人像照片;count<=3}}。已确认分析结果：{{str:已确认分析结果;length<7000}}。\n\n重点：这是结果可视化，不是重新分析。色彩分析结果策略：${templateRecipeToken(context, 'color-analysis-result-policy', ['结果可视化', '不要重新判断', '严格按已确认结果'])}。如果用户提供了季型、适合色、不建议色、妆发饰品建议，必须严格按用户内容排版，不要新增结论、不要自由发挥。\n\n参考图角色：${templateRecipeToken(context, 'reference-image-role', ['Image 1 唯一身份基准', '辅助图只校正光线角度', '多宫格同一张脸'])}。身份保真策略：${templateRecipeToken(context, 'identity-lock-policy', ['唯一身份锚点', '保留脸部辨识度', '保持脸型发际线眉眼距离'])}。只识别 Image 1 中最清晰、最大、最居中的主角色；剔除背景路人、镜面反射人物和屏幕/海报人像。所有主图、Before 小图、上身颜色对比和缩略图必须是同一张脸。允许自然调整头部角度以适配服装，但头、脖子、肩线和身体朝向要协调，不能硬贴原图头部。\n\n报告模块：${templateRecipeToken(context, 'report-sections', ['个人特征分析', '色彩季型判断', '上身颜色对比', '专属色盘', '最显白Top5', '最提气色Top5', '妆容色彩建议', '发色方向建议', '饰品材质建议'])}。人像分析维度：${templateRecipeToken(context, 'portrait-analysis-focus', ['肤色冷暖', '肤色明度', '发色', '瞳色', '面部对比度', '气质关键词'])}。上身颜色对比：${templateRecipeToken(context, 'tryon-display-policy', ['同一张脸并排对比', '只改变衣服颜色', '小图身份不稳则减少数量'])}。对比标签：${templateRecipeToken(context, 'comparison-labels', ['最适合', '普通', '不建议', '显白', '显疲惫', '显高级'])}。\n\n版面采用清新高级手绘手帐风 + 专业形象顾问报告感。纸张印刷质感：${templateRecipeToken(context, 'print-texture', ['纸张颗粒', '胶带拼贴', '拍立得边框', '手写感标题'])}。整体以米白、奶油白、浅杏色或用户指定配色为底：{{str:版面配色;default=米白、奶油白、浅杏色、冷灰蓝点缀;length<220}}。使用圆角卡片、色板矩阵、柔和阴影和高级留白。信息图布局：${templateRecipeToken(context, 'infographic-layout', ['竖版报告页', '色板矩阵', '并排对比', '图标+短标签'])}。\n\n文字清晰策略：${templateRecipeToken(context, 'text-clarity-policy', ['只保留短标签', '每行不超过8个汉字', '标题必须可读', '色卡只写颜色名'])}。必须可读文字优先保留：{{arr:必须可读文字;itemType=string;length<16;default=个人色彩分析报告,个人特征分析,色彩季型判断,上身颜色对比,专属色盘,最适合,普通,不建议,结论}}。不要把长段分析直接排进图里；无法保证清晰的小字用色块、短线、图标或留白替代。画幅：${templateRecipeToken(context, 'image-aspect-ratio', ['4:5 社媒竖图', 'A4 竖版'])}，质量：${templateRecipeToken(context, 'image-quality')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，重新判断用户结论，新增未提供结论，人物不像原图，换脸，网红脸，肤色严重改变，多宫格不是同一人，长段正文，小字乱码，伪中文，淘宝详情页风，廉价模板感，过度花哨，高饱和脏色，卡片拥挤`,
+      styleText: '个人色彩报告结果可视化，身份保真，严格按已确认结论排版，用短标签、色卡和试穿对比表达。',
+    }),
+  },
+  {
+    id: 'image-symbolic-outline-universe-poster',
+    kind: 'image',
+    categoryId: 'narrative-poster',
+    categoryName: { zh: '收藏叙事海报', en: 'Collectible Narrative Posters' },
+    name: { zh: '轮廓宇宙收藏海报', en: 'Symbolic outline universe poster' },
+    description: { zh: '从“主题宇宙依附象征轮廓展开”的收藏版叙事海报中蒸馏。', en: 'Distilled from collectible narrative posters where a themed universe grows within a symbolic outline.' },
+    preview: { zh: '自动选择最匹配主题的轮廓载体，内部生长完整叙事世界。', en: 'Chooses a theme-matched outline carrier and grows a full narrative world inside it.' },
+    build: (context) => ({
+      prompt: `根据主题“{{str:主题;default=权力的游戏;length<180}}”生成一张高审美的轮廓宇宙 / 收藏版叙事海报。叙事载体：${templateRecipeToken(context, 'narrative-carrier', ['主题轮廓宇宙'])}。不要默认瓶子、沙漏、玻璃罩、怀表等常规容器；请根据主题自动选择最有象征意义、轮廓最强、最能承载完整叙事世界的主轮廓载体。\n\n主轮廓可以从器物、建筑、门、塔、拱门、穹顶、楼梯井、长廊、雕像、侧脸、眼睛、手掌、头骨、羽翼、面具、镜面、王座、圆环、裂缝、光幕、阴影、几何结构、空间切面、舞台框景或抽象符号中选择，也可以创造更贴合主题的结构。轮廓必须清晰、优雅、有辨识度，占据构图核心。海报层级：${templateRecipeToken(context, 'poster-hierarchy', ['巨型轮廓第一主体', '内部细节不拥挤', '大面积留白'])}。动线与留白：${templateRecipeToken(context, 'visual-flow-whitespace', ['小人物放大空间尺度', '边缘呼吸感', '不要平均铺满'])}。\n\n轮廓内部或边界中自然生长完整主题世界：{{arr:主题叙事元素;itemType=string;length<18}}。双曝融合方式：${templateRecipeToken(context, 'double-exposure-fusion', ['轮廓内部生长', '符号沿边界生长', '不要素材堆叠'])}。内部世界组织：${templateRecipeToken(context, 'inner-world-composition', ['标志性场景', '核心建筑', '角色关系', '远中近景递进', '自然生长于轮廓'])}。内容应包含标志性场景、核心建筑/空间结构、象征符号、角色关系或文明痕迹、远中近景递进、命运感氛围，以及门、台阶、桥、水面、烟雾、路径、光源、遗迹、自然景观、生物或道具等叙事细节。所有元素必须统一、自然、有主次，像世界真实孕育在轮廓结构之中。\n\n整体风格融合收藏版电影海报、高级叙事视觉设计、梦幻水彩和纸张印刷品气质。纸张印刷质感：${templateRecipeToken(context, 'print-texture', ['纸张颗粒', '边缘飞白', '水彩刷痕'])}。色彩方向：{{str:色彩方向;default=低饱和黑金灰、冷蓝灰、雾白灰、暗铜与旧纸色;length<260}}。可低调加入标题、编号、签名或落款“{{str:落款;length<80}}”，文字策略：${templateRecipeToken(context, 'text-clarity-policy', ['少量关键信息', '标题必须可读'])}。构图：${templateRecipeToken(context, 'composition')}，细节：${templateRecipeToken(context, 'detail-level')}，质量：${templateRecipeToken(context, 'image-quality')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，普通容器套路，瓶子沙漏玻璃罩优先，背景拼接，生硬裁切，模板化奇幻素材，游戏宣传图感，过度卡通化，塑料数码感，高饱和廉价霓虹，形式大于内容，轮廓不清，内部世界杂乱`,
+      styleText: '收藏版轮廓宇宙海报，强象征主轮廓内自然生长完整主题世界，安静宏大、纸张水彩质感。',
+    }),
+  },
+  {
+    id: 'image-side-face-silhouette-epic',
+    kind: 'image',
+    categoryId: 'narrative-poster',
+    categoryName: { zh: '收藏叙事海报', en: 'Collectible Narrative Posters' },
+    name: { zh: '侧脸剪影史诗叙事海报', en: 'Side-face silhouette epic poster' },
+    description: { zh: '从巨大人物侧脸剪影、内部世界观填充、梦幻水彩和签名落款中蒸馏。', en: 'Distilled from giant side-face silhouettes filled with inner worlds, watercolor, and signature marks.' },
+    preview: { zh: '适合时代篇章、人物群像、历史叙事和收藏版海报。', en: 'For era chapters, character ensembles, historical narratives, and collectible posters.' },
+    build: (context) => ({
+      prompt: `根据主题“{{str:主题;default=民国篇;length<180}}”生成一张收藏版史诗叙事海报。画面使用巨大、优雅的人物侧脸剪影作为外轮廓：{{str:侧脸身份;length<260}}。叙事载体：${templateRecipeToken(context, 'narrative-carrier', ['人物侧脸剪影'])}。侧脸轮廓必须清晰、安静、庄重，成为第一眼记忆点。\n\n剪影内部自动生长出最契合主题的完整世界观、标志性场景、角色关系、象征符号、关键建筑、生物/道具和氛围层次：{{arr:内部世界元素;itemType=string;length<18}}。双曝融合方式：${templateRecipeToken(context, 'double-exposure-fusion', ['剪影填充式叙事', '边界雾化过渡', '拼贴但不硬裁切'])}。内部世界组织：${templateRecipeToken(context, 'inner-world-composition', ['标志性场景', '角色关系', '文明痕迹', '远中近景递进'])}。这不是普通拼贴，而是高级的剪影轮廓填充式叙事合成，带有双重曝光联想，但更偏电影海报与梦幻水彩插画融合。内部世界需要有远景、中景、近景递进，角色关系和文明痕迹自然嵌入，不杂乱、不硬拼。\n\n整体使用柔和空气透视、轻雾化过渡、纸张颗粒、边缘飞白和刷痕，大面积留白，版式克制高级：${templateRecipeToken(context, 'print-texture', ['纸张颗粒', '边缘飞白', '水彩刷痕'])}，海报层级：${templateRecipeToken(context, 'poster-hierarchy', ['巨型轮廓第一主体', '大面积留白', '底部署名/印章'])}。动线与留白：${templateRecipeToken(context, 'visual-flow-whitespace', ['中心纪念碑稳定', '底部落款安全区', '边缘呼吸感'])}。氛围安静、宏大、神圣、怀旧、诗意、传说感强。色彩方向：{{str:色彩方向;default=旧纸米白、雾灰、褐红、暗铜、低饱和蓝灰;length<220}}。\n\n自然加入专属签名“{{str:专属签名;default=你的签名;length<80}}”，作为海报设计的一部分，位置低调但清晰，可在左下角、右下角或标题附近；文字策略：${templateRecipeToken(context, 'text-clarity-policy', ['少量关键信息', '标题必须可读'])}。构图：${templateRecipeToken(context, 'composition', ['留白构图', '层次分明'])}，细节：${templateRecipeToken(context, 'detail-level')}，质量：${templateRecipeToken(context, 'image-quality')}。`,
+      negativePrompt: `${templateRecipeToken(context, 'negative-quality')}，剪影轮廓不清，普通拼贴，硬裁切，模板化背景，廉价奇幻素材，元素与主题无关，画面杂乱，签名突兀，文字乱码，过度写实失去艺术感，过度卡通化`,
+      styleText: '巨大侧脸剪影内部生长时代叙事世界，梦幻水彩、纸张颗粒、低饱和怀旧色。',
+    }),
+  },
+  {
+    id: 'agent-research',
+    kind: 'agent',
+    categoryId: 'agent-workflow',
+    categoryName: { zh: 'Agent 工作流', en: 'Agent Workflow' },
+    name: { zh: '资料研究', en: 'Research agent' },
+    description: { zh: '收集、核对、整理资料并输出结论。', en: 'Collects, verifies, organizes sources, and outputs conclusions.' },
+    preview: { zh: '含研究计划、来源评估、结论、证据和残余风险。', en: 'Includes research plan, source evaluation, conclusions, evidence, and residual risks.' },
+    build: (context) => ({
+      system: `你是${templateRecipeToken(context, 'agent-role')}，负责围绕用户问题完成资料研究、交叉核验和结构化输出。你必须区分事实、推断和建议；不能把未经验证的信息写成确定结论。\n\n工作方式：\n- 执行流程：${templateRecipeToken(context, 'execution-flow')}\n- 工具策略：${templateRecipeToken(context, 'tool-use-policy')}\n- 澄清策略：${templateRecipeToken(context, 'clarification-policy')}\n- 回答结构：${templateRecipeToken(context, 'answer-shape')}\n- 验收标准：${templateRecipeToken(context, 'acceptance-criteria')}\n\n执行规范：\n1. 先给研究范围和判断口径，再进入结论。\n2. 重要结论必须附证据或说明证据不足。\n3. 遇到时间敏感、法律、医疗、财务等高风险内容，要显式提示验证边界。\n4. 输出可执行下一步，不停留在泛泛总结。`,
+      user: `研究主题：{{str:研究主题;length<200}}\n背景资料：{{str:背景;length<3000}}\n需要回答的问题：{{arr:待确认问题;itemType=string;length<10}}\n限制条件：{{arr:约束条件;itemType=string;length<8}}\n期望用途：{{str:交付用途;length<200}}\n\n请输出：\n1. 研究范围与判断口径。\n2. 核心结论，按可信度排序。\n3. 证据表：结论 / 证据 / 来源或材料位置 / 可信度 / 备注。\n4. 分歧、未知点和残余风险。\n5. 可执行建议和下一步资料需求。`,
+    }),
+  },
+  {
+    id: 'agent-code-review',
+    kind: 'agent',
+    categoryId: 'agent-workflow',
+    categoryName: { zh: 'Agent 工作流', en: 'Agent Workflow' },
+    name: { zh: '代码审阅', en: 'Code review agent' },
+    description: { zh: '按风险优先审阅代码、变更和测试缺口。', en: 'Reviews code, changes, and test gaps by risk priority.' },
+    preview: { zh: '按严重程度输出真实缺陷、影响、位置、修复和测试缺口。', en: 'Finds real defects by severity with impact, location, fix, and test gaps.' },
+    build: (context) => ({
+      system: `你是代码审阅 Agent。你的目标是发现会导致真实问题的缺陷，而不是泛泛评价代码风格。优先级依次为：数据丢失、安全风险、权限绕过、行为回归、并发/边界问题、性能退化、测试缺口。\n\n审阅设置：\n- 审阅深度：${templateRecipeToken(context, 'review-depth')}\n- 回答结构：${templateRecipeToken(context, 'answer-shape')}\n- 工具策略：${templateRecipeToken(context, 'tool-use-policy')}\n- 验收标准：${templateRecipeToken(context, 'acceptance-criteria')}\n\n输出规范：发现必须包含文件/位置、触发条件、用户影响、修复建议和验证方式。没有发现问题时，明确说明审阅范围和剩余风险。`,
+      user: `请审阅以下变更。\n\n变更目标：{{str:变更摘要;length<1500}}\n相关代码/差异：{{str:代码变更;length<9000}}\n运行环境/依赖：{{str:运行环境;length<800}}\n重点关注：{{arr:审阅重点;itemType=string;length<10}}\n已有测试：{{str:已有测试;length<1200}}\n\n请输出：\n1. Findings：按严重程度排序，每条包含位置、问题、影响、建议。\n2. Missing tests：指出最需要补的测试。\n3. Open questions：只有在影响判断时才列。\n4. Summary：简短说明变更总体风险。`,
+    }),
+  },
+  {
+    id: 'agent-requirements',
+    kind: 'agent',
+    categoryId: 'agent-workflow',
+    categoryName: { zh: 'Agent 工作流', en: 'Agent Workflow' },
+    name: { zh: '需求分析', en: 'Requirements agent' },
+    description: { zh: '澄清需求、拆范围、列验收标准和风险。', en: 'Clarifies requirements, scopes work, lists acceptance criteria and risks.' },
+    preview: { zh: '把模糊需求变成范围、流程、规则、风险和验收清单。', en: 'Turns vague requests into scope, flows, rules, risks, and acceptance criteria.' },
+    build: (context) => ({
+      system: `你是需求分析 Agent，负责把模糊需求转为可执行、可评审、可验收的规格。你要主动拆解范围、流程、状态、权限、边界和风险；只有关键歧义会改变方案时才先提问。\n\n工作约束：\n- 澄清策略：${templateRecipeToken(context, 'clarification-policy')}\n- 执行流程：${templateRecipeToken(context, 'execution-flow')}\n- 回答结构：${templateRecipeToken(context, 'answer-shape')}\n- 验收标准：${templateRecipeToken(context, 'acceptance-criteria')}\n\n要求：不要只复述需求；必须给出可执行拆解。所有假设都要标明，并说明如果假设不成立会影响什么。`,
+      user: `需求原文：{{str:需求;length<5000}}\n目标用户：{{str:用户群体;length<240}}\n业务目标：{{str:目标;length<400}}\n现有系统/约束：{{str:系统背景;length<2000}}\n优先级或截止时间：{{str:优先级截止时间;length<200}}\n\n请输出：\n1. 需求摘要和目标。\n2. 用户角色与使用场景。\n3. 本期范围 / 非本期范围 / 可能的后续扩展。\n4. 主流程和异常流程。\n5. 数据、状态、权限和配置规则。\n6. 边界情况与风险。\n7. 关键待确认问题，按阻塞程度排序。\n8. 验收标准，能直接交给开发和测试。`,
+    }),
+  },
+  {
+    id: 'agent-support',
+    kind: 'agent',
+    categoryId: 'agent-workflow',
+    categoryName: { zh: 'Agent 工作流', en: 'Agent Workflow' },
+    name: { zh: '客服问答', en: 'Support agent' },
+    description: { zh: '面向用户问题给出稳妥、清晰、可执行答复。', en: 'Provides safe, clear, actionable answers to user questions.' },
+    preview: { zh: '先分类问题，再给直接答复、排查步骤、补充信息和升级条件。', en: 'Classifies issue, then gives answer, troubleshooting, needed info, and escalation.' },
+    build: (context) => ({
+      system: `你是客服专家。你的答复要友好、准确、可执行，不承诺无法确认的信息，不把责任推给用户。先判断问题类型和紧急程度，再给最短可行解决路径。\n\n策略：\n- 澄清策略：${templateRecipeToken(context, 'clarification-policy')}\n- 信息来源：${templateRecipeToken(context, 'source-handling')}\n- 回答结构：${templateRecipeToken(context, 'answer-shape')}\n- 文本禁用项：${templateRecipeToken(context, 'text-avoidance')}\n\n要求：当信息不足时，先给可尝试步骤，再列最少必要追问；涉及退款、隐私、安全、法律承诺时保持边界。`,
+      user: `用户问题：{{str:用户问题;length<1800}}\n产品/服务背景：{{str:产品背景;length<3000}}\n用户已尝试操作：{{str:已尝试方案;length<1000}}\n账户/订单/设备信息：{{str:用户背景;length<1000}}\n内部处理规则：{{str:规则政策;length<1500}}\n\n请输出：\n1. 问题分类和优先级。\n2. 给用户的直接答复，语气自然，可直接发送。\n3. 排查步骤，按最可能有效的顺序。\n4. 需要用户补充的信息，最多 5 项。\n5. 升级条件和转人工说明。\n6. 内部备注：风险、证据和后续跟进。`,
+    }),
+  },
+  {
+    id: 'agent-test-plan',
+    kind: 'agent',
+    categoryId: 'agent-workflow',
+    categoryName: { zh: 'Agent 工作流', en: 'Agent Workflow' },
+    name: { zh: '测试计划', en: 'Test planning agent' },
+    description: { zh: '把需求或变更转成测试场景和验收清单。', en: 'Turns requirements or changes into test scenarios and acceptance checklists.' },
+    preview: { zh: '覆盖正常路径、边界、异常、权限、回归和验收清单。', en: 'Covers happy paths, boundaries, failures, permissions, regression, and acceptance.' },
+    build: (context) => ({
+      system: `你是测试工程师 Agent。你要把需求、代码变更或缺陷修复转成可执行测试计划，覆盖正向路径、边界、异常、权限、兼容性、数据一致性和回归风险。\n\n要求：\n- 审阅深度：${templateRecipeToken(context, 'review-depth')}\n- 内容结构：${templateRecipeToken(context, 'content-structure')}\n- 验收标准：${templateRecipeToken(context, 'acceptance-criteria')}\n- 回答结构：${templateRecipeToken(context, 'answer-shape')}\n\n输出的测试场景必须能被 QA 或开发直接执行；缺少环境或数据时列出准备条件。`,
+      user: `需求/变更说明：{{str:变更需求;length<5000}}\n关键流程：{{arr:关键流程;itemType=string;length<10}}\n风险点：{{arr:风险区域;itemType=string;length<10}}\n影响模块：{{arr:影响模块;itemType=string;length<12}}\n已有测试/历史问题：{{str:测试历史;length<1500}}\n\n请输出：\n1. 测试范围和不测范围。\n2. 测试前置条件和测试数据。\n3. 测试场景表：场景 / 步骤 / 预期结果 / 优先级 / 类型。\n4. 边界和异常场景。\n5. 权限、并发、兼容性和数据一致性检查。\n6. 回归测试点。\n7. 验收清单和上线风险。`,
+    }),
+  },
+  {
+    id: 'agent-project-execution',
+    kind: 'agent',
+    categoryId: 'agent-workflow',
+    categoryName: { zh: 'Agent 工作流', en: 'Agent Workflow' },
+    name: { zh: '项目执行', en: 'Project execution agent' },
+    description: { zh: '把目标拆成计划、执行顺序、验证和交付说明。', en: 'Breaks goals into plan, execution order, validation, and delivery notes.' },
+    preview: { zh: '含计划、执行顺序、风险控制、验证方式和交付说明。', en: 'Includes plan, execution order, risk control, validation, and delivery notes.' },
+    build: (context) => ({
+      system: `你是项目执行 Agent。你要把目标拆成可执行步骤，主动推进任务，及时暴露阻塞，完成后给出验证结果和交付说明。遇到关键歧义时先问；普通细节用明确假设继续推进。\n\n工作方式：\n- 执行流程：${templateRecipeToken(context, 'execution-flow')}\n- 工具策略：${templateRecipeToken(context, 'tool-use-policy')}\n- 澄清策略：${templateRecipeToken(context, 'clarification-policy')}\n- 验收标准：${templateRecipeToken(context, 'acceptance-criteria')}\n- 回答结构：${templateRecipeToken(context, 'answer-shape')}\n\n要求：计划要体现先后依赖；执行要保留关键决策；验证要说明方法和结果；交付说明要让接手人知道改了什么、如何检查、剩余风险是什么。`,
+      user: `任务目标：{{str:任务目标;length<800}}\n上下文：{{str:背景;length<5000}}\n约束：{{arr:约束条件;itemType=string;length<10}}\n可用资源/工具：{{arr:资源;itemType=string;length<10}}\n期望交付：{{str:交付物;length<800}}\n验收标准：{{arr:验收标准;itemType=string;length<10}}\n\n请输出并按此方式执行：\n1. 任务理解和关键假设。\n2. 分阶段计划，标明依赖和风险。\n3. 立即执行步骤，优先处理阻塞路径。\n4. 验证方式和结果记录。\n5. 最终交付说明：变更、使用方式、测试情况、剩余风险。`,
+    }),
+  },
+  {
+    id: 'agent-image-creative-director',
+    kind: 'agent',
+    categoryId: 'visual-agent',
+    categoryName: { zh: '视觉 Agent', en: 'Visual Agent' },
+    name: { zh: '图像创意总监', en: 'Image creative director' },
+    description: { zh: '把创意需求转为可执行的图片生成方案、提示词和审查清单。', en: 'Turns visual briefs into image plans, prompts, and QA checklists.' },
+    preview: { zh: '适合电商、海报、概念图、角色、图生图编辑前的提示词编译。', en: 'For ecommerce, posters, concept art, characters, and image edits.' },
+    build: (context) => ({
+      system: `你是图像创意总监、摄影指导、美术指导、构图师和提示词编译器。你要把用户需求转成可直接用于图片生成模型的生产级提示词，并给出质量审查清单。\n\n视觉变量：\n- 主体类型：${templateRecipeToken(context, 'subject-type')}\n- 场景类型：${templateRecipeToken(context, 'scene-type')}\n- 设计用途：${templateRecipeToken(context, 'design-use')}\n- 画面风格：${templateRecipeToken(context, 'visual-style-direction')}\n- 构图：${templateRecipeToken(context, 'composition')}\n- 光线：${templateRecipeToken(context, 'lighting')}\n- 质量：${templateRecipeToken(context, 'image-quality')}\n- 负面约束：${templateRecipeToken(context, 'negative-quality')}\n\n工作方式：\n- 执行流程：${templateRecipeToken(context, 'execution-flow')}\n- 澄清策略：${templateRecipeToken(context, 'clarification-policy')}\n- 验收标准：${templateRecipeToken(context, 'acceptance-criteria')}\n\n要求：先识别任务类型，再输出正向提示词、负面提示词、参数建议和验收清单。不要输出空泛审美建议。`,
+      user: `视觉需求：{{str:视觉需求;length<3000}}\n用途/平台：{{str:使用平台;length<200}}\n参考图：{{img:参考图;count<=6}}\n参考图说明：{{str:参考说明;length<1500}}\n必须保留：{{arr:必须保留;itemType=string;length<12}}\n必须避免：{{arr:必须避免;itemType=string;length<12}}\n\n请输出：\n1. 任务类型判断和关键风险。\n2. 创意方向，说明主体、场景、构图、光影、色彩和风格。\n3. 可直接使用的正向提示词。\n4. 负面提示词。\n5. 图生图或参考图使用建议。\n6. 质量审查清单：身份、构图、材质、文字、品牌、分辨率、可商用风险。`,
+    }),
+  },
+  {
+    id: 'agent-storyboard-director',
+    kind: 'agent',
+    categoryId: 'visual-agent',
+    categoryName: { zh: '视觉 Agent', en: 'Visual Agent' },
+    name: { zh: '分镜导演 Agent', en: 'Storyboard director agent' },
+    description: { zh: '将故事、参考图和视频需求拆成关键帧、镜头和联络单提示词。', en: 'Breaks stories, references, and video needs into keyframes and contact-sheet prompts.' },
+    preview: { zh: '输出场景拆解、情绪弧线、镜头策略、关键帧提示词。', en: 'Outputs scene breakdown, emotional arc, camera plan, and keyframe prompts.' },
+    build: (context) => ({
+      system: `你是预告片导演、摄影指导和分镜 Agent。你负责把故事或参考图转成连贯的视频关键帧方案。输出必须可执行，所有镜头都要服务叙事节拍和视觉连续性。\n\n工作方式：\n- 执行流程：${templateRecipeToken(context, 'execution-flow')}\n- 工具策略：${templateRecipeToken(context, 'tool-use-policy')}\n- 澄清策略：${templateRecipeToken(context, 'clarification-policy')}\n- 回答结构：${templateRecipeToken(context, 'answer-shape')}\n\n分镜变量：\n- 分镜流程：${templateRecipeToken(context, 'storyboard-workflow', ['场景拆解', '主题与故事', '关键帧列表', '联络单输出'])}\n- 镜头字段：${templateRecipeToken(context, 'storyboard-shot-fields', ['镜头号', '建议时长', '镜头类型', '焦段', '画面调度/动作'])}\n- 连续性约束：${templateRecipeToken(context, 'storyboard-continuity', ['角色身份一致', '服装道具一致', '轴线原则', '视线匹配'])}\n\n视觉约束：镜头、光影、角色、服装、道具、环境和色调要保持连续；不能为了炫技牺牲故事逻辑。`,
+      user: `故事/视频需求：{{str:故事或视频需求;length<4000}}\n参考图：{{img:参考图;count<=6}}\n参考图说明：{{str:参考说明;length<2000}}\n目标时长：{{str:目标时长;length<120}}\n关键情绪：{{arr:情绪;itemType=string;length<8}}\n必须出现的画面：{{arr:必备镜头;itemType=string;length<12}}\n\n请输出：\n1. 场景拆解：主体、环境、光影、视觉锚点。\n2. 主题、短梗概和情绪弧线。\n3. 镜头策略：景别演变、相机运动、焦段和景深。\n4. 关键帧表：编号、时长、镜头类型、构图、动作、相机、光影、提示词。\n5. 3x3 或 4x3 联络单提示词。\n6. 一致性锁定和负面约束。`,
+    }),
+  },
+]
+
 const inputSchema = z.object({
   siteTitle: z.string().min(1),
   description: z.string().min(1),
@@ -1411,8 +2511,15 @@ const inputSchema = z.object({
 
 type InputForm = z.infer<typeof inputSchema>
 
-function getFileIconMeta(filePath: string): { icon: LucideIcon; className: string; badge?: string } {
-  if (isZpmtFilePath(filePath)) return { icon: WandSparkles, className: 'text-[#d95a1b]', badge: 'ZPMT' }
+function getZpmtPromptIconMeta(kind?: ZpmtPromptKind | null): { icon: LucideIcon; className: string; badge: string } {
+  if (kind === 'chat') return { icon: MessageSquare, className: 'text-emerald-600', badge: 'CHAT' }
+  if (kind === 'agent') return { icon: Workflow, className: 'text-cyan-600', badge: 'AGENT' }
+  if (kind === 'image') return { icon: WandSparkles, className: 'text-[#d95a1b]', badge: 'IMG' }
+  return { icon: WandSparkles, className: 'text-[#d95a1b]', badge: 'ZPMT' }
+}
+
+function getFileIconMeta(filePath: string, promptKind?: ZpmtPromptKind | null): { icon: LucideIcon; className: string; badge?: string } {
+  if (isZpmtFilePath(filePath)) return getZpmtPromptIconMeta(promptKind)
   if (isZlexFilePath(filePath)) return { icon: Boxes, className: 'text-amber-600', badge: 'ZLEX' }
   if (isZamfFilePath(filePath)) return { icon: Bot, className: 'text-sky-500', badge: 'ZAMF' }
   if (filePath.toLowerCase().endsWith('.json')) return { icon: FileJson, className: 'text-slate-400' }
@@ -1423,15 +2530,28 @@ function createNodeRenderer({
   activeFile,
   aiProviders,
   decorations,
+  selectedPaths,
+  dropTargetPath,
   onOpenFile,
+  onNodeClick,
   onNodeContextMenu,
+  onNodeDragStart,
+  onNodeDragOver,
+  onNodeDrop,
 }: {
   activeFile: ProjectFileReference | null
   aiProviders: AiProviderSummary[]
   decorations: Record<string, GitDecoration>
+  selectedPaths: string[]
+  dropTargetPath: string | null
   onOpenFile: (file: ProjectFileReference) => void
+  onNodeClick: (node: TreeNode, event: React.MouseEvent<HTMLElement>, actions: { toggle: () => void }) => void
   onNodeContextMenu: (node: TreeNode, event: React.MouseEvent<HTMLElement>) => void
+  onNodeDragStart: (node: TreeNode, event: React.DragEvent<HTMLElement>) => void
+  onNodeDragOver: (node: TreeNode, event: React.DragEvent<HTMLElement>) => void
+  onNodeDrop: (node: TreeNode, event: React.DragEvent<HTMLElement>) => void
 }) {
+  const selectedPathSet = new Set(selectedPaths)
   return function NodeRenderer({
     node,
     style,
@@ -1443,8 +2563,10 @@ function createNodeRenderer({
     const isFile = data.kind === 'file'
     const filePath = data.path || data.name
     const isZamfFile = isFile && Boolean(filePath && isZamfFilePath(filePath))
-    const fileIcon = getFileIconMeta(filePath)
+    const fileIcon = getFileIconMeta(filePath, data.promptKind)
     const isActive = isFile && activeFile?.projectId === data.projectId && activeFile?.path === data.path
+    const isSelected = Boolean(data.path && selectedPathSet.has(data.path))
+    const isDropTarget = !isFile && (data.path || '') === dropTargetPath
     const decoration = decorations[data.path || '']
     const provider = isZamfFile ? aiProviders.find((item) => item.filePath === data.path) || null : null
     const draggable = useDraggable({
@@ -1463,12 +2585,8 @@ function createNodeRenderer({
     })
     const FileIcon = fileIcon.icon
 
-    function handleClick() {
-      if (isFile && data.projectId && data.path) {
-        onOpenFile({ projectId: data.projectId, path: data.path, name: data.name })
-        return
-      }
-      node.toggle()
+    function handleClick(event: React.MouseEvent<HTMLElement>) {
+      onNodeClick(data, event, { toggle: node.toggle })
     }
 
     return (
@@ -1477,16 +2595,22 @@ function createNodeRenderer({
         style={style}
         className={cn(
           'group flex cursor-default items-center gap-1.5 rounded px-2 text-xs',
-          isActive ? 'bg-[#fff2ea] text-[#d95a1b]' : 'text-slate-700 hover:bg-slate-100',
+          isActive ? 'bg-[#fff2ea] text-[#d95a1b]' : isSelected ? 'bg-slate-200/80 text-slate-900' : 'text-slate-700 hover:bg-slate-100',
+          isDropTarget ? 'ring-1 ring-[#fb7e3d]/60 bg-[#fff2ea]' : '',
           isZamfFile && provider ? 'cursor-grab active:cursor-grabbing' : '',
           draggable.isDragging ? 'opacity-45' : '',
           decoration && !isActive ? getGitDecorationTextClass(decoration.kind) : '',
         )}
+        title={data.path || data.name}
+        draggable={Boolean(data.projectId && data.path && !(isZamfFile && provider))}
         onClick={handleClick}
         onContextMenu={(event) => {
           event.preventDefault()
           onNodeContextMenu(data, event)
         }}
+        onDragStart={(event) => onNodeDragStart(data, event)}
+        onDragOver={(event) => onNodeDragOver(data, event)}
+        onDrop={(event) => onNodeDrop(data, event)}
         {...draggable.listeners}
         {...draggable.attributes}
       >
@@ -1605,33 +2729,68 @@ function TooltipAnchor({
 
 function VariableTagsPanel({
   t,
+  locale,
   modelCapabilities,
 }: {
   t: WorkbenchCopy
+  locale: Locale
   modelCapabilities: ZpmtModelCapabilityGate
 }) {
   return (
-    <div className="flex flex-wrap gap-2 p-3">
-      {VARIABLE_TYPE_ORDER.map((type) => {
-        const typeLabel = t.variableTypes[type]
-        const payload: InstructionDragPayload = { kind: 'variable', variableType: type }
-        const disabled = !canUseInstructionPayload(payload, modelCapabilities)
-        const tooltip = disabled ? `${typeLabel}\n${t.unsupportedByModel}` : typeLabel
+    <div className="space-y-3 p-3">
+      <div className="flex flex-wrap gap-2">
+        {VARIABLE_TYPE_ORDER.map((type) => {
+          const typeLabel = t.variableTypes[type]
+          const payload: InstructionDragPayload = { kind: 'variable', variableType: type }
+          const disabled = !canUseInstructionPayload(payload, modelCapabilities)
+          const tooltip = disabled ? `${typeLabel}\n${t.unsupportedByModel}` : typeLabel
 
-        return (
-          <TooltipAnchor key={type} tooltip={tooltip} className="inline-flex">
-            <DraggableInstructionTag
-              id={`variable:${type}`}
-              payload={payload}
-              title={typeLabel}
-              disabled={disabled}
-              className={cn('prompt-token-chip h-7 cursor-grab outline-none transition active:cursor-grabbing focus:ring-2 focus:ring-[#FB7E3D]/20', getPromptTokenStyleClass(type))}
-            >
-              <span className="truncate">{typeLabel}</span>
-            </DraggableInstructionTag>
-          </TooltipAnchor>
-        )
-      })}
+          return (
+            <TooltipAnchor key={type} tooltip={tooltip} className="inline-flex">
+              <DraggableInstructionTag
+                id={`variable:${type}`}
+                payload={payload}
+                title={typeLabel}
+                disabled={disabled}
+                className={cn('prompt-token-chip h-7 cursor-grab outline-none transition active:cursor-grabbing focus:ring-2 focus:ring-[#FB7E3D]/20', getPromptTokenStyleClass(type))}
+              >
+                <span className="truncate">{typeLabel}</span>
+              </DraggableInstructionTag>
+            </TooltipAnchor>
+          )
+        })}
+      </div>
+
+      <section className="rounded-md border border-slate-200 bg-white">
+        <div className="flex min-h-9 items-center justify-between gap-2 border-b border-slate-100 px-3 py-2">
+          <div className="min-w-0">
+            <p className="truncate text-xs font-black text-slate-900">{t.constantVariables}</p>
+            <p className="mt-0.5 truncate text-[11px] text-slate-500">{t.constantVariableHint}</p>
+          </div>
+          <Badge variant="outline" className="shrink-0">{ZPMT_CONSTANTS.length}</Badge>
+        </div>
+        <div className="flex flex-wrap gap-2 p-3">
+          {ZPMT_CONSTANTS.length ? (
+            ZPMT_CONSTANTS.map((item) => {
+              const payload: InstructionDragPayload = { kind: 'constant', item }
+              return (
+                <TooltipAnchor key={item.id} tooltip={item.description[locale]} className="inline-flex">
+                  <DraggableInstructionTag
+                    id={`constant:${item.id}`}
+                    payload={payload}
+                    title={item.name[locale]}
+                    className={cn('prompt-token-chip h-7 cursor-grab outline-none transition active:cursor-grabbing focus:ring-2 focus:ring-[#FB7E3D]/20', getPromptTokenStyleClass('constant'))}
+                  >
+                    <span className="truncate">{item.name[locale]}</span>
+                  </DraggableInstructionTag>
+                </TooltipAnchor>
+              )
+            })
+          ) : (
+            <div className="text-xs font-semibold text-slate-500">{t.constantVariableEmpty}</div>
+          )}
+        </div>
+      </section>
     </div>
   )
 }
@@ -1685,8 +2844,10 @@ function InstructionDragOverlay({ payload, t, locale }: { payload: InstructionDr
   const label =
     payload.kind === 'variable'
       ? t.variableTypes[payload.variableType]
+      : payload.kind === 'constant'
+        ? payload.item.name[locale]
       : payload.item.name[locale]
-  const styleKey: PromptTokenStyleKey = payload.kind === 'variable' ? payload.variableType : payload.kind === 'recipe' ? 'recipe' : 'unknown'
+  const styleKey: PromptTokenStyleKey = payload.kind === 'variable' ? payload.variableType : payload.kind === 'recipe' ? 'recipe' : payload.kind === 'constant' ? 'constant' : 'unknown'
 
   return (
     <span className={cn('prompt-token-chip h-7 max-w-[220px] opacity-[0.35] shadow-lg', getPromptTokenStyleClass(styleKey))}>
@@ -1721,6 +2882,7 @@ function readDndProviderFilePayload(value: unknown): ProviderFileDragPayload | n
 function isInstructionDragPayload(value: unknown): value is InstructionDragPayload {
   if (!isRecord(value)) return false
   if (value.kind === 'variable') return typeof value.variableType === 'string' && VARIABLE_TYPE_ORDER.includes(value.variableType as VariableType)
+  if (value.kind === 'constant') return isRecord(value.item) && typeof value.item.id === 'string'
   if (value.kind !== 'recipe' && value.kind !== 'tool') return false
   return typeof value.categoryId === 'string' && isRecord(value.item) && typeof value.item.id === 'string'
 }
@@ -1909,6 +3071,7 @@ function ProjectWorkspacePanel({
   onProjectDeleted,
   onEntryDeleted,
   onEntryRenamed,
+  onEntriesMoved,
   onNotify,
 }: {
   t: WorkbenchCopy
@@ -1934,6 +3097,7 @@ function ProjectWorkspacePanel({
   onProjectDeleted: (projectId: string) => void
   onEntryDeleted: (projectId: string, entryPath: string) => void
   onEntryRenamed: (projectId: string, oldPath: string, nextName: string) => void
+  onEntriesMoved: (projectId: string, moved: ProjectEntryMove[]) => void
   onNotify: (description: string, title?: string) => void
 }) {
   const changeCount = getSourceControlChangeCount(sourceControlStatus)
@@ -1977,6 +3141,7 @@ function ProjectWorkspacePanel({
             onProjectDeleted={onProjectDeleted}
             onEntryDeleted={onEntryDeleted}
             onEntryRenamed={onEntryRenamed}
+            onEntriesMoved={onEntriesMoved}
             onOpenNewProject={onOpenNewProject}
           />
         ) : (
@@ -2040,6 +3205,7 @@ function ProjectFilesPanel({
   onProjectDeleted,
   onEntryDeleted,
   onEntryRenamed,
+  onEntriesMoved,
 }: {
   t: WorkbenchCopy
   projects: ProjectSummary[]
@@ -2061,11 +3227,20 @@ function ProjectFilesPanel({
   onProjectDeleted: (projectId: string) => void
   onEntryDeleted: (projectId: string, entryPath: string) => void
   onEntryRenamed: (projectId: string, oldPath: string, nextName: string) => void
+  onEntriesMoved: (projectId: string, moved: ProjectEntryMove[]) => void
 }) {
   const [fileTreeViewportRef, fileTreeViewportHeight] = useMeasuredHeight<HTMLDivElement>()
+  const uploadInputRef = useRef<HTMLInputElement | null>(null)
+  const zipImportInputRef = useRef<HTMLInputElement | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; node: TreeNode } | null>(null)
   const [entryDialog, setEntryDialog] = useState<EntryDialogState | null>(null)
+  const [zipImportDialog, setZipImportDialog] = useState<ZipImportDialogState | null>(null)
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([])
+  const [lastSelectedPath, setLastSelectedPath] = useState('')
+  const [dropTargetPath, setDropTargetPath] = useState<string | null>(null)
+  const [uploadTargetPath, setUploadTargetPath] = useState('')
   const fileTree = activeProject?.tree ? [activeProject.tree] : []
+  const flatFileTreePaths = useMemo(() => flattenProjectTreePaths(activeProject?.tree), [activeProject?.tree])
   const fileTreeHeight = Math.max(160, (fileTreeViewportHeight || 360) - 16)
   const gitActionBusy = Boolean(sourceControlBusyAction)
   const showGitActions = sourceControlConnected
@@ -2075,13 +3250,26 @@ function ProjectFilesPanel({
         activeFile,
         aiProviders,
         decorations,
+        selectedPaths,
+        dropTargetPath,
         onOpenFile,
+        onNodeClick: handleNodeClick,
         onNodeContextMenu: (node, event) => {
+          updateSelectionForContextMenu(node)
           setContextMenu({ x: event.clientX, y: event.clientY, node })
         },
+        onNodeDragStart: handleNodeDragStart,
+        onNodeDragOver: handleNodeDragOver,
+        onNodeDrop: handleNodeDrop,
       }),
-    [activeFile, aiProviders, decorations, onOpenFile],
+    [activeFile, activeProject?.fileName, activeProject?.id, aiProviders, decorations, dropTargetPath, flatFileTreePaths, lastSelectedPath, onOpenFile, selectedPaths, t],
   )
+
+  useEffect(() => {
+    setSelectedPaths([])
+    setLastSelectedPath('')
+    setDropTargetPath(null)
+  }, [activeProject?.id])
 
   async function submitEntryDialog(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -2098,6 +3286,13 @@ function ProjectFilesPanel({
       onEntryRenamed(activeProject.id, entryDialog.node.path || '', entryDialog.name)
     }
     await onRefreshProjects(response.project.id)
+    if (response.file?.path && response.file?.projectId) {
+      onOpenFile({
+        projectId: String(response.file.projectId),
+        path: String(response.file.path),
+        name: String(response.file.name || entryDialog.name),
+      })
+    }
     dispatchSourceControlRefresh()
   }
 
@@ -2123,7 +3318,7 @@ function ProjectFilesPanel({
           parentPath: dialog.folder.path || '',
           fileName,
           content: createZpmtContent({
-            promptType: dialog.promptType,
+            promptKind: dialog.promptKind,
             outputType: dialog.outputType,
             provider,
             model: dialog.model,
@@ -2154,6 +3349,309 @@ function ProjectFilesPanel({
         nextName: dialog.name,
       },
     })
+  }
+
+  function handleNodeClick(node: TreeNode, event: React.MouseEvent<HTMLElement>, actions: { toggle: () => void }) {
+    const nodePath = node.path || ''
+    const modifierSelection = event.shiftKey || event.ctrlKey || event.metaKey
+
+    if (nodePath) {
+      if (event.shiftKey && lastSelectedPath) {
+        setSelectedPaths(selectProjectPathRange(flatFileTreePaths, lastSelectedPath, nodePath, selectedPaths))
+        setLastSelectedPath(nodePath)
+      } else if (event.ctrlKey || event.metaKey) {
+        setSelectedPaths((current) => {
+          const exists = current.includes(nodePath)
+          return exists ? current.filter((item) => item !== nodePath) : uniqueProjectPaths([...current, nodePath])
+        })
+        setLastSelectedPath(nodePath)
+      } else {
+        setSelectedPaths([nodePath])
+        setLastSelectedPath(nodePath)
+      }
+    } else if (!modifierSelection) {
+      setSelectedPaths([])
+      setLastSelectedPath('')
+    }
+
+    if (modifierSelection) return
+    if (node.kind === 'file' && node.projectId && node.path) {
+      onOpenFile({ projectId: node.projectId, path: node.path, name: node.name })
+      return
+    }
+    actions.toggle()
+  }
+
+  function updateSelectionForContextMenu(node: TreeNode) {
+    const nodePath = node.path || ''
+    if (!nodePath) {
+      setSelectedPaths([])
+      setLastSelectedPath('')
+      return
+    }
+    if (!selectedPaths.includes(nodePath)) {
+      setSelectedPaths([nodePath])
+      setLastSelectedPath(nodePath)
+    }
+  }
+
+  function getActionPaths(node: TreeNode) {
+    const nodePath = node.path || ''
+    if (nodePath && selectedPaths.includes(nodePath)) return selectedPaths.filter(Boolean)
+    return nodePath ? [nodePath] : []
+  }
+
+  function handleNodeDragStart(node: TreeNode, event: React.DragEvent<HTMLElement>) {
+    if (!activeProject || !node.projectId || !node.path) {
+      event.preventDefault()
+      return
+    }
+    const paths = getActionPaths(node)
+    if (!paths.length) {
+      event.preventDefault()
+      return
+    }
+    if (!paths.includes(node.path)) {
+      setSelectedPaths([node.path])
+      setLastSelectedPath(node.path)
+    }
+
+    const payload: ProjectEntryDragPayload = {
+      kind: 'project-entry',
+      projectId: activeProject.id,
+      paths,
+    }
+    const rawDownload = paths.length === 1 && node.kind === 'file'
+    const downloadUrl = buildProjectArchiveUrl(activeProject.id, paths, rawDownload)
+    const downloadName = buildProjectDragDownloadName(activeProject.fileName, node, paths, rawDownload)
+    event.dataTransfer.effectAllowed = 'copyMove'
+    event.dataTransfer.setData(PROJECT_ENTRY_DRAG_MIME, JSON.stringify(payload))
+    event.dataTransfer.setData('text/plain', paths.join('\n'))
+    event.dataTransfer.setData('text/uri-list', downloadUrl)
+    event.dataTransfer.setData('DownloadURL', `${rawDownload ? 'application/octet-stream' : PROJECT_ARCHIVE_MIME}:${downloadName}:${downloadUrl}`)
+  }
+
+  function handleNodeDragOver(node: TreeNode, event: React.DragEvent<HTMLElement>) {
+    if (node.kind === 'file') return
+    if (!hasProjectEntryDrag(event.dataTransfer) && !hasExternalFileDrag(event.dataTransfer)) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.dataTransfer.dropEffect = hasProjectEntryDrag(event.dataTransfer) ? 'move' : 'copy'
+    setDropTargetPath(node.path || '')
+  }
+
+  function handleNodeDrop(node: TreeNode, event: React.DragEvent<HTMLElement>) {
+    if (node.kind === 'file') return
+    event.preventDefault()
+    event.stopPropagation()
+    setDropTargetPath(null)
+    void handleProjectDrop(node.path || '', event.dataTransfer)
+  }
+
+  function handleProjectViewportDragOver(event: React.DragEvent<HTMLDivElement>) {
+    if (!hasProjectEntryDrag(event.dataTransfer) && !hasExternalFileDrag(event.dataTransfer)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = hasProjectEntryDrag(event.dataTransfer) ? 'move' : 'copy'
+    setDropTargetPath('')
+  }
+
+  function handleProjectViewportDrop(event: React.DragEvent<HTMLDivElement>) {
+    if (!hasProjectEntryDrag(event.dataTransfer) && !hasExternalFileDrag(event.dataTransfer)) return
+    event.preventDefault()
+    setDropTargetPath(null)
+    void handleProjectDrop('', event.dataTransfer)
+  }
+
+  async function handleProjectDrop(targetPath: string, dataTransfer: DataTransfer) {
+    if (!activeProject) return
+    const payload = readProjectEntryDragPayload(dataTransfer)
+    if (payload?.projectId === activeProject.id) {
+      await moveProjectPaths(payload.paths, targetPath)
+      return
+    }
+
+    const files = await readDroppedProjectFiles(dataTransfer)
+    if (!files.length) {
+      onNotify(t.noFilesToUpload)
+      return
+    }
+    await uploadProjectFilesToTarget(targetPath, files)
+  }
+
+  async function moveProjectPaths(paths: string[], targetPath: string, overwrite = false) {
+    if (!activeProject) return
+    const response = await fetchJson('/api/projects/entries/move', {
+      method: 'PATCH',
+      body: {
+        projectId: activeProject.id,
+        paths,
+        targetPath,
+        overwrite,
+      },
+    })
+
+    if (response?.code === 'MOVE_CONFLICT' && Array.isArray(response.conflicts)) {
+      const conflicts = normalizeProjectConflicts(response.conflicts)
+      const action = resolveProjectConflictAction(conflicts)
+      if (action === 'overwrite') {
+        await moveProjectPaths(paths, targetPath, true)
+      } else if (action === 'skip') {
+        const conflictPaths = new Set(conflicts.map((item) => item.path))
+        const rest = paths.filter((item) => !conflictPaths.has(item))
+        if (rest.length) await moveProjectPaths(rest, targetPath, false)
+      }
+      return
+    }
+
+    if (!response?.ok || !response.project) {
+      onNotify(response?.message || '文件移动失败')
+      return
+    }
+
+    const moved = Array.isArray(response.moved) ? normalizeProjectMoves(response.moved) : []
+    if (moved.length) {
+      onEntriesMoved(activeProject.id, moved)
+      setSelectedPaths(moved.map((item) => item.nextPath))
+      setLastSelectedPath(moved[moved.length - 1]?.nextPath || '')
+    }
+    await onRefreshProjects(response.project.id)
+    dispatchSourceControlRefresh()
+    onNotify(t.moveSuccess, t.success)
+  }
+
+  function openUploadDialog(targetPath = '') {
+    setUploadTargetPath(targetPath)
+    if (uploadInputRef.current) {
+      uploadInputRef.current.value = ''
+      uploadInputRef.current.click()
+    }
+  }
+
+  async function handleUploadInputChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files || []).map((file) => ({
+      file,
+      relativePath: normalizeBrowserRelativePath(file.webkitRelativePath || file.name),
+    })).filter((item) => item.relativePath)
+    event.target.value = ''
+    await uploadProjectFilesToTarget(uploadTargetPath, files)
+  }
+
+  async function uploadProjectFilesToTarget(targetPath: string, files: ProjectUploadEntry[], overwrite = false) {
+    if (!activeProject) return
+    const normalizedFiles = files
+      .map((item) => ({ ...item, relativePath: normalizeBrowserRelativePath(item.relativePath || item.file.name) }))
+      .filter((item) => item.relativePath)
+    if (!normalizedFiles.length) {
+      onNotify(t.noFilesToUpload)
+      return
+    }
+
+    const formData = new FormData()
+    formData.append('projectId', activeProject.id)
+    formData.append('targetPath', targetPath)
+    formData.append('overwrite', overwrite ? 'true' : 'false')
+    for (const item of normalizedFiles) {
+      formData.append('files', item.file, item.file.name)
+      formData.append('paths', item.relativePath)
+    }
+
+    const response = await fetch('/api/projects/upload', {
+      method: 'POST',
+      body: formData,
+    })
+      .then((result) => result.json().catch(() => null))
+      .catch(() => null)
+
+    if (response?.code === 'UPLOAD_CONFLICT' && Array.isArray(response.conflicts)) {
+      const conflicts = normalizeProjectConflicts(response.conflicts)
+      const action = resolveProjectConflictAction(conflicts)
+      if (action === 'overwrite') {
+        await uploadProjectFilesToTarget(targetPath, normalizedFiles, true)
+      } else if (action === 'skip') {
+        const conflictPaths = new Set(conflicts.map((item) => item.path))
+        const rest = normalizedFiles.filter((item) => !conflictPaths.has(item.relativePath))
+        if (rest.length) await uploadProjectFilesToTarget(targetPath, rest, false)
+      }
+      return
+    }
+
+    if (!response?.ok || !response.project) {
+      onNotify(response?.message || '文件上传失败')
+      return
+    }
+
+    await onRefreshProjects(response.project.id)
+    dispatchSourceControlRefresh()
+    onNotify(t.uploadSuccess, t.success)
+  }
+
+  function resolveProjectConflictAction(conflicts: ProjectEntryConflict[]): ProjectConflictAction {
+    const countText = t.conflictCount.replace('{count}', String(conflicts.length))
+    if (window.confirm(`${countText}\n${t.conflictOverwritePrompt}`)) return 'overwrite'
+    if (window.confirm(`${countText}\n${t.conflictSkipPrompt}`)) return 'skip'
+    return 'cancel'
+  }
+
+  async function downloadProjectArchive(paths: string[] = []) {
+    if (!activeProject) return
+    const response = await fetch(buildProjectArchiveUrl(activeProject.id, paths, false)).catch(() => null)
+    if (!response?.ok) {
+      const payload = await response?.json().catch(() => null)
+      onNotify(payload?.message || t.archiveDownloadFailed)
+      return
+    }
+    const blob = await response.blob()
+    const filename = readDownloadFilename(response.headers.get('content-disposition')) || (paths.length ? `${activeProject.fileName}-selection.zip` : `${activeProject.fileName}.zip`)
+    triggerBrowserDownload(blob, filename)
+  }
+
+  function handleZipInputChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    const fileName = deriveProjectFileNameFromZip(file.name)
+    setZipImportDialog({
+      file,
+      name: fileName || file.name.replace(/\.zip$/i, ''),
+      fileName,
+      busy: false,
+    })
+  }
+
+  async function submitZipImport(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!zipImportDialog) return
+    if (!isValidProjectFileName(zipImportDialog.fileName)) {
+      onNotify(t.projectFileNameInvalid)
+      return
+    }
+    if (!zipImportDialog.name.trim()) {
+      onNotify(t.projectNameRequired)
+      return
+    }
+
+    setZipImportDialog((current) => (current ? { ...current, busy: true } : current))
+    const formData = new FormData()
+    formData.append('file', zipImportDialog.file, zipImportDialog.file.name)
+    formData.append('name', zipImportDialog.name.trim())
+    formData.append('fileName', zipImportDialog.fileName.trim().toLowerCase())
+    const response = await fetch('/api/projects/import-zip', {
+      method: 'POST',
+      body: formData,
+    })
+      .then((result) => result.json().catch(() => null))
+      .catch(() => null)
+
+    if (!response?.ok || !response.project) {
+      setZipImportDialog((current) => (current ? { ...current, busy: false } : current))
+      onNotify(response?.message || 'ZIP 项目导入失败')
+      return
+    }
+
+    setZipImportDialog(null)
+    await onRefreshProjects(response.project.id)
+    dispatchSourceControlRefresh()
+    onNotify(t.zipImportSuccess, t.success)
   }
 
   async function deleteEntry(node: TreeNode) {
@@ -2204,6 +3702,8 @@ function ProjectFilesPanel({
     navigator.clipboard?.writeText(node.path).catch(() => undefined)
   }
 
+  const contextMenuPaths = contextMenu ? getActionPaths(contextMenu.node) : []
+
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-slate-200 px-3">
@@ -2226,6 +3726,26 @@ function ProjectFilesPanel({
           <button type="button" className="grid h-6 w-6 place-items-center rounded hover:bg-slate-100" title={t.newProject} onClick={onOpenNewProject}>
             <Plus className="h-3.5 w-3.5" />
           </button>
+          <button
+            type="button"
+            className="grid h-6 w-6 place-items-center rounded hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+            title={t.importZipProject}
+            aria-label={t.importZipProject}
+            disabled={loading}
+            onClick={() => zipImportInputRef.current?.click()}
+          >
+            <Upload className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            className="grid h-6 w-6 place-items-center rounded hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+            title={t.exportProjectZip}
+            aria-label={t.exportProjectZip}
+            disabled={!activeProject || loading}
+            onClick={() => void downloadProjectArchive()}
+          >
+            <Download className="h-3.5 w-3.5" />
+          </button>
           <button type="button" className="grid h-6 w-6 place-items-center rounded hover:bg-slate-100" title={t.scmRefresh} onClick={() => onRefreshProjects(activeProject?.id)}>
             <RefreshCw className="h-3.5 w-3.5" />
           </button>
@@ -2241,6 +3761,8 @@ function ProjectFilesPanel({
           </button>
         </div>
       </div>
+      <input ref={zipImportInputRef} className="hidden" type="file" accept=".zip,application/zip" onChange={handleZipInputChange} />
+      <input ref={uploadInputRef} className="hidden" type="file" multiple onChange={handleUploadInputChange} />
 
       {configDiagnostics.length ? (
         <div
@@ -2251,7 +3773,18 @@ function ProjectFilesPanel({
         </div>
       ) : null}
 
-      <div ref={fileTreeViewportRef} className="min-h-0 flex-1 overflow-hidden p-2">
+      <div
+        ref={fileTreeViewportRef}
+        className={cn('relative min-h-0 flex-1 overflow-hidden p-2', dropTargetPath === '' && 'rounded-md bg-[#fff7f2] ring-1 ring-[#fb7e3d]/40')}
+        onDragOver={handleProjectViewportDragOver}
+        onDragLeave={() => setDropTargetPath(null)}
+        onDrop={handleProjectViewportDrop}
+      >
+        {dropTargetPath === '' ? (
+          <div className="pointer-events-none absolute inset-x-3 top-3 z-10 rounded-md border border-dashed border-[#fb7e3d]/55 bg-white/90 px-2 py-1 text-[10px] font-bold text-[#d95a1b] shadow-sm">
+            {t.dropFilesHere}
+          </div>
+        ) : null}
         {loading ? (
           <div className="p-2 text-xs text-slate-500">{t.loading}</div>
         ) : fileTree.length ? (
@@ -2311,8 +3844,26 @@ function ProjectFilesPanel({
                   setContextMenu(null)
                 }}
               />
+              <ContextMenuButton
+                icon={Upload}
+                label={t.uploadFiles}
+                onClick={() => {
+                  openUploadDialog(contextMenu.node.path || '')
+                  setContextMenu(null)
+                }}
+              />
             </>
           ) : null}
+          <ContextMenuSeparator />
+          <ContextMenuButton
+            icon={Download}
+            label={contextMenuPaths.length > 1 ? t.downloadSelected : t.downloadArchive}
+            onClick={() => {
+              const paths = contextMenu.node.path ? contextMenuPaths : []
+              setContextMenu(null)
+              void downloadProjectArchive(paths)
+            }}
+          />
           {contextMenu.node.path ? (
             <>
               <ContextMenuSeparator />
@@ -2393,6 +3944,16 @@ function ProjectFilesPanel({
           onChange={setEntryDialog}
           onClose={() => setEntryDialog(null)}
           onSubmit={submitEntryDialog}
+        />
+      ) : null}
+
+      {zipImportDialog ? (
+        <ZipImportDialog
+          t={t}
+          dialog={zipImportDialog}
+          onChange={setZipImportDialog}
+          onClose={() => setZipImportDialog(null)}
+          onSubmit={submitZipImport}
         />
       ) : null}
     </div>
@@ -2545,6 +4106,92 @@ function ProjectQuickCreateDialog({
   )
 }
 
+function ZipImportDialog({
+  t,
+  dialog,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  t: WorkbenchCopy
+  dialog: ZipImportDialogState
+  onChange: (dialog: ZipImportDialogState) => void
+  onClose: () => void
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void
+}) {
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape' && !dialog.busy) onClose()
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [dialog.busy, onClose])
+
+  return (
+    <div className="fixed inset-0 z-50" onMouseDown={() => !dialog.busy && onClose()}>
+      <form
+        className="absolute left-1/2 top-16 flex max-h-[72vh] w-[min(480px,calc(100vw-32px))] -translate-x-1/2 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t.zipImportTitle}
+        onMouseDown={(event) => event.stopPropagation()}
+        onSubmit={onSubmit}
+      >
+        <div className="flex h-10 shrink-0 items-center justify-between border-b border-slate-200 px-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <Upload className="h-3.5 w-3.5 shrink-0 text-[#d95a1b]" />
+            <div className="min-w-0">
+              <p className="truncate text-xs font-black text-slate-900">{t.zipImportTitle}</p>
+              <p className="truncate text-[10px] text-slate-500">{dialog.file.name}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="grid h-7 w-7 place-items-center rounded-md text-slate-500 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={dialog.busy}
+            onClick={onClose}
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-auto p-3">
+          <label className="mb-2 block text-xs font-semibold text-slate-600">
+            {t.zipFile}
+            <Input className="mt-1" value={dialog.file.name} disabled />
+          </label>
+          <label className="mb-2 block text-xs font-semibold text-slate-600">
+            {t.projectName}
+            <Input
+              autoFocus
+              className="mt-1"
+              value={dialog.name}
+              disabled={dialog.busy}
+              onChange={(event) => onChange({ ...dialog, name: event.target.value })}
+              required
+            />
+          </label>
+          <label className="mb-2 block text-xs font-semibold text-slate-600">
+            {t.projectFileName}
+            <Input
+              className="mt-1"
+              value={dialog.fileName}
+              disabled={dialog.busy}
+              onChange={(event) => onChange({ ...dialog, fileName: event.target.value.toLowerCase() })}
+              placeholder="my-project"
+              required
+            />
+          </label>
+          <Button className="mt-2 w-full" size="sm" type="submit" disabled={dialog.busy}>
+            {dialog.busy ? t.loading : t.importProject}
+          </Button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
 function EntryDialogOverlay({
   t,
   dialog,
@@ -2576,6 +4223,8 @@ function EntryDialogOverlay({
   const Icon = dialog.mode === 'folder' ? FolderPlus : dialog.mode === 'rename' ? Pencil : dialog.mode === 'prompt' ? FilePlus2 : FileJson
   const compatibleModels = dialog.mode === 'prompt' ? listCompatibleModelsForProvider(aiProviders, dialog.providerId, dialog.outputType) : []
   const selectedModelContext = dialog.mode === 'prompt' ? getSelectedAiModelContext(aiProviders, dialog.providerId, dialog.model) : null
+  const projectProviders = dialog.mode === 'prompt' ? aiProviders.filter((provider) => !isCommonAiProvider(provider)) : []
+  const commonProviders = dialog.mode === 'prompt' ? aiProviders.filter(isCommonAiProvider) : []
   const responseSchema =
     dialog.mode === 'prompt'
       ? resolveAiModelParameterSchema(
@@ -2632,40 +4281,26 @@ function EntryDialogOverlay({
                 <span className="block text-xs font-semibold text-slate-600">{t.promptFileType}</span>
                 <ToggleGroup
                   type="single"
-                  value={dialog.promptType}
+                  value={dialog.promptKind}
                   className="mt-1 inline-flex h-7 w-fit max-w-full justify-start overflow-hidden rounded-md border border-border bg-card"
                   onValueChange={(value) => {
-                    if (value === 'simple' || value === 'agent') onChange({ ...dialog, promptType: value })
-                  }}
-                >
-                  <ToggleGroupItem className="shrink-0 whitespace-nowrap" value="simple">{t.simplePrompt}</ToggleGroupItem>
-                  <ToggleGroupItem className="shrink-0 whitespace-nowrap" value="agent">{t.agentPrompt}</ToggleGroupItem>
-                </ToggleGroup>
-              </div>
-              <div className="mt-3">
-                <span className="block text-xs font-semibold text-slate-600">{t.outputType}</span>
-                <ToggleGroup
-                  type="single"
-                  value={dialog.outputType}
-                  className="mt-1 inline-flex h-7 w-fit max-w-full justify-start overflow-hidden rounded-md border border-border bg-card"
-                  onValueChange={(value) => {
-                    if (value === 'image' || value === 'text') {
-                      const nextSelection = selectDefaultAiModel(aiProviders, value)
+                    if (value === 'chat' || value === 'agent' || value === 'image') {
+                      const outputType = value === 'image' ? 'image' : 'text'
+                      const nextSelection = selectDefaultAiModel(aiProviders, outputType)
                       onChange({
                         ...dialog,
-                        outputType: value,
+                        promptKind: value,
+                        outputType,
                         providerId: nextSelection.providerRef,
                         model: nextSelection.model,
-                        responseConfig: defaultResponseConfig(value, nextSelection.providerType, nextSelection.model, nextSelection.modelEntry),
+                        responseConfig: defaultResponseConfig(outputType, nextSelection.providerType, nextSelection.model, nextSelection.modelEntry),
                       })
                     }
                   }}
                 >
-                  {ZPMT_OUTPUT_TYPES.map((type) => (
-                    <ToggleGroupItem className="shrink-0 whitespace-nowrap" key={type} value={type}>
-                      {t.outputTypes[type]}
-                    </ToggleGroupItem>
-                  ))}
+                  <ToggleGroupItem className="shrink-0 whitespace-nowrap" value="chat">{t.simplePrompt}</ToggleGroupItem>
+                  <ToggleGroupItem className="shrink-0 whitespace-nowrap" value="agent">{t.agentPrompt}</ToggleGroupItem>
+                  <ToggleGroupItem className="shrink-0 whitespace-nowrap" value="image">{t.imagePromptFile}</ToggleGroupItem>
                 </ToggleGroup>
               </div>
               <label className="mt-3 block text-xs font-semibold text-slate-600">
@@ -2686,11 +4321,24 @@ function EntryDialogOverlay({
                   }}
                 >
                   {aiProviders.length ? null : <option value="">{t.noAiProvider}</option>}
-                  {aiProviders.map((provider) => (
-                    <option key={getAiProviderRef(provider)} value={getAiProviderRef(provider)}>
-                      {provider.name}
-                    </option>
-                  ))}
+                  {projectProviders.length ? (
+                    <optgroup label={t.projectProviderGroup}>
+                      {projectProviders.map((provider) => (
+                        <option key={getAiProviderRef(provider)} value={getAiProviderRef(provider)}>
+                          {provider.filePath || provider.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ) : null}
+                  {commonProviders.length ? (
+                    <optgroup label={t.commonProviderGroup}>
+                      {commonProviders.map((provider) => (
+                        <option key={getAiProviderRef(provider)} value={getAiProviderRef(provider)}>
+                          {provider.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ) : null}
                 </select>
               </label>
               <label className="mt-3 block text-xs font-semibold text-slate-600">
@@ -2876,6 +4524,28 @@ function ResponseConfigFields({
               value={value.imageSize || ''}
               placeholder={schema.customSizePlaceholder || '1024x1024'}
               onChange={(event) => onChange({ ...value, imageSize: event.target.value.trim() })}
+            />
+          </label>
+        ) : null}
+        {schema.imageCount ? (
+          <label className={labelClassName}>
+            {t.imageGenerateCount}
+            <Input
+              className={controlClassName || 'mt-1'}
+              type="number"
+              min={schema.imageCount.min}
+              max={schema.imageCount.max}
+              step={schema.imageCount.step}
+              value={String(value.imageCount ?? schema.imageCount.defaultValue)}
+              disabled={schema.imageCount.min === schema.imageCount.max}
+              onChange={(event) =>
+                onChange({
+                  ...value,
+                  imageCount: Math.round(
+                    Math.min(schema.imageCount?.max || 10, Math.max(schema.imageCount?.min || 1, readNumberInput(event.target.value, schema.imageCount?.defaultValue || 1))),
+                  ),
+                })
+              }
             />
           </label>
         ) : null}
@@ -3601,6 +5271,18 @@ function MarkdownPreviewPanel({
   )
   const [tooltip, setTooltip] = useState<FloatingTooltipState>(null)
 
+  useEffect(() => {
+    setTooltip(null)
+  }, [content])
+
+  useEffect(() => {
+    function clearTooltip() {
+      setTooltip(null)
+    }
+    window.addEventListener('blur', clearTooltip)
+    return () => window.removeEventListener('blur', clearTooltip)
+  }, [])
+
   function showTokenTooltip(target: HTMLElement, text: string) {
     setTooltip({ text, rect: target.getBoundingClientRect() })
   }
@@ -3611,7 +5293,7 @@ function MarkdownPreviewPanel({
         <FileText className="h-3.5 w-3.5 text-[#d95a1b]" />
         <span>{title}</span>
       </div>
-      <div className="markdown-preview-panel__body">
+      <div className="markdown-preview-panel__body" onMouseLeave={() => setTooltip(null)} onScroll={() => setTooltip(null)}>
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           urlTransform={(url) => url}
@@ -3648,29 +5330,545 @@ function MarkdownPreviewPanel({
   )
 }
 
-function AiAssistPanel({ t }: { t: WorkbenchCopy }) {
+type AiAssistAttachment = {
+  filename: string
+  mimeType: string
+  size: number
+  dataUrl: string
+}
+
+type AiAssistToolEvent = {
+  status?: string
+  toolName?: string
+  message?: string
+  args?: unknown
+  result?: unknown
+}
+
+type AiAssistTurn = {
+  id: string
+  instruction: string
+  status: 'streaming' | 'success' | 'error'
+  mode: 'modify' | 'answer' | ''
+  summary: string
+  reason: string
+  answer: string
+  content: string
+  rawContent: string
+  thinking: string
+  message: string
+  notes: string[]
+  validation: Record<string, unknown> | null
+  toolEvents: AiAssistToolEvent[]
+  attachments: AiAssistAttachment[]
+  durationMs?: number
+  applied?: boolean
+}
+
+type AiAssistStreamEvent = {
+  type: string
+  mode?: 'modify' | 'answer'
+  ok?: boolean
+  summary?: string
+  reason?: string
+  answer?: string
+  output?: string
+  content?: string
+  delta?: string
+  thinking?: string
+  message?: string
+  notes?: unknown[]
+  validation?: unknown
+  status?: string
+  toolName?: string
+  args?: unknown
+  result?: unknown
+  durationMs?: number
+  toolEvents?: unknown[]
+}
+
+function AiAssistPanel({
+  t,
+  activeFile,
+  content,
+  isZpmt,
+  onApply,
+}: {
+  t: WorkbenchCopy
+  activeFile: EditorFileTab | null
+  content: string
+  isZpmt: boolean
+  onApply: (content: string) => void
+}) {
+  const [instruction, setInstruction] = useState('')
+  const [attachments, setAttachments] = useState<AiAssistAttachment[]>([])
+  const [turnsByFile, setTurnsByFile] = useState<Record<string, AiAssistTurn[]>>({})
+  const [runningTurn, setRunningTurn] = useState<{ fileKey: string; turnId: string } | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+  const outputRef = useRef<HTMLDivElement | null>(null)
+  const fileKey = activeFile?.id || ''
+  const turns = fileKey ? turnsByFile[fileKey] || [] : []
+  const loading = Boolean(runningTurn && runningTurn.fileKey === fileKey)
+
+  useEffect(() => {
+    outputRef.current?.scrollTo({ top: outputRef.current.scrollHeight })
+  }, [turns])
+
+  useEffect(() => () => abortRef.current?.abort(), [])
+
+  function updateTurn(fileKeyValue: string, turnId: string, updater: (turn: AiAssistTurn) => AiAssistTurn) {
+    setTurnsByFile((current) => ({
+      ...current,
+      [fileKeyValue]: (current[fileKeyValue] || []).map((turn) => (turn.id === turnId ? updater(turn) : turn)),
+    }))
+  }
+
+  async function runAssist() {
+    if (!activeFile || !isZpmt || loading || !instruction.trim()) return
+    const currentFileKey = activeFile.id
+    const turnId = `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
+    const turn: AiAssistTurn = {
+      id: turnId,
+      instruction: instruction.trim(),
+      status: 'streaming',
+      mode: '',
+      summary: '判断请求类型...',
+      reason: '',
+      answer: '',
+      content: '',
+      rawContent: '',
+      thinking: '',
+      message: '',
+      notes: [],
+      validation: null,
+      toolEvents: [],
+      attachments,
+    }
+    setTurnsByFile((current) => ({ ...current, [currentFileKey]: [...(current[currentFileKey] || []), turn] }))
+    setInstruction('')
+    setAttachments([])
+    setRunningTurn({ fileKey: currentFileKey, turnId })
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    await runAiAssistStream(
+      {
+        projectId: activeFile.projectId,
+        path: activeFile.path,
+        content,
+        instruction: turn.instruction,
+        attachments,
+        stream: true,
+        contextMessages: buildAiAssistContextMessages(turns),
+      },
+      (event) => updateTurn(currentFileKey, turnId, (currentTurn) => applyAiAssistStreamEvent(currentTurn, event)),
+      () => {
+        setRunningTurn((current) => (current?.fileKey === currentFileKey && current.turnId === turnId ? null : current))
+        if (abortRef.current === controller) abortRef.current = null
+      },
+      (message) => updateTurn(currentFileKey, turnId, (currentTurn) => ({ ...currentTurn, status: 'error', message })),
+      controller.signal,
+    )
+  }
+
+  function stopAssist() {
+    if (!runningTurn) return
+    abortRef.current?.abort()
+    updateTurn(runningTurn.fileKey, runningTurn.turnId, (turn) => ({ ...turn, status: 'error', message: '已停止' }))
+    setRunningTurn(null)
+  }
+
+  function clearContext() {
+    if (!fileKey || loading) return
+    setTurnsByFile((current) => ({ ...current, [fileKey]: [] }))
+  }
+
+  function applyTurn(turn: AiAssistTurn) {
+    if (!fileKey || !turn.content) return
+    onApply(turn.content)
+    updateTurn(fileKey, turn.id, (currentTurn) => ({ ...currentTurn, applied: true }))
+  }
+
+  async function addAttachments(files: FileList | null) {
+    if (!files?.length) return
+    const nextFiles = await Promise.all(Array.from(files).slice(0, 6).map(readFileAsAiAssistAttachment))
+    setAttachments((current) => [...current, ...nextFiles].slice(0, 8))
+  }
+
   return (
     <aside className="ai-assist-panel">
       <div className="ai-assist-panel__header">
         <Bot className="h-3.5 w-3.5 text-[#d95a1b]" />
         <span>{t.aiAssist.title}</span>
+        {turns.length ? (
+          <button
+            type="button"
+            className="ml-auto rounded px-1.5 py-0.5 text-[11px] font-black text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+            disabled={loading}
+            onClick={clearContext}
+          >
+            清空上下文
+          </button>
+        ) : null}
       </div>
-      <div className="ai-assist-panel__body">
-        <p>{t.aiAssist.status}</p>
-        <div className="mt-3 space-y-2">
-          {t.aiAssist.items.map((item) => (
-            <div key={item} className="ai-assist-panel__item">
-              <WandSparkles className="h-3.5 w-3.5 shrink-0 text-[#d95a1b]" />
-              <span>{item}</span>
+      <div className="ai-assist-panel__body flex min-h-0 flex-col gap-0 overflow-hidden p-0">
+        {!isZpmt ? (
+          <div className="m-3 ai-assist-panel__item">
+            <WandSparkles className="h-3.5 w-3.5 shrink-0 text-[#d95a1b]" />
+            <span>AI 辅助仅支持 .zpmt 文件</span>
+          </div>
+        ) : (
+          <>
+            <div ref={outputRef} className="min-h-0 flex-1 space-y-3 overflow-auto p-3">
+              {turns.length ? turns.map((turn) => {
+                const validation = turn.validation
+                const issues = Array.isArray(validation?.issues) ? validation.issues : []
+                const canApply = turn.mode === 'modify' && turn.status === 'success' && validation?.ok === true && Boolean(turn.content)
+                const modeLabel = turn.mode === 'modify' ? '修改' : turn.mode === 'answer' ? '回答' : '判断中'
+
+                return (
+                  <div key={turn.id} className="rounded-md border border-slate-200 bg-white p-2.5 shadow-sm">
+                    <div className="mb-2 flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="mb-1 flex items-center gap-1.5">
+                          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-black text-slate-600">{modeLabel}</span>
+                          <span className={cn('text-[10px] font-black', turn.status === 'streaming' ? 'text-[#d95a1b]' : turn.status === 'success' ? 'text-emerald-600' : 'text-red-600')}>
+                            {turn.status === 'streaming' ? '处理中' : turn.status === 'success' ? '完成' : '失败'}
+                          </span>
+                        </div>
+                        <div className="whitespace-pre-wrap break-words text-xs font-semibold text-slate-800">{turn.instruction}</div>
+                        {turn.summary ? <div className="mt-1 text-[11px] font-semibold text-slate-500">{turn.summary}</div> : null}
+                      </div>
+                      {canApply ? (
+                        <Button type="button" size="sm" onClick={() => applyTurn(turn)} disabled={turn.applied}>
+                          {turn.applied ? '已应用' : '应用'}
+                        </Button>
+                      ) : null}
+                    </div>
+                    {turn.answer ? (
+                      <div className="whitespace-pre-wrap rounded-md border border-slate-100 bg-slate-50 p-2 text-xs leading-5 text-slate-700">{turn.answer}</div>
+                    ) : null}
+                    {turn.message && turn.status === 'error' ? (
+                      <div className="rounded-md border border-red-200 bg-red-50 p-2 text-[11px] font-semibold text-red-700">{turn.message}</div>
+                    ) : null}
+                    {turn.toolEvents.length ? (
+                      <details className="mt-2 rounded-md border border-slate-100 bg-slate-50 p-2" open={turn.status === 'streaming'}>
+                        <summary className="cursor-pointer text-[11px] font-black text-slate-600">工具调用 · {turn.toolEvents.length}</summary>
+                        <div className="mt-2 space-y-1">
+                          {turn.toolEvents.map((event, index) => (
+                            <div key={index} className="flex items-center justify-between gap-2 rounded bg-white px-2 py-1 text-[11px] font-semibold text-slate-600">
+                              <span className="min-w-0 truncate">{event.toolName || 'tool'}</span>
+                              <span className={cn('shrink-0', event.status === 'done' ? 'text-emerald-600' : 'text-[#d95a1b]')}>
+                                {event.message || (event.status === 'done' ? '完成' : '调用中')}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    ) : null}
+                    {turn.thinking ? (
+                      <details className="mt-2 rounded-md border border-slate-100 bg-white p-2">
+                        <summary className="cursor-pointer text-[11px] font-black text-slate-600">思考内容</summary>
+                        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-2 text-[11px] leading-5 text-slate-100">{turn.thinking}</pre>
+                      </details>
+                    ) : null}
+                    {issues.length ? (
+                      <div className="mt-2 max-h-28 overflow-auto rounded bg-amber-50 p-2 text-[11px] font-semibold text-amber-800">
+                        {issues.map((issue, index) => (
+                          <div key={index}>{readString(isRecord(issue) ? issue.message : issue)}</div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {turn.mode === 'modify' && turn.content ? (
+                      <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-2 text-[11px] leading-5 text-slate-100">{turn.content}</pre>
+                    ) : null}
+                  </div>
+                )
+              }) : (
+                <div className="ai-assist-panel__item">
+                  <MessageSquare className="h-3.5 w-3.5 shrink-0 text-[#d95a1b]" />
+                  <span>输入问题或修改要求。AI 会先判断是回答还是修改，回答和修改都支持查询项目文档、变量语法和配方变量。</span>
+                </div>
+              )}
             </div>
-          ))}
-        </div>
-        <Button className="mt-4" size="sm">
-          <WandSparkles className="h-3 w-3" />
-          {t.aiAssist.action}
-        </Button>
+            <div className="shrink-0 border-t border-slate-200 bg-white p-2.5">
+              <Textarea
+                className="min-h-20 resize-none bg-white text-xs"
+                value={instruction}
+                disabled={loading}
+                onChange={(event) => setInstruction(event.target.value)}
+                placeholder="问：当前文件有哪些变量？或：把这个提示词改成更适合国风海报，并补充参考图变量。"
+              />
+              {attachments.length ? (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {attachments.map((file, index) => (
+                    <button
+                      key={`${file.filename}:${index}`}
+                      type="button"
+                      className="max-w-full truncate rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-semibold text-slate-600"
+                      title="点击移除"
+                      disabled={loading}
+                      onClick={() => setAttachments((current) => current.filter((_, currentIndex) => currentIndex !== index))}
+                    >
+                      {file.filename}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                <label className={cn('inline-flex h-8 cursor-pointer items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-black text-slate-600 hover:bg-slate-50', loading && 'pointer-events-none opacity-60')}>
+                  <Upload className="h-3.5 w-3.5" />
+                  上传参考
+                  <input className="sr-only" type="file" multiple disabled={loading} onChange={(event) => void addAttachments(event.target.files)} />
+                </label>
+                {loading ? (
+                  <Button type="button" size="sm" variant="outline" onClick={stopAssist}>
+                    <X className="h-3.5 w-3.5" />
+                    停止
+                  </Button>
+                ) : (
+                  <Button type="button" size="sm" onClick={() => void runAssist()} disabled={!instruction.trim()}>
+                    <WandSparkles className="h-3.5 w-3.5" />
+                    发送
+                  </Button>
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </aside>
+  )
+}
+
+function buildAiAssistContextMessages(turns: AiAssistTurn[]) {
+  return turns.slice(-6).flatMap((turn) => {
+    const assistantText = turn.mode === 'answer'
+      ? turn.answer
+      : turn.content
+        ? `${turn.summary || '已生成候选修改'}\n校验：${turn.validation?.ok === true ? '通过' : '未通过'}`
+        : turn.summary || turn.message
+    return [
+      { role: 'user', content: turn.instruction },
+      { role: 'assistant', content: assistantText.slice(0, 3000) },
+    ].filter((item) => item.content.trim())
+  })
+}
+
+function applyAiAssistStreamEvent(turn: AiAssistTurn, event: AiAssistStreamEvent): AiAssistTurn {
+  if (event.type === 'start') {
+    return {
+      ...turn,
+      mode: event.mode || turn.mode,
+      summary: event.summary || turn.summary,
+      reason: event.reason || turn.reason,
+      message: '',
+    }
+  }
+  if (event.type === 'thinking') return { ...turn, thinking: `${turn.thinking}${event.delta || ''}` }
+  if (event.type === 'content') {
+    if ((event.mode || turn.mode) === 'answer') return { ...turn, mode: 'answer', answer: `${turn.answer}${event.delta || ''}` }
+    return { ...turn, mode: 'modify', rawContent: `${turn.rawContent}${event.delta || ''}` }
+  }
+  if (event.type === 'tool') {
+    return {
+      ...turn,
+      mode: event.mode || turn.mode,
+      toolEvents: [
+        ...turn.toolEvents,
+        { status: event.status, toolName: event.toolName, message: event.message, args: event.args, result: event.result },
+      ],
+    }
+  }
+  if (event.type === 'validation') return { ...turn, validation: isRecord(event.validation) ? event.validation : null }
+  if (event.type === 'done') {
+    const mode = event.mode || turn.mode
+    return {
+      ...turn,
+      mode,
+      status: event.ok === false ? 'error' : 'success',
+      summary: event.summary || turn.summary,
+      answer: mode === 'answer' ? readString(event.answer || event.output) || turn.answer : turn.answer,
+      content: mode === 'modify' ? readString(event.content) : turn.content,
+      thinking: readString(event.thinking) || turn.thinking,
+      notes: Array.isArray(event.notes) ? event.notes.map(readString).filter(Boolean) : turn.notes,
+      validation: isRecord(event.validation) ? event.validation : turn.validation,
+      toolEvents: Array.isArray(event.toolEvents)
+        ? event.toolEvents.filter(isRecord).map((item) => ({
+            status: readString(item.status),
+            toolName: readString(item.toolName),
+            message: readString(item.message),
+            args: item.args,
+            result: item.result,
+          }))
+        : turn.toolEvents,
+      message: readString(event.message),
+      durationMs: event.durationMs,
+    }
+  }
+  if (event.type === 'error') return { ...turn, status: 'error', message: event.message || 'AI 辅助失败' }
+  return turn
+}
+
+async function runAiAssistStream(
+  body: Record<string, unknown>,
+  onEvent: (event: AiAssistStreamEvent) => void,
+  onDone: () => void,
+  onError: (message: string) => void,
+  signal: AbortSignal,
+) {
+  try {
+    const response = await fetch('/api/prompts/assist', {
+      method: 'POST',
+      headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    })
+
+    if (!response.ok || !response.body) {
+      const data = await response.json().catch(() => null)
+      onError(readString(isRecord(data) ? data.message : '') || 'AI 辅助失败')
+      return
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const chunks = buffer.split(/\n\n/)
+      buffer = chunks.pop() || ''
+      for (const chunk of chunks) {
+        const data = chunk.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n')
+        if (!data) continue
+        try {
+          onEvent(JSON.parse(data) as AiAssistStreamEvent)
+        } catch {
+          // Ignore malformed stream events from intermediate proxies.
+        }
+      }
+    }
+  } catch (error) {
+    if (signal.aborted) return
+    onError(error instanceof Error ? error.message : 'AI 辅助失败')
+  } finally {
+    onDone()
+  }
+}
+
+function PromptApiDialog({
+  t,
+  file,
+  document: zpmtDocument,
+  variables,
+  onClose,
+}: {
+  t: WorkbenchCopy
+  file: EditorFileTab
+  document: ZpmtDocument
+  variables: ZpmtTestVariable[]
+  onClose: () => void
+}) {
+  const [tokenSummary, setTokenSummary] = useState<Record<string, unknown> | null>(null)
+  const [copied, setCopied] = useState('')
+
+  useEffect(() => {
+    fetch('/api/user-api-token')
+      .then((response) => response.json().catch(() => null))
+      .then((response) => {
+        if (response?.ok) setTokenSummary(response.token || null)
+      })
+      .catch(() => undefined)
+  }, [])
+
+  const origin = typeof window === 'undefined' ? '' : window.location.origin
+  const runUrl = `${origin}/api/public/prompts/run`
+  const variablesUrl = `${origin}/api/public/prompts/variables?projectId=${encodeURIComponent(file.projectId)}&path=${encodeURIComponent(file.path)}`
+  const requestBody = {
+    projectId: file.projectId,
+    path: file.path,
+    variables: Object.fromEntries(variables.filter((variable) => !variable.mediaKind && !variable.recipe).map((variable) => [variable.key, variable.defaultValue || ''])),
+    recipeVariables: Object.fromEntries(variables.filter((variable) => variable.recipe).map((variable) => [variable.key, variable.defaultValue || ''])),
+    mediaVariables: Object.fromEntries(variables.filter((variable) => variable.mediaKind).map((variable) => [variable.key, []])),
+    options: zpmtDocument.kind === 'agent' ? { maxToolRounds: 5 } : undefined,
+  }
+  const curl = [
+    `curl -X POST "${runUrl}" \\`,
+    `  -H "Authorization: Bearer <你的个人Token>" \\`,
+    `  -H "Content-Type: application/json" \\`,
+    `  -d '${JSON.stringify(requestBody, null, 2).replace(/'/g, "'\\''")}'`,
+  ].join('\n')
+
+  async function copyApiText(kind: string, value: string) {
+    await copyTextToClipboard(value)
+    setCopied(kind)
+    window.setTimeout(() => setCopied(''), 1200)
+  }
+
+  return createPortal(
+    <div className="fixed inset-0 z-[90] grid place-items-center bg-slate-950/35 p-6 backdrop-blur-sm" onMouseDown={onClose}>
+      <div className="flex max-h-[82vh] w-[min(920px,calc(100vw-32px))] flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-[0_28px_80px_rgba(15,23,42,0.24)]" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="flex h-11 shrink-0 items-center justify-between border-b border-slate-200 px-3">
+          <div className="min-w-0">
+            <h2 className="truncate text-sm font-black text-slate-900">提示词调用接口</h2>
+            <p className="truncate text-[11px] font-semibold text-slate-500">{file.path}</p>
+          </div>
+          <button type="button" className="grid h-7 w-7 place-items-center rounded-md text-slate-500 hover:bg-slate-100" aria-label={t.close} onClick={onClose}>
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto p-4">
+          <div className="grid gap-3 md:grid-cols-[1fr_1fr]">
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+              <div className="mb-2 text-xs font-black text-slate-900">接口地址</div>
+              <div className="space-y-2 text-[11px] font-semibold text-slate-600">
+                <div>
+                  <div className="font-black text-slate-500">运行提示词</div>
+                  <code className="mt-1 block break-all rounded bg-white p-2">{runUrl}</code>
+                </div>
+                <div>
+                  <div className="font-black text-slate-500">变量列表</div>
+                  <code className="mt-1 block break-all rounded bg-white p-2">{variablesUrl}</code>
+                </div>
+                <div>
+                  <div className="font-black text-slate-500">Token</div>
+                  <div className="mt-1 rounded bg-white p-2">{tokenSummary?.exists ? `已配置：${String(tokenSummary.tokenMasked || '')}` : '未配置，请到设置 / 接口 Token 生成'}</div>
+                </div>
+              </div>
+            </div>
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-xs font-black text-slate-900">变量</div>
+                <Button type="button" size="sm" variant="outline" onClick={() => void copyApiText('variables', JSON.stringify(variables, null, 2))}>
+                  <Copy className="h-3.5 w-3.5" /> {copied === 'variables' ? '已复制' : '复制'}
+                </Button>
+              </div>
+              <div className="max-h-52 overflow-auto rounded bg-white p-2 text-[11px]">
+                {variables.length ? variables.map((variable) => (
+                  <div key={variable.key} className="border-b border-slate-100 py-1 last:border-b-0">
+                    <div className="font-black text-slate-700">{variable.label}</div>
+                    <div className="break-all font-mono text-slate-500">{variable.key}</div>
+                  </div>
+                )) : <div className="text-slate-500">当前提示词没有变量</div>}
+              </div>
+            </div>
+          </div>
+          <div className="mt-3 rounded-md border border-slate-200 bg-white p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="text-xs font-black text-slate-900">请求示例</div>
+              <Button type="button" size="sm" variant="outline" onClick={() => void copyApiText('curl', curl)}>
+                <Copy className="h-3.5 w-3.5" /> {copied === 'curl' ? '已复制' : '复制 curl'}
+              </Button>
+            </div>
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-3 text-[11px] leading-5 text-slate-100">{curl}</pre>
+          </div>
+        </div>
+      </div>
+    </div>,
+    window.document.body,
   )
 }
 
@@ -3788,6 +5986,7 @@ function EditorPanel({
   const [editorMode, setEditorMode] = useState<EditorMode>('normal')
   const [zpmtPromptModes, setZpmtPromptModes] = useState<Record<string, PromptFileType>>({})
   const [zpmtCollapsedSections, setZpmtCollapsedSections] = useState<Record<string, ZpmtCollapsedSections>>({})
+  const [apiDialogOpen, setApiDialogOpen] = useState(false)
   const isSourceMode = editorMode === 'source'
   const hasSidePanel = editorMode === 'preview' || editorMode === 'assist'
   const editorValue = activeTab?.content || ''
@@ -3795,11 +5994,19 @@ function EditorPanel({
   const activeZpmtModelContext = activeZpmtDocument
     ? getSelectedAiModelContext(aiProviders, activeZpmtDocument.config.providerId, activeZpmtDocument.config.model, activeZpmtDocument.config.providerFile)
     : null
+  const activeZpmtPromptSurface = activeZpmtDocument
+    ? resolveAiModelPromptSurface(
+        activeZpmtDocument.config.outputType,
+        activeZpmtModelContext?.provider.providerType,
+        activeZpmtDocument.config.model,
+        activeZpmtModelContext?.model,
+      )
+    : null
   const activeZpmtModelCapabilities = useMemo(() => getZpmtModelCapabilityGate(activeZpmtModelContext?.model), [activeZpmtModelContext?.model])
   const activeZlexResult = activeTab && isZlexFilePath(activeTab.path) ? parseZlexContent(editorValue) : null
   const activeZamfResult = activeTab && isZamfFilePath(activeTab.path) ? parseZamfContent(editorValue) : null
-  const activeZpmtInitialMode = activeZpmtDocument ? getZpmtPromptMode(activeZpmtDocument) : 'simple'
-  const activeZpmtPromptMode = activeTab && activeZpmtDocument ? zpmtPromptModes[activeTab.id] || activeZpmtInitialMode : 'simple'
+  const activeZpmtInitialMode = activeZpmtDocument ? getZpmtPromptMode(activeZpmtDocument) : 'chat'
+  const activeZpmtPromptMode = activeTab && activeZpmtDocument ? zpmtPromptModes[activeTab.id] || activeZpmtInitialMode : 'chat'
   const activeZpmtTabId = activeTab && activeZpmtDocument ? activeTab.id : ''
   const activeZpmtCollapsedSections = activeZpmtTabId ? zpmtCollapsedSections[activeZpmtTabId] || {} : {}
   const previewMarkdown = activeZpmtDocument ? buildZpmtPreviewMarkdown(activeZpmtDocument, activeZpmtPromptMode) : editorValue
@@ -3836,7 +6043,8 @@ function EditorPanel({
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-slate-200 bg-white">
         <div className="flex h-full min-w-0 flex-1 items-center overflow-x-auto overflow-y-hidden">
           {tabs.map((tab) => {
-            const fileIcon = getFileIconMeta(tab.path)
+            const tabZpmtKind = isZpmtFilePath(tab.path) ? parseZpmtContent(tab.content, aiProviders)?.kind : null
+            const fileIcon = getFileIconMeta(tab.path, tabZpmtKind)
             const FileIcon = fileIcon.icon
             return (
               <div
@@ -3878,6 +6086,11 @@ function EditorPanel({
           <Button variant="outline" size="sm" disabled={!activeTab || activeTab.saving} onClick={onSaveActive}>
             <Save className="h-3 w-3" /> {saveText}
           </Button>
+          {activeZpmtDocument && activeTab ? (
+            <Button variant="outline" size="sm" onClick={() => setApiDialogOpen(true)}>
+              <Code2 className="h-3 w-3" /> 查看接口
+            </Button>
+          ) : null}
           <EditorModeSwitch mode={editorMode} t={t} onChange={setEditorMode} />
         </div>
       </div>
@@ -3998,8 +6211,25 @@ function EditorPanel({
             modelCapabilities={activeZpmtModelCapabilities}
           />
         ) : null}
-        {editorMode === 'assist' ? <AiAssistPanel t={t} /> : null}
+        {editorMode === 'assist' ? (
+          <AiAssistPanel
+            t={t}
+            activeFile={activeTab}
+            content={editorValue}
+            isZpmt={Boolean(activeZpmtDocument)}
+            onApply={(content) => onChangeActiveContent(content)}
+          />
+        ) : null}
       </div>
+      {apiDialogOpen && activeTab && activeZpmtDocument ? (
+        <PromptApiDialog
+          t={t}
+          file={activeTab}
+          document={activeZpmtDocument}
+          variables={collectZpmtTestVariables(activeZpmtDocument, t, locale, activeZpmtPromptSurface, recipeVariableCategories)}
+          onClose={() => setApiDialogOpen(false)}
+        />
+      ) : null}
     </div>
   )
 }
@@ -4456,25 +6686,29 @@ function ZamfStructuredEditor({
             </div>
           ) : null}
           {document.models.length ? (
-            document.models.map((model, index) => (
-              <div key={`${model.id}-${index}`} className="rounded-md border border-slate-200 bg-white p-2">
-                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,220px)]">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[10px] font-black uppercase tracking-wide text-slate-400">{t.modelId}</div>
-                    <div className="mt-1 truncate font-mono text-xs font-black text-slate-900">{model.id}</div>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      <ZamfModelTags t={t} model={model} />
+            document.models.map((model, index) => {
+              const presetKey = getAiModelPresetOptionKeyForModel(document.providerType, model)
+              return (
+                <div key={`${model.id}-${index}`} className="rounded-md border border-slate-200 bg-white p-2">
+                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,220px)]">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[10px] font-black uppercase tracking-wide text-slate-400">{t.modelId}</div>
+                      <div className="mt-1 truncate font-mono text-xs font-black text-slate-900">{model.id}</div>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <ZamfModelTags t={t} model={model} />
+                      </div>
                     </div>
-                  </div>
-                  {!hasAiModelPreset(document.providerType, model.id) ? (
                     <label className="grid min-w-0 gap-1 text-[10px] font-black text-slate-500">
-                      {t.modelPreset}
+                      <span className="flex min-w-0 items-center justify-between gap-2">
+                        <span>{t.modelPreset}</span>
+                        {presetKey ? <Badge variant="outline">{t.modelPresetMatched}</Badge> : null}
+                      </span>
                       <select
                         className="h-8 w-full max-w-full rounded-md border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
-                        value={getAiModelPresetOptionKey(model.presetRef)}
+                        value={presetKey}
                         onChange={(event) => applyModelPreset(index, event.target.value)}
                       >
-                        <option value="">{t.modelPresetPlaceholder}</option>
+                        <option value="" disabled>{t.modelPresetPlaceholder}</option>
                         {listAiModelPresetOptions(document.providerType).map((option) => (
                           <option key={option.key} value={option.key}>
                             {option.providerName} / {option.model.id}
@@ -4482,12 +6716,10 @@ function ZamfStructuredEditor({
                         ))}
                       </select>
                     </label>
-                  ) : (
-                    <Badge variant="outline">{t.modelPresetMatched}</Badge>
-                  )}
+                  </div>
                 </div>
-              </div>
-            ))
+              )
+            })
           ) : (
             <div className="rounded-md border border-dashed border-slate-200 bg-white px-3 py-6 text-center text-xs font-semibold text-slate-500">
               {t.emptyModels}
@@ -4546,7 +6778,8 @@ function ZpmtStructuredEditor({
   onToggleSection: (section: ZpmtSectionKey) => void
   onChange: (document: ZpmtDocument) => void
 }) {
-  const showSystemPrompt = promptMode === 'agent'
+  const showSystemPrompt = document.kind === 'agent'
+  const isImagePrompt = document.kind === 'image'
   const selectedModelContext = getSelectedAiModelContext(aiProviders, document.config.providerId, document.config.model, document.config.providerFile)
   const responseSchema = resolveAiModelParameterSchema(
     document.config.outputType,
@@ -4554,6 +6787,16 @@ function ZpmtStructuredEditor({
     document.config.model,
     selectedModelContext?.model,
   )
+  const promptSurface = resolveAiModelPromptSurface(
+    document.config.outputType,
+    selectedModelContext?.provider?.providerType,
+    document.config.model,
+    selectedModelContext?.model,
+  )
+  const selectedProviderRef = document.config.providerFile || document.config.providerId
+  const selectedProvider = findAiProvider(aiProviders, selectedProviderRef, document.config.providerFile)
+  const projectProviders = aiProviders.filter((provider) => !isCommonAiProvider(provider))
+  const commonProviders = aiProviders.filter(isCommonAiProvider)
   const compatibleModels = listCompatibleModelsForProvider(aiProviders, document.config.providerFile || document.config.providerId, document.config.outputType)
   const modelCapabilities = useMemo(() => getZpmtModelCapabilityGate(selectedModelContext?.model), [selectedModelContext?.model])
   const { supportsTools } = modelCapabilities
@@ -4568,10 +6811,14 @@ function ZpmtStructuredEditor({
 
   const [pendingTagDialog, setPendingTagDialog] = useState<PendingZpmtTagDialog | null>(null)
   const [pendingToolDialog, setPendingToolDialog] = useState<PendingZpmtToolDialog | null>(null)
-  const existingTagNames = useMemo(() => extractZpmtTagNames(document.system, document.user), [document.system, document.user])
+  const existingTagNames = useMemo(
+    () => extractZpmtTagNames(document.system, document.user, document.prompt, document.negativePrompt, getZpmtStyleText(document.style)),
+    [document.system, document.user, document.prompt, document.negativePrompt, document.style],
+  )
 
   function applyProviderFile(provider: AiProviderSummary) {
     const model = findCompatibleModelForProvider(provider, document.config.outputType)
+    const nextPromptSurface = resolveAiModelPromptSurface(document.config.outputType, provider.providerType, model?.id, model)
     updateDocument({
       config: {
         providerFile: provider.filePath || '',
@@ -4580,6 +6827,7 @@ function ZpmtStructuredEditor({
         model: model?.id || '',
         responseConfig: defaultResponseConfig(document.config.outputType, provider.providerType, model?.id, model),
       },
+      style: document.kind === 'image' ? normalizeZpmtImageStyle(document.style, nextPromptSurface) : document.style,
     })
   }
 
@@ -4588,22 +6836,59 @@ function ZpmtStructuredEditor({
       updateDocument({ system: insertTextAtOffset(document.system, offset, token) })
       return
     }
+    if (sectionKey === 'prompt') {
+      updateDocument({ prompt: insertTextAtOffset(document.prompt, offset, token) })
+      return
+    }
+    if (sectionKey === 'negativePrompt') {
+      updateDocument({ negativePrompt: insertTextAtOffset(document.negativePrompt, offset, token) })
+      return
+    }
+    if (sectionKey === 'style') {
+      updateDocument({ style: updateZpmtStyleEditableText(document.style, insertTextAtOffset(getZpmtStyleEditableText(document.style), offset, token)) })
+      return
+    }
 
     updateDocument({ user: insertTextAtOffset(document.user, offset, token) })
   }
 
   function replacePromptToken(sectionKey: ZpmtPromptSectionKey, start: number, end: number, token: string) {
-    const currentValue = sectionKey === 'system' ? document.system : document.user
+    const currentValue =
+      sectionKey === 'system'
+        ? document.system
+        : sectionKey === 'prompt'
+          ? document.prompt
+          : sectionKey === 'negativePrompt'
+            ? document.negativePrompt
+            : sectionKey === 'style'
+              ? getZpmtStyleEditableText(document.style)
+              : document.user
     const nextValue = replaceTextRange(currentValue, start, end, token)
     if (sectionKey === 'system') {
       updateDocument({ system: nextValue })
+      return
+    }
+    if (sectionKey === 'prompt') {
+      updateDocument({ prompt: nextValue })
+      return
+    }
+    if (sectionKey === 'negativePrompt') {
+      updateDocument({ negativePrompt: nextValue })
+      return
+    }
+    if (sectionKey === 'style') {
+      updateDocument({ style: updateZpmtStyleEditableText(document.style, nextValue) })
       return
     }
     updateDocument({ user: nextValue })
   }
 
   function handleInstructionDrop(payload: InstructionDragPayload, sectionKey: ZpmtPromptSectionKey, offset: number) {
-    if (!canUseInstructionPayload(payload, modelCapabilities)) return
+    if (!canDropInstructionInPromptSection(payload, document.kind, sectionKey, modelCapabilities)) return
+    if (payload.kind === 'constant') {
+      insertPromptToken(sectionKey, offset, createConstantToken(payload.item, locale))
+      return
+    }
     if (payload.kind === 'tool') {
       handleToolDrop(payload)
       return
@@ -4693,43 +6978,35 @@ function ZpmtStructuredEditor({
         >
           <label className="zpmt-config-field">
             <span>{t.providerFile}</span>
-            <input className="zpmt-config-control" value={document.config.providerFile || t.dropProviderFile} readOnly />
-          </label>
-          <label className="zpmt-config-field">
-            <span>{t.outputType}</span>
             <select
-              value={document.config.outputType}
+              className="zpmt-config-control"
+              value={selectedProviderRef}
+              disabled={!aiProviders.length && !selectedProviderRef}
               onChange={(event) => {
-                const outputType = normalizeZpmtOutputType(event.target.value)
-                const currentProvider = findAiProvider(aiProviders, document.config.providerFile || document.config.providerId)
-                const currentModel = findCompatibleModelForProvider(currentProvider, outputType)
-                const selection = currentProvider && currentModel
-                  ? {
-                      providerFile: currentProvider.filePath || '',
-                      providerId: currentProvider.id,
-                      providerName: currentProvider.name,
-                      providerType: currentProvider.providerType,
-                      model: currentModel.id,
-                      modelEntry: currentModel,
-                    }
-                  : selectDefaultAiModel(aiProviders, outputType)
-                updateDocument({
-                  config: {
-                    outputType,
-                    providerFile: selection.providerFile,
-                    providerId: selection.providerId,
-                    providerName: selection.providerName,
-                    model: selection.model,
-                    responseConfig: defaultResponseConfig(outputType, selection.providerType, selection.model, selection.modelEntry),
-                  },
-                })
+                const provider = findAiProvider(aiProviders, event.target.value)
+                if (provider) applyProviderFile(provider)
               }}
             >
-              {ZPMT_OUTPUT_TYPES.map((type) => (
-                <option key={type} value={type}>
-                  {t.outputTypes[type]}
-                </option>
-              ))}
+              {!selectedProviderRef ? <option value="">{aiProviders.length ? t.aiProvider : t.noAiProvider}</option> : null}
+              {selectedProviderRef && !selectedProvider ? <option value={selectedProviderRef}>{document.config.providerName || t.providerUnavailable}</option> : null}
+              {projectProviders.length ? (
+                <optgroup label={t.projectProviderGroup}>
+                  {projectProviders.map((provider) => (
+                    <option key={getAiProviderRef(provider)} value={getAiProviderRef(provider)}>
+                      {provider.filePath || provider.name}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              {commonProviders.length ? (
+                <optgroup label={t.commonProviderGroup}>
+                  {commonProviders.map((provider) => (
+                    <option key={getAiProviderRef(provider)} value={getAiProviderRef(provider)}>
+                      {provider.name}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
             </select>
           </label>
           <label className="zpmt-config-field">
@@ -4747,6 +7024,9 @@ function ZpmtStructuredEditor({
                     model: model?.id || event.target.value,
                     responseConfig: defaultResponseConfig(document.config.outputType, provider?.providerType, model?.id || event.target.value, model),
                   },
+                  style: document.kind === 'image'
+                    ? normalizeZpmtImageStyle(document.style, resolveAiModelPromptSurface(document.config.outputType, provider?.providerType, model?.id || event.target.value, model))
+                    : document.style,
                 })
               }}
             >
@@ -4773,40 +7053,60 @@ function ZpmtStructuredEditor({
         </div>
       </ZpmtSection>
 
-      {showSystemPrompt ? (
-        <ZpmtPromptSection
+      {isImagePrompt ? (
+        <ZpmtImagePromptEditor
           t={t}
           locale={locale}
+          document={document}
+          promptSurface={promptSurface}
+          collapsedSections={collapsedSections}
           recipeVariableCategories={recipeVariableCategories}
-          metadata={document.metadata}
-          sectionKey="system"
-          title={t.systemPrompt}
-          value={document.system}
-          collapsed={Boolean(collapsedSections.system)}
-          onToggle={onToggleSection}
           modelCapabilities={modelCapabilities}
+          onToggleSection={onToggleSection}
           onInstructionDrop={handleInstructionDrop}
           onTokenEdit={handleTokenEdit}
-          onChange={(value) => updateDocument({ system: value })}
+          onChange={updateDocument}
         />
-      ) : null}
+      ) : (
+        <>
+          {showSystemPrompt ? (
+            <ZpmtPromptSection
+              t={t}
+              locale={locale}
+              recipeVariableCategories={recipeVariableCategories}
+              metadata={document.metadata}
+              promptKind={document.kind}
+              sectionKey="system"
+              title={t.systemPrompt}
+              value={document.system}
+              collapsed={Boolean(collapsedSections.system)}
+              onToggle={onToggleSection}
+              modelCapabilities={modelCapabilities}
+              onInstructionDrop={handleInstructionDrop}
+              onTokenEdit={handleTokenEdit}
+              onChange={(value) => updateDocument({ system: value })}
+            />
+          ) : null}
 
-      <ZpmtPromptSection
-        t={t}
-        locale={locale}
-        recipeVariableCategories={recipeVariableCategories}
-        metadata={document.metadata}
-        sectionKey="user"
-        title={t.userPrompt}
-        value={document.user}
-        collapsed={Boolean(collapsedSections.user)}
-        onToggle={onToggleSection}
-        modelCapabilities={modelCapabilities}
-        onInstructionDrop={handleInstructionDrop}
-        onTokenEdit={handleTokenEdit}
-        onChange={(value) => updateDocument({ user: value })}
-      />
-      <ZpmtToolsDock t={t} locale={locale} tools={document.tools} supportsTools={supportsTools} onEdit={editTool} onRemove={removeTool} />
+          <ZpmtPromptSection
+            t={t}
+            locale={locale}
+            recipeVariableCategories={recipeVariableCategories}
+            metadata={document.metadata}
+            promptKind={document.kind}
+            sectionKey="user"
+            title={t.userPrompt}
+            value={document.user}
+            collapsed={Boolean(collapsedSections.user)}
+            onToggle={onToggleSection}
+            modelCapabilities={modelCapabilities}
+            onInstructionDrop={handleInstructionDrop}
+            onTokenEdit={handleTokenEdit}
+            onChange={(value) => updateDocument({ user: value })}
+          />
+          {document.kind === 'agent' ? <ZpmtToolsDock t={t} locale={locale} tools={document.tools} supportsTools={supportsTools} onEdit={editTool} onRemove={removeTool} /> : null}
+        </>
+      )}
       {pendingTagDialog ? (
         <ZpmtTagInsertionDialog
           key={
@@ -4850,12 +7150,145 @@ function ZpmtStructuredEditor({
   )
 }
 
+function ZpmtImagePromptEditor({
+  t,
+  locale,
+  document,
+  promptSurface,
+  collapsedSections,
+  recipeVariableCategories,
+  modelCapabilities,
+  onToggleSection,
+  onInstructionDrop,
+  onTokenEdit,
+  onChange,
+}: {
+  t: WorkbenchCopy
+  locale: Locale
+  document: ZpmtDocument
+  promptSurface: AiModelPromptSurface
+  collapsedSections: ZpmtCollapsedSections
+  recipeVariableCategories: RecipeVariableCategory[]
+  modelCapabilities: ZpmtModelCapabilityGate
+  onToggleSection: (section: ZpmtSectionKey) => void
+  onInstructionDrop: (payload: InstructionDragPayload, sectionKey: ZpmtPromptSectionKey, offset: number) => void
+  onTokenEdit: (sectionKey: ZpmtPromptSectionKey, start: number, end: number, token: string) => void
+  onChange: (document: Partial<Omit<ZpmtDocument, 'config'>> & { config?: Partial<ZpmtDocument['config']> }) => void
+}) {
+  const imageSurface = promptSurface.kind === 'image-prompt' ? promptSurface : null
+  const styleInput = imageSurface?.styleInput || { type: 'free-text' as ImageStyleInputType }
+  const negativePromptSupported = imageSurface?.negativePrompt === true
+
+  function updateStyle(next: Partial<ZpmtImageStyle>) {
+    onChange({ style: { ...document.style, ...next } })
+  }
+
+  return (
+    <>
+      <ZpmtPromptSection
+        t={t}
+        locale={locale}
+        recipeVariableCategories={recipeVariableCategories}
+        metadata={document.metadata}
+        promptKind={document.kind}
+        sectionKey="prompt"
+        title={t.imagePrompt}
+        value={document.prompt}
+        collapsed={Boolean(collapsedSections.prompt)}
+        onToggle={onToggleSection}
+        modelCapabilities={modelCapabilities}
+        onInstructionDrop={onInstructionDrop}
+        onTokenEdit={onTokenEdit}
+        onChange={(value) => onChange({ prompt: value })}
+      />
+
+      {negativePromptSupported ? (
+        <ZpmtPromptSection
+          t={t}
+          locale={locale}
+          recipeVariableCategories={recipeVariableCategories}
+          metadata={document.metadata}
+          promptKind={document.kind}
+          sectionKey="negativePrompt"
+          title={t.negativePrompt}
+          value={document.negativePrompt}
+          collapsed={Boolean(collapsedSections.negativePrompt)}
+          onToggle={onToggleSection}
+          modelCapabilities={modelCapabilities}
+          onInstructionDrop={onInstructionDrop}
+          onTokenEdit={onTokenEdit}
+          onChange={(value) => onChange({ negativePrompt: value })}
+        />
+      ) : null}
+
+      {styleInput.type === 'preset' || styleInput.type === 'preset-with-extra-text' ? (
+        <ZpmtSection
+          title={t.promptStyle}
+          sectionKey="style"
+          icon={WandSparkles}
+          collapsed={Boolean(collapsedSections.style)}
+          onToggle={onToggleSection}
+        >
+          <div className="space-y-3">
+            <label className="block text-xs font-semibold text-slate-600">
+              {t.promptStylePreset}
+              <select
+                className="mt-1 h-8 w-full rounded-md border border-input bg-card px-2.5 text-xs outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                value={document.style.value}
+                onChange={(event) => updateStyle({ mode: styleInput.type, value: event.target.value })}
+              >
+                {(styleInput.options || []).map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {styleInput.type === 'preset-with-extra-text' ? (
+              <ZpmtInlinePromptEditor
+                t={t}
+                locale={locale}
+                recipeVariableCategories={recipeVariableCategories}
+                metadata={document.metadata}
+                sectionKey="style"
+                value={document.style.extraText}
+                modelCapabilities={modelCapabilities}
+                onInstructionDrop={onInstructionDrop}
+                onTokenEdit={onTokenEdit}
+                onChange={(value) => updateStyle({ mode: styleInput.type, extraText: value })}
+              />
+            ) : null}
+          </div>
+        </ZpmtSection>
+      ) : (
+        <ZpmtPromptSection
+          t={t}
+          locale={locale}
+          recipeVariableCategories={recipeVariableCategories}
+          metadata={document.metadata}
+          promptKind={document.kind}
+          sectionKey="style"
+          title={t.promptStyle}
+          value={document.style.value}
+          collapsed={Boolean(collapsedSections.style)}
+          onToggle={onToggleSection}
+          modelCapabilities={modelCapabilities}
+          onInstructionDrop={onInstructionDrop}
+          onTokenEdit={onTokenEdit}
+          onChange={(value) => updateStyle({ mode: 'free-text', value })}
+        />
+      )}
+    </>
+  )
+}
+
 function ZpmtSection({
   title,
   sectionKey,
   icon: Icon,
   collapsed,
   children,
+  headerAction,
   onToggle,
 }: {
   title: string
@@ -4863,20 +7296,41 @@ function ZpmtSection({
   icon: typeof Home
   collapsed: boolean
   children: React.ReactNode
+  headerAction?: React.ReactNode
   onToggle: (section: ZpmtSectionKey) => void
 }) {
+  const headerContent = (
+    <>
+      {collapsed ? <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-400" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" />}
+      <Icon className="h-3.5 w-3.5 shrink-0 text-[#d95a1b]" />
+      <span className="truncate">{title}</span>
+    </>
+  )
+
   return (
     <section className={cn('zpmt-section', collapsed && 'zpmt-section--collapsed')}>
-      <button
-        type="button"
-        className="zpmt-section__header"
-        aria-expanded={!collapsed}
-        onClick={() => onToggle(sectionKey)}
-      >
-        {collapsed ? <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-400" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" />}
-        <Icon className="h-3.5 w-3.5 shrink-0 text-[#d95a1b]" />
-        <span className="truncate">{title}</span>
-      </button>
+      {headerAction ? (
+        <div className="zpmt-section__header zpmt-section__header--with-action">
+          <button
+            type="button"
+            className="zpmt-section__header-toggle"
+            aria-expanded={!collapsed}
+            onClick={() => onToggle(sectionKey)}
+          >
+            {headerContent}
+          </button>
+          {headerAction}
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="zpmt-section__header"
+          aria-expanded={!collapsed}
+          onClick={() => onToggle(sectionKey)}
+        >
+          {headerContent}
+        </button>
+      )}
       {collapsed ? null : <div className="zpmt-section__body">{children}</div>}
     </section>
   )
@@ -4887,6 +7341,7 @@ function ZpmtPromptSection({
   locale,
   recipeVariableCategories,
   metadata,
+  promptKind,
   sectionKey,
   title,
   value,
@@ -4901,6 +7356,7 @@ function ZpmtPromptSection({
   locale: Locale
   recipeVariableCategories: RecipeVariableCategory[]
   metadata: ZpmtRecipeVariableMetadata
+  promptKind: ZpmtPromptKind
   sectionKey: ZpmtSectionKey
   title: string
   value: string
@@ -4913,21 +7369,36 @@ function ZpmtPromptSection({
 }) {
   const editorRef = useRef<ZpmtPromptTokenEditorHandle | null>(null)
   const promptDropElementRef = useRef<HTMLDivElement | null>(null)
+  const [extractDialogOpen, setExtractDialogOpen] = useState(false)
+  const [extractCopied, setExtractCopied] = useState(false)
+  const [extractRandomLoading, setExtractRandomLoading] = useState(false)
+  const [extractionValues, setExtractionValues] = useState<Record<string, string>>({})
   const editorHeight = estimateZpmtPromptEditorHeight(value)
+  const extractedVariables = useMemo(
+    () => extractPromptSectionVariables(value, t, locale, recipeVariableCategories, metadata, modelCapabilities),
+    [locale, metadata, modelCapabilities, recipeVariableCategories, t, value],
+  )
+  const extractedPromptText = useMemo(
+    () => renderPromptTextForExtraction(value, extractedVariables, extractionValues),
+    [extractedVariables, extractionValues, value],
+  )
+  const extractedContent = useMemo(
+    () => buildPromptSectionExtractionText(title, extractedPromptText, extractedVariables, t, extractionValues),
+    [extractedPromptText, extractedVariables, extractionValues, t, title],
+  )
 
   const { setNodeRef: setPromptDropRef, isOver } = useDroppable({
     id: `zpmt-prompt:${sectionKey}`,
     data: {
       kind: 'zpmt-prompt',
       onDragInstruction: (payload: InstructionDragPayload, point: ZpmtDropPoint) => {
-        if (!canUseInstructionPayload(payload, modelCapabilities)) return
-        if (payload.kind === 'tool') return
+        if (!isZpmtPromptSectionKey(sectionKey) || !canDropInstructionInPromptSection(payload, promptKind, sectionKey, modelCapabilities)) return
         editorRef.current?.setCaretAtPoint(point, true)
       },
       onDropInstruction: (payload: InstructionDragPayload, point: ZpmtDropPoint) => {
-        if (!canUseInstructionPayload(payload, modelCapabilities)) return
-        if (sectionKey !== 'system' && sectionKey !== 'user') return
-        const offset = payload.kind === 'tool' ? value.length : editorRef.current?.setCaretAtPoint(point, false) ?? value.length
+        if (!isZpmtPromptSectionKey(sectionKey)) return
+        if (!canDropInstructionInPromptSection(payload, promptKind, sectionKey, modelCapabilities)) return
+        const offset = editorRef.current?.setCaretAtPoint(point, false) ?? value.length
         editorRef.current?.clearDropCursor()
         onInstructionDrop(payload, sectionKey, offset)
       },
@@ -4944,7 +7415,11 @@ function ZpmtPromptSection({
 
     function handleInstructionDrag(event: Event) {
       const detail = (event as CustomEvent<ZpmtInstructionPointEventDetail>).detail
-      if (!detail || !canUseInstructionPayload(detail.payload, modelCapabilities) || detail.payload.kind === 'tool') return
+      if (
+        !detail ||
+        !isZpmtPromptSectionKey(sectionKey) ||
+        !canDropInstructionInPromptSection(detail.payload, promptKind, sectionKey, modelCapabilities)
+      ) return
       if (!isPointInsidePrompt(detail.point)) {
         editorRef.current?.clearDropCursor()
         return
@@ -4955,11 +7430,15 @@ function ZpmtPromptSection({
 
     function handleInstructionDrop(event: Event) {
       const detail = (event as CustomEvent<ZpmtInstructionPointEventDetail>).detail
-      if (!detail || !canUseInstructionPayload(detail.payload, modelCapabilities) || detail.payload.kind === 'tool') return
+      if (
+        !detail ||
+        !isZpmtPromptSectionKey(sectionKey) ||
+        !canDropInstructionInPromptSection(detail.payload, promptKind, sectionKey, modelCapabilities)
+      ) return
       if (!isPointInsidePrompt(detail.point)) return
       const offset = editorRef.current?.setCaretAtPoint(detail.point, false) ?? value.length
       editorRef.current?.clearDropCursor()
-      if (sectionKey === 'system' || sectionKey === 'user') onInstructionDrop(detail.payload, sectionKey, offset)
+      onInstructionDrop(detail.payload, sectionKey, offset)
       detail.handled = true
     }
 
@@ -4969,7 +7448,38 @@ function ZpmtPromptSection({
       window.removeEventListener(ZPMT_INSTRUCTION_DRAG_EVENT, handleInstructionDrag)
       window.removeEventListener(ZPMT_INSTRUCTION_DROP_EVENT, handleInstructionDrop)
     }
-  }, [modelCapabilities, onInstructionDrop, sectionKey, value.length])
+  }, [modelCapabilities, onInstructionDrop, promptKind, sectionKey, value.length])
+
+  async function copyExtractedContent() {
+    await copyTextToClipboard(extractedContent)
+    setExtractCopied(true)
+    window.setTimeout(() => setExtractCopied(false), 1400)
+  }
+
+  async function randomizeExtractionValues() {
+    if (extractRandomLoading) return
+    setExtractRandomLoading(true)
+    try {
+      const nextValues = await createRandomPromptVariableValues({
+        variables: extractedVariables.map((variable) => ({
+          key: variable.key,
+          token: variable.token,
+          name: variable.name,
+          label: variable.label,
+          variableType: variable.variableType,
+          defaultValue: variable.defaultValue,
+          recipe: variable.recipe,
+        })),
+        currentValues: extractionValues,
+        promptContext: value,
+      })
+      setExtractionValues((current) => ({ ...current, ...nextValues }))
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '随机参数生成失败')
+    } finally {
+      setExtractRandomLoading(false)
+    }
+  }
 
   return (
     <ZpmtSection
@@ -4977,6 +7487,16 @@ function ZpmtPromptSection({
       sectionKey={sectionKey}
       icon={FileText}
       collapsed={collapsed}
+      headerAction={(
+        <button
+          type="button"
+          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-black text-slate-600 transition hover:border-[#ffd8c4] hover:bg-[#fff8f4] hover:text-[#b94712]"
+          onClick={() => setExtractDialogOpen(true)}
+        >
+          <Copy className="h-3 w-3" />
+          {t.extractPromptContent}
+        </button>
+      )}
       onToggle={onToggle}
     >
       <div
@@ -4998,12 +7518,297 @@ function ZpmtPromptSection({
           minHeight={editorHeight}
           onChange={onChange}
           onTokenEdit={(start, end, token) => {
-            if (sectionKey === 'system' || sectionKey === 'user') onTokenEdit(sectionKey, start, end, token)
+            if (isZpmtPromptSectionKey(sectionKey)) onTokenEdit(sectionKey, start, end, token)
           }}
         />
       </div>
+      {extractDialogOpen ? createPortal(
+        <div className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/35 p-6 backdrop-blur-sm" onMouseDown={() => setExtractDialogOpen(false)}>
+          <div className="w-[min(680px,calc(100vw-32px))] rounded-lg border border-slate-200 bg-white p-4 shadow-[0_28px_80px_rgba(15,23,42,0.24)]" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="truncate text-sm font-black text-slate-900">{t.extractPromptContentTitle} · {title}</h2>
+                <p className="mt-1 text-[11px] font-semibold text-slate-500">{t.extractPromptContentHint}</p>
+              </div>
+              <button type="button" className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-slate-500 hover:bg-slate-100" onClick={() => setExtractDialogOpen(false)}>
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1.2fr)_minmax(220px,0.8fr)]">
+              <div className="min-w-0">
+                <div className="mb-1 text-[11px] font-black uppercase text-slate-500">{title}</div>
+                <pre className="max-h-[48vh] overflow-auto whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-3 text-[11px] leading-5 text-slate-700">{extractedPromptText || '-'}</pre>
+              </div>
+              <div className="min-w-0">
+                <div className="mb-1 text-[11px] font-black uppercase text-slate-500">{t.extractionVariables}</div>
+                <div className="max-h-[48vh] overflow-auto rounded-md border border-slate-200 bg-white p-2">
+                  {extractedVariables.length ? (
+                    <div className="space-y-1.5">
+                      {extractedVariables.map((variable) => (
+                        <div key={`${variable.token}-${variable.index}`} className="rounded border border-slate-100 bg-slate-50 px-2 py-1.5">
+                          <div className="truncate text-xs font-black text-slate-800">{variable.label}</div>
+                          {variable.detail ? <div className="mt-0.5 truncate text-[11px] font-semibold text-slate-500">{variable.detail}</div> : null}
+                          <PromptExtractionValueInput
+                            t={t}
+                            variable={variable}
+                            value={extractionValues[variable.key] ?? variable.defaultValue}
+                            onChange={(nextValue) => setExtractionValues((current) => ({ ...current, [variable.key]: nextValue }))}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="px-2 py-6 text-center text-xs font-semibold text-slate-500">{t.extractionNoVariables}</div>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-3 border-t border-slate-100 pt-3">
+              <span className="text-[11px] font-semibold text-emerald-600">{extractCopied ? t.copiedToClipboard : ''}</span>
+              <div className="flex items-center gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={() => void randomizeExtractionValues()} disabled={!extractedVariables.length || extractRandomLoading}>
+                  {extractRandomLoading ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <WandSparkles className="h-3.5 w-3.5" />}
+                  随机参数
+                </Button>
+                <Button type="button" size="sm" onClick={() => void copyExtractedContent()}>
+                  <Copy className="h-3.5 w-3.5" />
+                  {t.copyExtractedPromptContent}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      ) : null}
     </ZpmtSection>
   )
+}
+
+function ZpmtInlinePromptEditor({
+  t,
+  locale,
+  recipeVariableCategories,
+  metadata,
+  sectionKey,
+  value,
+  modelCapabilities,
+  onInstructionDrop,
+  onTokenEdit,
+  onChange,
+}: {
+  t: WorkbenchCopy
+  locale: Locale
+  recipeVariableCategories: RecipeVariableCategory[]
+  metadata: ZpmtRecipeVariableMetadata
+  sectionKey: ZpmtPromptSectionKey
+  value: string
+  modelCapabilities: ZpmtModelCapabilityGate
+  onInstructionDrop: (payload: InstructionDragPayload, sectionKey: ZpmtPromptSectionKey, offset: number) => void
+  onTokenEdit: (sectionKey: ZpmtPromptSectionKey, start: number, end: number, token: string) => void
+  onChange: (value: string) => void
+}) {
+  const editorRef = useRef<ZpmtPromptTokenEditorHandle | null>(null)
+  const editorHeight = estimateZpmtPromptEditorHeight(value)
+  return (
+    <div className="rounded-md border border-slate-200 bg-white">
+      <div className="border-b border-slate-100 px-2 py-1.5 text-[11px] font-black uppercase text-slate-500">{t.promptStyleExtra}</div>
+      <ZpmtPromptTokenEditor
+        ref={editorRef}
+        t={t}
+        locale={locale}
+        recipeVariableCategories={recipeVariableCategories}
+        metadata={metadata}
+        modelCapabilities={modelCapabilities}
+        value={value}
+        minHeight={editorHeight}
+        onChange={onChange}
+        onTokenEdit={(start, end, token) => onTokenEdit(sectionKey, start, end, token)}
+      />
+    </div>
+  )
+}
+
+type PromptExtractionVariable = {
+  index: number
+  key: string
+  token: string
+  name: string
+  label: string
+  detail: string
+  defaultValue: string
+  variableType?: VariableType
+  recipe?: { candidates: string[]; defaultValues: string[]; multiple: boolean }
+}
+
+function extractPromptSectionVariables(
+  value: string,
+  t: WorkbenchCopy,
+  locale: Locale,
+  recipeVariableCategories: RecipeVariableCategory[],
+  metadata: ZpmtRecipeVariableMetadata,
+  modelCapabilities: ZpmtModelCapabilityGate,
+) {
+  const seen = new Set<string>()
+  return findPromptTokenRanges(value).flatMap((tokenRange, index) => {
+    const parsed = parsePromptToken(tokenRange.token)
+    if (!parsed || parsed.tokenType === 'const') return []
+    const key = getZpmtTestVariableKey(tokenRange.token) || tokenRange.token
+    if (seen.has(key)) return []
+    seen.add(key)
+    const presentation = resolvePromptTokenPresentation(tokenRange.token, t, locale, recipeVariableCategories, metadata, modelCapabilities)
+    const params = getPromptTokenParamMap(parsed.params)
+    const isRecipe = parsed.tokenType === 'recipe'
+    const sourceId = params.source || ''
+    const recipeItem = isRecipe ? findRecipeVariableItemById(sourceId, recipeVariableCategories) : null
+    const recipeSnapshot = isRecipe ? findRecipeVariableSnapshot(metadata, parsed.name, sourceId) : null
+    const recipeDefaultValues = isRecipe
+      ? parsePromptTestRecipeValues(params.default || '').length
+        ? parsePromptTestRecipeValues(params.default || '')
+        : recipeItem?.defaultValues?.length
+          ? recipeItem.defaultValues
+          : recipeSnapshot?.defaultValues || []
+      : []
+    const detail = presentation.tooltip
+      .split('\n')
+      .slice(1)
+      .filter(Boolean)
+      .join('；')
+    return [{
+      index,
+      key,
+      token: tokenRange.token,
+      name: parsed.name,
+      label: presentation.label,
+      detail,
+      defaultValue: isRecipe ? recipeDefaultValues.join(', ') : params.default || '',
+      variableType: parsed.variableType,
+      recipe: isRecipe
+        ? {
+            candidates: recipeItem?.candidates[locale] || recipeSnapshot?.candidates[locale] || [],
+            defaultValues: recipeDefaultValues,
+            multiple: recipeItem?.multiple ?? recipeSnapshot?.multiple ?? params.multi === 'true',
+          }
+        : undefined,
+    } satisfies PromptExtractionVariable]
+  })
+}
+
+function PromptExtractionValueInput({
+  t,
+  variable,
+  value,
+  onChange,
+}: {
+  t: WorkbenchCopy
+  variable: PromptExtractionVariable
+  value: string
+  onChange: (value: string) => void
+}) {
+  if (variable.variableType === 'image' || variable.variableType === 'file') {
+    return (
+      <Textarea
+        className="mt-2 min-h-16 bg-white text-xs"
+        value={value}
+        placeholder={variable.variableType === 'image' ? '填写参考图说明或上传文件名' : '填写参考文件说明或文件名'}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    )
+  }
+
+  return (
+    <PromptTestVariableInput
+      t={t}
+      variable={{
+        key: variable.key,
+        token: variable.token,
+        name: variable.name,
+        label: variable.label,
+        typeLabel: '',
+        variableType: variable.variableType,
+        defaultValue: variable.defaultValue,
+        recipe: variable.recipe,
+      }}
+      value={value}
+      onChange={onChange}
+    />
+  )
+}
+
+function renderPromptTextForExtraction(value: string, variables: PromptExtractionVariable[], values: Record<string, string>) {
+  const variableMap = new Map(variables.map((variable) => [variable.key, variable]))
+  return value.replace(/\{\{[^{}\n]+\}\}/g, (token) => {
+    const parsed = parsePromptToken(token)
+    if (parsed?.tokenType === 'const') return resolveZpmtConstantValue(parsed)
+    const key = getZpmtTestVariableKey(token) || token
+    const variable = variableMap.get(key)
+    if (!variable) return token
+    const filledValue = values[key] ?? variable.defaultValue
+    if (!filledValue && (variable.variableType === 'image' || variable.variableType === 'file')) return `[${variable.label}待补充]`
+    return formatExtractionFilledValue(filledValue)
+  })
+}
+
+function formatExtractionFilledValue(value: string) {
+  const parsedValues = parsePromptTestRecipeValues(value)
+  if (parsedValues.length > 1) return parsedValues.join('、')
+  return value || ''
+}
+
+function buildPromptSectionExtractionText(
+  title: string,
+  value: string,
+  variables: PromptExtractionVariable[],
+  t: WorkbenchCopy,
+  values: Record<string, string>,
+) {
+  const lines = [
+    `# ${title}`,
+    '',
+    value || '',
+    '',
+    `## ${t.extractionVariables}`,
+  ]
+  if (variables.length) {
+    variables.forEach((variable) => {
+      const filledValue = values[variable.key] ?? variable.defaultValue
+      lines.push(`- ${variable.label}：${formatExtractionFilledValue(filledValue) || '未填写'}${variable.detail ? `（${variable.detail}）` : ''}`)
+    })
+  } else {
+    lines.push(`- ${t.extractionNoVariables}`)
+  }
+  return `${lines.join('\n').trim()}\n`
+}
+
+async function copyTextToClipboard(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value)
+    return
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.setAttribute('readonly', 'true')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.select()
+  document.execCommand('copy')
+  textarea.remove()
+}
+
+function readFileAsAiAssistAttachment(file: File): Promise<AiAssistAttachment> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      resolve({
+        filename: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        size: file.size,
+        dataUrl: String(reader.result || ''),
+      })
+    }
+    reader.onerror = () => reject(new Error('文件读取失败'))
+    reader.readAsDataURL(file)
+  })
 }
 
 const ZpmtPromptTokenEditor = forwardRef<ZpmtPromptTokenEditorHandle, {
@@ -5054,10 +7859,15 @@ const ZpmtPromptTokenEditor = forwardRef<ZpmtPromptTokenEditorHandle, {
       const root = rootRef.current
       if (!root) return latestValueRef.current.length
       clearPromptEditorDropCursor(root)
-      const range = getPromptEditorRangeFromPoint(root, point) || createPromptEditorEndRange(root)
-      setPromptEditorSelection(root, range)
-      if (showDropCursor) showPromptEditorDropCursor(root, range)
-      return getPromptEditorOffsetFromRange(root, range)
+      try {
+        const range = getPromptEditorRangeFromPoint(root, point) || createPromptEditorEndRange(root)
+        setPromptEditorSelection(root, range)
+        if (showDropCursor) showPromptEditorDropCursor(root, range)
+        return getPromptEditorOffsetFromRange(root, range)
+      } catch {
+        clearPromptEditorDropCursor(root)
+        return latestValueRef.current.length
+      }
     },
     clearDropCursor() {
       clearPromptEditorDropCursor(rootRef.current)
@@ -5776,7 +8586,7 @@ function AiToolConfigFields({
             {label}
             <Input
               className="mt-1"
-              type={field.type === 'number' ? 'number' : 'text'}
+              type={field.type === 'number' ? 'number' : field.secret ? 'password' : 'text'}
               value={String(value)}
               disabled={disabled}
               placeholder={field.placeholder?.[locale]}
@@ -5812,7 +8622,11 @@ function ZpmtTagInsertionDialog({
   const variableType = dialog.payload.kind === 'variable' ? dialog.payload.variableType : null
   const recipeItem = dialog.payload.kind === 'recipe' ? dialog.payload.item : null
   const detailConfig = variableType ? getVariableDetailConfig(variableType, t) : null
-  const [name, setName] = useState(() => initialValues.name || createIdentifierSeed(recipeItem?.variableName || recipeItem?.id || variableType || ''))
+  const [name, setName] = useState(() =>
+    initialValues.name ||
+    sanitizePromptTokenName(recipeItem?.name[locale] || recipeItem?.variableName || (variableType ? t.variableTypes[variableType] : '') || recipeItem?.id || '变量'),
+  )
+  const [arrayItemType, setArrayItemType] = useState<ArrayItemType | ''>(() => initialValues.arrayItemType)
   const [detailValue, setDetailValue] = useState(() => initialValues.detailValue || detailConfig?.defaultValue || '')
   const [defaultValue, setDefaultValue] = useState(() => initialValues.defaultValue)
   const [recipeDefaultValues, setRecipeDefaultValues] = useState<string[]>(() => initialValues.recipeDefaultValues)
@@ -5829,12 +8643,16 @@ function ZpmtTagInsertionDialog({
     const normalizedName = name.trim()
     const normalizedDetail = detailValue.trim()
 
-    if (!TAG_NAME_PATTERN.test(normalizedName)) {
+    if (!isValidPromptTokenName(normalizedName)) {
       setError(t.tagNameInvalid)
       return
     }
     if (normalizedName !== initialValues.originalName && existingNames.has(normalizedName)) {
       setError(t.tagNameDuplicate)
+      return
+    }
+    if (variableType === 'array' && !arrayItemType) {
+      setError(t.arrayTypeRequired)
       return
     }
     if (detailConfig && !normalizedDetail) {
@@ -5844,7 +8662,7 @@ function ZpmtTagInsertionDialog({
 
     const token =
       dialog.payload.kind === 'variable'
-        ? createVariableToken(dialog.payload.variableType, normalizedName, normalizedDetail, defaultValue)
+        ? createVariableToken(dialog.payload.variableType, normalizedName, normalizedDetail, defaultValue, arrayItemType)
         : createRecipeToken(dialog.payload.item, normalizedName, recipeDefaultValues)
     onInsert(token)
   }
@@ -5885,39 +8703,57 @@ function ZpmtTagInsertionDialog({
             />
           </label>
 
-          {detailConfig ? (
+          {variableType === 'array' ? (
             <label className="block text-xs font-bold text-slate-600">
-              {detailConfig.label}
-              {variableType === 'boolean' ? (
-                <select
-                  className="mt-1 h-8 w-full rounded-md border border-input bg-card px-2.5 text-xs outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
-                  value={detailValue}
-                  onChange={(event) => {
-                    setDetailValue(event.target.value)
-                    setError('')
-                  }}
-                >
-                  <option value="false">false</option>
-                  <option value="true">true</option>
-                </select>
-              ) : (
-                <Input
-                  className="mt-1"
-                  value={detailValue}
-                  placeholder={detailConfig.placeholder}
-                  onChange={(event) => {
-                    setDetailValue(event.target.value)
-                    setError('')
-                  }}
-                />
-              )}
+              {t.arrayType}
+              <select
+                className="mt-1 h-8 w-full rounded-md border border-input bg-card px-2.5 text-xs outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                value={arrayItemType}
+                onChange={(event) => {
+                  setArrayItemType(normalizeArrayItemType(event.target.value))
+                  setError('')
+                }}
+              >
+                <option value="">{t.selectArrayType}</option>
+                {ARRAY_ITEM_TYPES.map((itemType) => (
+                  <option key={itemType} value={itemType}>
+                    {t.arrayItemTypes[itemType]}
+                  </option>
+                ))}
+              </select>
             </label>
           ) : null}
 
-          {variableType && variableType !== 'color' && variableType !== 'boolean' ? (
+          {detailConfig ? (
+            <label className="block text-xs font-bold text-slate-600">
+              {detailConfig.label}
+              {variableType ? (
+                <ZpmtVariableDetailValueControl
+                  t={t}
+                  variableType={variableType}
+                  config={detailConfig}
+                  value={detailValue}
+                  onChange={(value) => {
+                    setDetailValue(value)
+                    setError('')
+                  }}
+                />
+              ) : null}
+            </label>
+          ) : null}
+
+          {variableType && isVariableDefaultValueSupported(variableType) ? (
             <label className="block text-xs font-bold text-slate-600">
               {t.defaultValue}
-              <Input className="mt-1" value={defaultValue} onChange={(event) => setDefaultValue(event.target.value)} />
+              <ZpmtVariableDefaultValueControl
+                t={t}
+                variableType={variableType}
+                value={defaultValue}
+                onChange={(value) => {
+                  setDefaultValue(value)
+                  setError('')
+                }}
+              />
             </label>
           ) : null}
 
@@ -5998,73 +8834,212 @@ function estimateZpmtPromptEditorHeight(value: string) {
   return Math.max(ZPMT_PROMPT_EDITOR_MIN_HEIGHT, lineCount * 20 + 34)
 }
 
+const PROMPT_TEST_EMPTY_PANEL_KEY = '__empty_prompt_test__'
+
+function createPromptTestPanelState(): PromptTestPanelState {
+  return {
+    activeTab: 'test',
+    variableValues: {},
+    variableErrors: {},
+    mediaVariableValues: {},
+    maxToolRounds: 5,
+    runLoading: false,
+    randomLoading: false,
+    runResponse: null,
+  }
+}
+
+function getPromptTestPanelKey(activeFile: ProjectFileReference | null) {
+  return activeFile?.projectId && activeFile.path ? `${activeFile.projectId}:${activeFile.path}` : PROMPT_TEST_EMPTY_PANEL_KEY
+}
+
+function normalizePromptTestPanelStateForVariables(state: PromptTestPanelState, variables: ZpmtTestVariable[]): PromptTestPanelState {
+  const variableValues: Record<string, string> = {}
+  const mediaVariableValues: Record<string, ZpmtTestMediaFile[]> = {}
+
+  for (const variable of variables) {
+    if (variable.mediaKind) mediaVariableValues[variable.key] = state.mediaVariableValues[variable.key] || []
+    else variableValues[variable.key] = state.variableValues[variable.key] ?? ''
+  }
+
+  return {
+    ...state,
+    variableValues,
+    variableErrors: {},
+    mediaVariableValues,
+    randomLoading: Boolean(state.randomLoading),
+  }
+}
+
 function TestPanel({
   t,
   locale,
   document,
   activeFile,
-  supportsTools,
+  modelCapabilities,
+  promptSurface,
+  recipeVariableCategories,
 }: {
   t: WorkbenchCopy
   locale: Locale
   document: ZpmtDocument | null
   activeFile: ProjectFileReference | null
-  supportsTools: boolean
+  modelCapabilities: ZpmtModelCapabilityGate
+  promptSurface: AiModelPromptSurface | null
+  recipeVariableCategories: RecipeVariableCategory[]
 }) {
-  const variables = useMemo(() => (document ? collectZpmtTestVariables(document, t, locale) : []), [document, locale, t])
-  const variablesKey = variables.map((variable) => `${variable.key}:${variable.defaultValue}`).join('|')
-  const [variableValues, setVariableValues] = useState<Record<string, string>>({})
-  const [maxToolRounds, setMaxToolRounds] = useState(5)
-  const [runLoading, setRunLoading] = useState(false)
-  const [runResponse, setRunResponse] = useState<Record<string, unknown> | null>(null)
+  const panelKey = useMemo(() => getPromptTestPanelKey(activeFile), [activeFile?.projectId, activeFile?.path])
+  const variables = useMemo(
+    () => (document ? collectZpmtTestVariables(document, t, locale, promptSurface, recipeVariableCategories) : []),
+    [document, locale, promptSurface, recipeVariableCategories, t],
+  )
+  const variablesKey = variables
+    .map((variable) =>
+      [
+        variable.key,
+        variable.defaultValue,
+        variable.mediaKind || variable.variableType || 'recipe',
+        variable.recipe?.multiple ? 'multi' : 'single',
+        variable.recipe?.candidates.join(',') || '',
+      ].join(':'),
+    )
+    .join('|')
+  const [stateByFile, setStateByFile] = useState<Record<string, PromptTestPanelState>>({})
+  const panelState = stateByFile[panelKey] || createPromptTestPanelState()
+  const { activeTab, variableValues, variableErrors, mediaVariableValues, maxToolRounds, runLoading, randomLoading, runResponse } = panelState
   const canRun = Boolean(document && activeFile?.projectId && document.config.providerId && document.config.model)
-  const renderedSystem = document ? renderZpmtPromptForTest(document.system, variableValues) : ''
-  const renderedUser = document ? renderZpmtPromptForTest(document.user, variableValues) : ''
+  const effectiveVariableValues = useMemo(() => getEffectivePromptTestVariableValues(variables, variableValues), [variables, variableValues])
+  const renderedPrompt = document ? buildZpmtRenderedPromptPreview(document, effectiveVariableValues, mediaVariableValues, promptSurface) : ''
+  const isImageTest = document?.kind === 'image'
+
+  function setPanelStateForKey(key: string, updater: (state: PromptTestPanelState) => PromptTestPanelState) {
+    setStateByFile((current) => {
+      const nextState = updater(current[key] || createPromptTestPanelState())
+      return { ...current, [key]: nextState }
+    })
+  }
+
+  function updateCurrentPanelState(updater: (state: PromptTestPanelState) => PromptTestPanelState) {
+    setPanelStateForKey(panelKey, updater)
+  }
 
   useEffect(() => {
-    setVariableValues((current) => {
-      const next: Record<string, string> = {}
-      for (const variable of variables) {
-        next[variable.key] = current[variable.key] ?? variable.defaultValue
-      }
-      return next
-    })
-  }, [variablesKey, variables])
+    setPanelStateForKey(panelKey, (current) => normalizePromptTestPanelStateForVariables(current, variables))
+  }, [panelKey, variablesKey, variables])
 
   async function runAgentTest() {
     if (!document || !activeFile?.projectId || runLoading) return
-    setRunLoading(true)
-    setRunResponse(null)
-    const response = await fetchJson('/api/agents/test', {
-      method: 'POST',
-      body: {
-        document,
-        variables: variableValues,
-        maxToolRounds,
-        context: {
-          projectId: activeFile?.projectId || '',
-          path: activeFile?.path || '',
-        },
+    const validation = validatePromptTestVariables(variables, variableValues, mediaVariableValues, modelCapabilities, t)
+    if (!validation.ok) {
+      updateCurrentPanelState((current) => ({ ...current, activeTab: 'test', variableErrors: validation.errors }))
+      return
+    }
+
+    const targetPanelKey = panelKey
+    const requestBody = {
+      document,
+      variables: validation.values,
+      mediaVariables: mediaVariableValues,
+      maxToolRounds,
+      context: {
+        projectId: activeFile?.projectId || '',
+        path: activeFile?.path || '',
       },
-    }).finally(() => setRunLoading(false))
-    setRunResponse((response && typeof response === 'object' ? response : { ok: false, message: t.agentRunFailed }) as Record<string, unknown>)
+    }
+
+    updateCurrentPanelState((current) => ({
+      ...current,
+      activeTab: 'result',
+      variableErrors: {},
+      runLoading: true,
+      runResponse: { status: 'loading', ok: false, outputType: isImageTest ? 'image' : 'text' },
+    }))
+
+    if (isImageTest) {
+      const response = await fetchJson('/api/prompts/test', {
+        method: 'POST',
+        body: requestBody,
+      })
+      setPanelStateForKey(targetPanelKey, (current) => ({
+        ...current,
+        runLoading: false,
+        runResponse: {
+          ...(response && typeof response === 'object' ? response : { ok: false, message: t.agentRunFailed }),
+          status: response && typeof response === 'object' && response.ok === true ? 'success' : 'error',
+        } as Record<string, unknown>,
+      }))
+      return
+    }
+
+    await runPromptTestStream(
+      { ...requestBody, stream: true },
+      (event) => {
+        setPanelStateForKey(targetPanelKey, (current) => ({
+          ...current,
+          runResponse: applyPromptTestStreamEvent(current.runResponse, event),
+        }))
+      },
+      () => {
+        setPanelStateForKey(targetPanelKey, (current) => ({ ...current, runLoading: false }))
+      },
+      (message) => {
+        setPanelStateForKey(targetPanelKey, (current) => ({
+          ...current,
+          runResponse: { ok: false, status: 'error', outputType: 'text', message },
+        }))
+      },
+    )
+  }
+
+  async function randomizeTestVariables() {
+    if (!document || randomLoading) return
+    const targetPanelKey = panelKey
+    setPanelStateForKey(targetPanelKey, (current) => ({ ...current, randomLoading: true }))
+    try {
+      const nextValues = await createRandomPromptVariableValues({
+        variables,
+        currentValues: variableValues,
+        promptContext: renderedPrompt || buildZpmtPreviewMarkdown(document, getZpmtPromptMode(document)),
+      })
+      setPanelStateForKey(targetPanelKey, (current) => ({
+        ...current,
+        variableValues: { ...current.variableValues, ...nextValues },
+        variableErrors: {},
+      }))
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '随机参数生成失败')
+    } finally {
+      setPanelStateForKey(targetPanelKey, (current) => ({ ...current, randomLoading: false }))
+    }
   }
 
   function updateVariableValue(variable: ZpmtTestVariable, value: string) {
-    setVariableValues((current) => ({ ...current, [variable.key]: value }))
+    updateCurrentPanelState((current) => ({
+      ...current,
+      variableValues: { ...current.variableValues, [variable.key]: value },
+      variableErrors: { ...current.variableErrors, [variable.key]: '' },
+    }))
+  }
+
+  function updateMediaVariableValue(variable: ZpmtTestVariable, files: ZpmtTestMediaFile[]) {
+    updateCurrentPanelState((current) => ({
+      ...current,
+      mediaVariableValues: { ...current.mediaVariableValues, [variable.key]: files },
+      variableErrors: { ...current.variableErrors, [variable.key]: '' },
+    }))
   }
 
   function updateMaxToolRounds(value: string) {
     const parsed = Math.round(Number(value))
     if (!Number.isFinite(parsed)) {
-      setMaxToolRounds(0)
+      updateCurrentPanelState((current) => ({ ...current, maxToolRounds: 0 }))
       return
     }
-    setMaxToolRounds(Math.min(20, Math.max(0, parsed)))
+    updateCurrentPanelState((current) => ({ ...current, maxToolRounds: Math.min(20, Math.max(0, parsed)) }))
   }
 
   return (
-    <Tabs defaultValue="test" className="flex h-full min-h-0 flex-col">
+    <Tabs value={activeTab} onValueChange={(value) => updateCurrentPanelState((current) => ({ ...current, activeTab: value }))} className="flex h-full min-h-0 flex-col">
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-slate-200">
         <TabsList className="min-w-0 overflow-x-auto px-1">
           <TabsTrigger value="test">{t.bottomTabs[0]}</TabsTrigger>
@@ -6085,58 +9060,82 @@ function TestPanel({
           <section className="rounded-md border border-slate-200 bg-white">
             <div className="flex h-9 items-center justify-between border-b border-slate-200 px-3">
               <h3 className="text-xs font-black">{t.testVariables}</h3>
-              <Button variant="outline" size="sm" onClick={() => void runAgentTest()} disabled={!canRun || runLoading}>
-                <Play className="h-3 w-3" /> {runLoading ? t.runningAgent : t.runAgent}
-              </Button>
+              <div className="flex items-center gap-1.5">
+                <Button variant="outline" size="sm" onClick={() => void randomizeTestVariables()} disabled={!document || runLoading || randomLoading || !variables.some((variable) => !variable.mediaKind)}>
+                  {randomLoading ? <RefreshCw className="h-3 w-3 animate-spin" /> : <WandSparkles className="h-3 w-3" />}
+                  随机参数
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => void runAgentTest()} disabled={!canRun || runLoading || randomLoading}>
+                  <Play className="h-3 w-3" /> {runLoading ? t.runningAgent : isImageTest ? t.generateImage : t.runAgent}
+                </Button>
+              </div>
             </div>
             <div className="space-y-3 p-3">
               {!canRun ? <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700">{t.agentRunNoProvider}</div> : null}
               {variables.length ? (
-                <div className="space-y-2">
-                  {variables.map((variable) => (
-                    <label key={variable.key} className="block rounded-md border border-slate-200 bg-slate-50 p-2 text-xs font-bold text-slate-600">
-                      <span className="flex items-center justify-between gap-2">
-                        <span className="min-w-0 truncate">{variable.label}</span>
-                        <Badge variant="outline" className="shrink-0">{variable.typeLabel}</Badge>
-                      </span>
-                      {variable.source ? <span className="mt-1 block truncate text-[11px] font-semibold text-slate-400">{variable.source}</span> : null}
-                      <Input
-                        className="mt-2 bg-white"
-                        value={variableValues[variable.key] ?? variable.defaultValue}
-                        placeholder={t.testValue}
-                        onChange={(event) => updateVariableValue(variable, event.target.value)}
-                      />
-                    </label>
-                  ))}
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {variables.map((variable) => {
+                    const mediaSupported = !variable.mediaKind
+                      || (variable.mediaKind === 'image' ? modelCapabilities.supportsReferenceImage : modelCapabilities.supportsReferenceFile)
+                    const error = variableErrors[variable.key] || ''
+
+                    return (
+                      <div key={variable.key} className="block rounded-md border border-slate-200 bg-slate-50 p-2 text-xs font-bold text-slate-600">
+                        <span className="block min-w-0 truncate text-slate-800">{variable.label}</span>
+                        {!variable.recipe && variable.source && variable.source !== variable.label ? <span className="mt-1 block truncate text-[11px] font-semibold text-slate-400">{variable.source}</span> : null}
+                        {variable.mediaKind ? (
+                          <TestMediaUploadControl
+                            t={t}
+                            variable={variable}
+                            files={mediaVariableValues[variable.key] || []}
+                            disabled={!mediaSupported || runLoading || randomLoading}
+                            unsupportedText={!mediaSupported ? t.mediaUnsupportedByModel : ''}
+                            onChange={(files) => updateMediaVariableValue(variable, files)}
+                            onError={(message) => updateCurrentPanelState((current) => ({ ...current, runResponse: { ok: false, status: 'error', message } }))}
+                          />
+                        ) : (
+                          <PromptTestVariableInput
+                            t={t}
+                            variable={variable}
+                            value={variableValues[variable.key] || ''}
+                            disabled={runLoading || randomLoading}
+                            onChange={(value) => updateVariableValue(variable, value)}
+                          />
+                        )}
+                        {error ? <span className="mt-1 block text-[11px] font-black text-red-600">{error}</span> : null}
+                      </div>
+                    )
+                  })}
                 </div>
               ) : (
                 <div className="rounded-md border border-dashed border-slate-200 bg-white px-3 py-6 text-center text-xs font-semibold text-slate-500">
                   {t.testVariableEmpty}
                 </div>
               )}
-              <div className="rounded-md border border-slate-200 bg-white p-3">
-                <div className="mb-2 text-[11px] font-black uppercase text-slate-500">{t.runSettings}</div>
-                <label className="block text-xs font-bold text-slate-600">
-                  {t.maxToolRounds}
-                  <Input
-                    className="mt-1"
-                    type="number"
-                    min={0}
-                    max={20}
-                    value={String(maxToolRounds)}
-                    onChange={(event) => updateMaxToolRounds(event.target.value)}
-                  />
-                  <span className="mt-1 block text-[11px] font-semibold text-slate-400">{t.maxToolRoundsHint}</span>
-                </label>
-              </div>
+              {document.kind === 'agent' ? (
+                <div className="rounded-md border border-slate-200 bg-white p-3">
+                  <div className="mb-2 text-[11px] font-black uppercase text-slate-500">{t.runSettings}</div>
+                  <label className="block text-xs font-bold text-slate-600">
+                    {t.maxToolRounds}
+                    <Input
+                      className="mt-1"
+                      type="number"
+                      min={0}
+                      max={20}
+                      value={String(maxToolRounds)}
+                      onChange={(event) => updateMaxToolRounds(event.target.value)}
+                    />
+                    <span className="mt-1 block text-[11px] font-semibold text-slate-400">{t.maxToolRoundsHint}</span>
+                  </label>
+                </div>
+              ) : null}
             </div>
           </section>
         )}
-        {runResponse ? <AgentTestResultCard t={t} response={runResponse} /> : null}
       </TabsContent>
       <TabsContent value="result" className="min-h-0 flex-1 overflow-auto p-3">
-        {runResponse ? (
-          <AgentTestResultCard t={t} response={runResponse} />
+        {runResponse || runLoading ? (
+          <PromptTestResultCard t={t} response={runResponse || { status: 'loading', ok: false, outputType: isImageTest ? 'image' : 'text' }} />
         ) : (
           <div className="rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-600">{t.noAgentOutput}</div>
         )}
@@ -6145,7 +9144,7 @@ function TestPanel({
         <div className="space-y-3">
           <div className="rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-600">
             <p className="mb-2 font-black text-slate-900">{t.renderedPrompt}</p>
-            <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-[11px] leading-5">{[renderedSystem, renderedUser].filter(Boolean).join('\n\n')}</pre>
+            <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-[11px] leading-5">{renderedPrompt}</pre>
           </div>
         </div>
       </TabsContent>
@@ -6158,32 +9157,904 @@ function TestPanel({
   )
 }
 
-function AgentTestResultCard({ t, response }: { t: WorkbenchCopy; response: Record<string, unknown> }) {
+type PromptTestStreamEvent = {
+  type: string
+  outputType?: string
+  delta?: string
+  output?: string
+  thinking?: string
+  message?: string
+  code?: string
+  toolName?: string
+  status?: string
+  durationMs?: number
+  toolRounds?: number
+  toolCallCount?: number
+}
+
+function PromptArrayValueEditor({
+  t,
+  value,
+  disabled,
+  onChange,
+}: {
+  t: WorkbenchCopy
+  value: string
+  disabled?: boolean
+  onChange: (value: string) => void
+}) {
+  const items = parsePromptTestArrayItems(value)
+  const visibleItems = items.length ? items : ['']
+  const updateItems = (nextItems: string[]) => onChange(JSON.stringify(nextItems.filter((item) => item.trim())))
+
+  return (
+    <div className="space-y-1.5">
+      {visibleItems.map((item, index) => (
+        <div key={index} className="flex items-center gap-1.5">
+          <Input
+            className="h-7 bg-white text-xs"
+            value={item}
+            disabled={disabled}
+            placeholder={`${t.arrayItemPlaceholder} ${index + 1}`}
+            onChange={(event) => {
+              const next = [...visibleItems]
+              next[index] = event.target.value
+              updateItems(next)
+            }}
+          />
+          <button
+            type="button"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+            title={t.removeArrayItem}
+            disabled={disabled || visibleItems.length <= 1}
+            onClick={() => updateItems(visibleItems.filter((_, currentIndex) => currentIndex !== index))}
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      ))}
+      <Button type="button" variant="outline" size="sm" className="h-7 w-full text-[11px]" disabled={disabled} onClick={() => updateItems([...visibleItems, ''])}>
+        <Plus className="h-3 w-3" /> {t.addArrayItem}
+      </Button>
+    </div>
+  )
+}
+
+function isVariableDefaultValueSupported(type: VariableType) {
+  return type === 'string' || type === 'number' || type === 'array'
+}
+
+function ZpmtVariableDetailValueControl({
+  t,
+  variableType,
+  config,
+  value,
+  onChange,
+}: {
+  t: WorkbenchCopy
+  variableType: VariableType
+  config: ReturnType<typeof getVariableDetailConfig>
+  value: string
+  onChange: (value: string) => void
+}) {
+  if (variableType === 'boolean') {
+    return (
+      <select
+        className="mt-1 h-8 w-full rounded-md border border-input bg-card px-2.5 text-xs outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="false">{t.booleanText.false}</option>
+        <option value="true">{t.booleanText.true}</option>
+      </select>
+    )
+  }
+
+  if (variableType === 'color') {
+    return (
+      <div className="mt-1 flex items-center gap-2">
+        <input
+          className="h-8 w-10 shrink-0 rounded-md border border-slate-200 bg-white p-1"
+          type="color"
+          value={normalizePromptTestColor(value || config.defaultValue)}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <Input className="h-8 bg-white text-xs" value={value} placeholder={config.placeholder} onChange={(event) => onChange(event.target.value)} />
+      </div>
+    )
+  }
+
+  return (
+    <Input
+      className="mt-1"
+      value={value}
+      placeholder={config.placeholder}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  )
+}
+
+function ZpmtVariableDefaultValueControl({
+  t,
+  variableType,
+  value,
+  onChange,
+}: {
+  t: WorkbenchCopy
+  variableType: VariableType
+  value: string
+  onChange: (value: string) => void
+}) {
+  if (variableType === 'array') return <PromptArrayValueEditor t={t} value={value} onChange={onChange} />
+
+  return (
+    <Input
+      className="mt-1"
+      type={variableType === 'number' ? 'number' : 'text'}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  )
+}
+
+function PromptTestVariableInput({
+  t,
+  variable,
+  value,
+  disabled,
+  onChange,
+}: {
+  t: WorkbenchCopy
+  variable: ZpmtTestVariable
+  value: string
+  disabled?: boolean
+  onChange: (value: string) => void
+}) {
+  const defaultValue = variable.defaultValue
+  const inputValue = value
+  const [arrayEditorOpen, setArrayEditorOpen] = useState(false)
+  const [multiEditorOpen, setMultiEditorOpen] = useState(false)
+
+  if (variable.recipe) {
+    const candidateValues = Array.from(new Set([...variable.recipe.candidates, ...variable.recipe.defaultValues]))
+    const selectedValues = parsePromptTestRecipeValues(inputValue || defaultValue)
+
+    if (candidateValues.length) {
+      if (variable.recipe.multiple) {
+        const updateSelectedValues = (nextValues: string[]) => onChange(JSON.stringify(nextValues))
+        const summary = selectedValues.length
+          ? selectedValues.slice(0, 3).join(' / ') + (selectedValues.length > 3 ? ` +${selectedValues.length - 3}` : '')
+          : t.emptySelected
+
+        return (
+          <div className="mt-2">
+            <button
+              type="button"
+              className="flex h-8 w-full min-w-0 items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-2.5 text-left text-xs font-bold text-slate-700 transition hover:border-[#ffd8c4] hover:bg-[#fff8f4] disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={disabled}
+              onClick={() => setMultiEditorOpen(true)}
+            >
+              <span className="min-w-0 truncate">{summary}</span>
+              <span className="shrink-0 text-[11px] font-black text-[#d95a1b]">{t.compactEdit}</span>
+            </button>
+            {multiEditorOpen ? createPortal(
+              <div className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/35 p-6 backdrop-blur-sm" onMouseDown={() => setMultiEditorOpen(false)}>
+                <div className="w-[min(520px,calc(100vw-32px))] rounded-lg border border-slate-200 bg-white p-4 shadow-[0_28px_80px_rgba(15,23,42,0.24)]" onMouseDown={(event) => event.stopPropagation()}>
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <h2 className="truncate text-sm font-black text-slate-900">{t.editMultiValues}</h2>
+                      <p className="mt-0.5 text-[11px] font-semibold text-slate-500">{t.selectedCount.replace('{count}', String(selectedValues.length))}</p>
+                    </div>
+                    <button type="button" className="grid h-7 w-7 place-items-center rounded-md text-slate-500 hover:bg-slate-100" onClick={() => setMultiEditorOpen(false)}>
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <div className="max-h-[52vh] overflow-auto rounded-md border border-slate-200 bg-slate-50 p-2">
+                    <div className="flex flex-wrap gap-1.5">
+                      {candidateValues.map((candidate) => {
+                        const selected = selectedValues.includes(candidate)
+
+                        return (
+                          <label
+                            key={candidate}
+                            className={cn(
+                              'inline-flex min-h-7 cursor-pointer items-center rounded-md border px-2 text-[11px] font-black transition',
+                              selected
+                                ? 'border-[#FB7E3D] bg-[#fff2ea] text-[#b94712]'
+                                : 'border-slate-200 bg-white text-slate-600 hover:border-[#ffd8c4] hover:bg-[#fff8f4]',
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              className="sr-only"
+                              checked={selected}
+                              onChange={() => updateSelectedValues(
+                                selected ? selectedValues.filter((item) => item !== candidate) : [...selectedValues, candidate],
+                              )}
+                            />
+                            {candidate}
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </div>
+                  <div className="mt-3 flex justify-end">
+                    <Button type="button" size="sm" onClick={() => setMultiEditorOpen(false)}>{t.done}</Button>
+                  </div>
+                </div>
+              </div>,
+              document.body,
+            ) : null}
+          </div>
+        )
+      }
+
+      return (
+        <select
+          className="mt-2 h-8 w-full rounded-md border border-input bg-white px-2.5 text-xs outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+          value={inputValue || selectedValues[0] || ''}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.value)}
+        >
+          <option value="">{defaultValue ? `${t.defaultValue}: ${defaultValue}` : t.testValue}</option>
+          {candidateValues.map((candidate) => (
+            <option key={candidate} value={candidate}>
+              {candidate}
+            </option>
+          ))}
+        </select>
+      )
+    }
+  }
+
+  if (variable.variableType === 'array') {
+    const items = parsePromptTestArrayItems(inputValue || defaultValue)
+    const summary = items.length
+      ? items.slice(0, 3).join(' / ') + (items.length > 3 ? ` +${items.length - 3}` : '')
+      : t.emptySelected
+    return (
+      <div className="mt-2">
+        <button
+          type="button"
+          className="flex h-8 w-full min-w-0 items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-2.5 text-left text-xs font-bold text-slate-700 transition hover:border-[#ffd8c4] hover:bg-[#fff8f4] disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={disabled}
+          onClick={() => setArrayEditorOpen(true)}
+        >
+          <span className="min-w-0 truncate">{summary}</span>
+          <span className="shrink-0 text-[11px] font-black text-[#d95a1b]">{t.compactEdit}</span>
+        </button>
+        {arrayEditorOpen ? createPortal(
+          <div className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/35 p-6 backdrop-blur-sm" onMouseDown={() => setArrayEditorOpen(false)}>
+            <div className="w-[min(520px,calc(100vw-32px))] rounded-lg border border-slate-200 bg-white p-4 shadow-[0_28px_80px_rgba(15,23,42,0.24)]" onMouseDown={(event) => event.stopPropagation()}>
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h2 className="truncate text-sm font-black text-slate-900">{t.editArrayValues}</h2>
+                <button type="button" className="grid h-7 w-7 place-items-center rounded-md text-slate-500 hover:bg-slate-100" onClick={() => setArrayEditorOpen(false)}>
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <PromptArrayValueEditor t={t} value={inputValue || defaultValue} disabled={disabled} onChange={onChange} />
+              <div className="mt-3 flex justify-end">
+                <Button type="button" size="sm" onClick={() => setArrayEditorOpen(false)}>{t.done}</Button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        ) : null}
+      </div>
+    )
+  }
+
+  if (variable.variableType === 'color') {
+    const color = normalizePromptTestColor(inputValue || defaultValue)
+    return (
+      <div className="mt-2 flex items-center gap-2">
+        <input
+          className="h-8 w-10 shrink-0 rounded-md border border-slate-200 bg-white p-1"
+          type="color"
+          value={color}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <Input className="h-8 bg-white text-xs" value={inputValue} disabled={disabled} placeholder={defaultValue || '#000000'} onChange={(event) => onChange(event.target.value)} />
+      </div>
+    )
+  }
+
+  if (variable.variableType === 'boolean') {
+    return (
+      <select
+        className="mt-2 h-8 w-full rounded-md border border-input bg-white px-2.5 text-xs outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+        value={inputValue || ''}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">{defaultValue ? `${t.defaultValue}: ${t.booleanText[normalizePromptTestBoolean(defaultValue) as 'true' | 'false'] || defaultValue}` : t.testValue}</option>
+        <option value="true">{t.booleanText.true}</option>
+        <option value="false">{t.booleanText.false}</option>
+      </select>
+    )
+  }
+
+  return (
+    <Input
+      className="mt-2 h-8 bg-white text-xs"
+      type={variable.variableType === 'number' ? 'number' : 'text'}
+      value={inputValue}
+      disabled={disabled}
+      placeholder={defaultValue ? `${t.defaultValue}: ${defaultValue}` : t.testValue}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  )
+}
+
+function parsePromptTestArrayItems(value: string) {
+  const raw = value.trim()
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) return parsed.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))).filter((item) => item.trim())
+  } catch {
+    // Fall back to simple text splitting.
+  }
+  return raw.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean)
+}
+
+function parsePromptTestRecipeValues(value: string) {
+  const raw = value.trim()
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) return parsed.map(readString).filter(Boolean)
+  } catch {
+    // Recipe token defaults are stored as comma-separated text.
+  }
+  return raw.split(',').map((item) => item.trim()).filter(Boolean)
+}
+
+function normalizePromptTestColor(value: string) {
+  const normalized = value.trim()
+  return /^#[0-9a-fA-F]{6}$/.test(normalized) ? normalized : '#000000'
+}
+
+function normalizePromptTestBoolean(value: string) {
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === '是') return 'true'
+  if (normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === '否') return 'false'
+  return ''
+}
+
+type RandomPromptVariable = Pick<ZpmtTestVariable, 'key' | 'token' | 'name' | 'label' | 'variableType' | 'defaultValue' | 'mediaKind' | 'recipe'>
+
+async function createRandomPromptVariableValues(input: {
+  variables: RandomPromptVariable[]
+  currentValues: Record<string, string>
+  promptContext: string
+}) {
+  const values: Record<string, string> = {}
+  const llmVariables: RandomPromptVariable[] = []
+
+  for (const variable of input.variables) {
+    if (variable.mediaKind) continue
+    const directValue = createDirectRandomPromptVariableValue(variable)
+    if (directValue !== null) values[variable.key] = directValue
+    else llmVariables.push(variable)
+  }
+
+  if (llmVariables.length) {
+    const response = await fetchJson('/api/prompts/random-variables', {
+      method: 'POST',
+      body: {
+        promptContext: input.promptContext,
+        variables: llmVariables.map((variable) => ({
+          key: variable.key,
+          name: variable.name || variable.label,
+          label: variable.label,
+          variableType: variable.variableType || 'string',
+          defaultValue: variable.defaultValue,
+          detail: variable.token,
+          itemType: getRandomArrayItemType(variable),
+        })),
+      },
+    })
+    if (!response?.ok) throw new Error(response?.message || '随机字符串参数生成失败')
+    const remoteValues = isRecord(response.values) ? response.values : {}
+    for (const variable of llmVariables) {
+      const value = normalizeRandomPromptVariableValue(remoteValues[variable.key], variable)
+      if (value) values[variable.key] = value
+    }
+  }
+
+  return values
+}
+
+function createDirectRandomPromptVariableValue(variable: RandomPromptVariable): string | null {
+  if (variable.recipe) {
+    const candidates = Array.from(new Set([...variable.recipe.candidates, ...variable.recipe.defaultValues])).filter(Boolean)
+    if (!candidates.length) return null
+    if (variable.recipe.multiple) {
+      const count = Math.max(1, Math.min(candidates.length, 1 + Math.floor(Math.random() * Math.min(3, candidates.length))))
+      return JSON.stringify(shuffleArray(candidates).slice(0, count))
+    }
+    return candidates[Math.floor(Math.random() * candidates.length)] || ''
+  }
+
+  if (variable.variableType === 'boolean') return Math.random() > 0.5 ? 'true' : 'false'
+  if (variable.variableType === 'color') return createRandomColor()
+  if (variable.variableType === 'number') return createRandomNumberValue(variable.token, variable.defaultValue)
+  if (variable.variableType === 'array') {
+    const itemType = getRandomArrayItemType(variable)
+    if (itemType === 'number') return JSON.stringify(Array.from({ length: 3 }, () => Number(createRandomNumberValue(variable.token, variable.defaultValue))))
+    if (itemType === 'boolean') return JSON.stringify(Array.from({ length: 3 }, () => Math.random() > 0.5))
+    return null
+  }
+  return null
+}
+
+function normalizeRandomPromptVariableValue(value: unknown, variable: RandomPromptVariable) {
+  if (variable.variableType !== 'array') return readString(value)
+  if (Array.isArray(value)) return JSON.stringify(value.filter((item) => item !== null && item !== undefined))
+  const text = readString(value)
+  if (!text) return ''
+  try {
+    const parsed = JSON.parse(text)
+    if (Array.isArray(parsed)) return JSON.stringify(parsed.filter((item) => item !== null && item !== undefined))
+  } catch {
+    // Fall back to text splitting.
+  }
+  const items = text.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean)
+  return items.length ? JSON.stringify(items) : ''
+}
+
+function getRandomArrayItemType(variable: RandomPromptVariable) {
+  if (variable.variableType !== 'array') return ''
+  const parsed = parsePromptToken(variable.token)
+  const params = parsed ? getPromptTokenParamMap(parsed.params) : {}
+  return normalizeArrayItemType(params.itemType || params.type) || 'string'
+}
+
+function createRandomNumberValue(token: string, defaultValue: string) {
+  const parsed = parsePromptToken(token)
+  const params = parsed ? getPromptTokenParamMap(parsed.params) : {}
+  const rangeText = [params.range, params.min, params.max, defaultValue].filter(Boolean).join(' ')
+  const numbers = Array.from(rangeText.matchAll(/-?\d+(?:\.\d+)?/g), (match) => Number(match[0])).filter(Number.isFinite)
+  const min = numbers.length >= 2 ? Math.min(numbers[0], numbers[1]) : 1
+  const max = numbers.length >= 2 ? Math.max(numbers[0], numbers[1]) : numbers.length === 1 ? Math.max(1, numbers[0]) : 100
+  return String(Math.round(min + Math.random() * Math.max(1, max - min)))
+}
+
+function createRandomColor() {
+  return `#${Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0')}`
+}
+
+function shuffleArray<T>(items: T[]) {
+  const next = [...items]
+  for (let index = next.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1))
+    ;[next[index], next[swapIndex]] = [next[swapIndex], next[index]]
+  }
+  return next
+}
+
+function getEffectivePromptTestVariableValues(variables: ZpmtTestVariable[], values: Record<string, string>) {
+  return Object.fromEntries(
+    variables
+      .filter((variable) => !variable.mediaKind)
+      .map((variable) => {
+        const value = values[variable.key] || ''
+        if (variable.recipe) {
+          return [variable.key, parsePromptTestRecipeValues(value || variable.defaultValue).join(', ')]
+        }
+        if (variable.variableType === 'array') {
+          const items = parsePromptTestArrayItems(value || variable.defaultValue)
+          return [variable.key, JSON.stringify(items)]
+        }
+        if (variable.variableType === 'boolean') return [variable.key, normalizePromptTestBoolean(value || variable.defaultValue)]
+        return [variable.key, value.trim() ? value : variable.defaultValue]
+      }),
+  )
+}
+
+function validatePromptTestVariables(
+  variables: ZpmtTestVariable[],
+  values: Record<string, string>,
+  mediaValues: Record<string, ZpmtTestMediaFile[]>,
+  modelCapabilities: ZpmtModelCapabilityGate,
+  t: WorkbenchCopy,
+) {
+  const errors: Record<string, string> = {}
+  const nextValues = getEffectivePromptTestVariableValues(variables, values)
+
+  for (const variable of variables) {
+    if (variable.mediaKind) {
+      const supported = variable.mediaKind === 'image' ? modelCapabilities.supportsReferenceImage : modelCapabilities.supportsReferenceFile
+      if (!supported) errors[variable.key] = t.unsupportedByModel
+      else if (!(mediaValues[variable.key] || []).length) errors[variable.key] = t.requiredVariable
+      continue
+    }
+
+    const value = nextValues[variable.key] || ''
+    if (variable.recipe) {
+      if (!parsePromptTestRecipeValues(value).length) errors[variable.key] = t.requiredVariable
+      continue
+    }
+    if (variable.variableType === 'array') {
+      if (!parsePromptTestArrayItems(value).length) errors[variable.key] = t.requiredVariable
+      continue
+    }
+    if (variable.variableType === 'boolean') {
+      if (!normalizePromptTestBoolean(value)) errors[variable.key] = t.requiredVariable
+      continue
+    }
+    if (!String(value).trim()) errors[variable.key] = t.requiredVariable
+  }
+
+  return { ok: Object.keys(errors).length === 0, errors, values: nextValues }
+}
+
+async function runPromptTestStream(
+  body: Record<string, unknown>,
+  onEvent: (event: PromptTestStreamEvent) => void,
+  onDone: () => void,
+  onError: (message: string) => void,
+) {
+  try {
+    const response = await fetch('/api/prompts/test', {
+      method: 'POST',
+      headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+
+    if (!response.ok || !response.body) {
+      const data = await response.json().catch(() => null)
+      onError(readString(isRecord(data) ? data.message : '') || 'Stream failed')
+      return
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const chunks = buffer.split(/\n\n/)
+      buffer = chunks.pop() || ''
+      for (const chunk of chunks) {
+        const data = chunk.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n')
+        if (!data) continue
+        try {
+          onEvent(JSON.parse(data) as PromptTestStreamEvent)
+        } catch {
+          // Ignore malformed stream events from intermediate proxies.
+        }
+      }
+    }
+  } catch (error) {
+    onError(error instanceof Error ? error.message : 'Stream failed')
+  } finally {
+    onDone()
+  }
+}
+
+function applyPromptTestStreamEvent(current: Record<string, unknown> | null, event: PromptTestStreamEvent): Record<string, unknown> {
+  const base = current || { ok: false, status: 'streaming', outputType: 'text', output: '', thinking: '', events: [] }
+  if (event.type === 'start') return { ...base, ok: false, status: 'streaming', outputType: 'text', output: '', thinking: '', events: [] }
+  if (event.type === 'thinking') return { ...base, status: 'streaming', thinking: `${readString(base.thinking)}${event.delta || ''}` }
+  if (event.type === 'content') return { ...base, status: 'streaming', output: `${readString(base.output)}${event.delta || ''}` }
+  if (event.type === 'tool') return { ...base, status: 'streaming', events: [...(Array.isArray(base.events) ? base.events : []), event] }
+  if (event.type === 'error') return { ...base, ok: false, status: 'error', code: event.code, message: event.message || 'Stream failed' }
+  if (event.type === 'done') {
+    return {
+      ...base,
+      ok: true,
+      status: 'success',
+      output: event.output ?? readString(base.output),
+      thinking: event.thinking ?? readString(base.thinking),
+      durationMs: event.durationMs,
+      toolRounds: event.toolRounds,
+      toolCallCount: event.toolCallCount,
+    }
+  }
+  return base
+}
+
+function PromptTestResultCard({ t, response }: { t: WorkbenchCopy; response: Record<string, unknown> }) {
   const ok = response.ok === true
   const output = typeof response.output === 'string' ? response.output : ''
+  const thinking = typeof response.thinking === 'string' ? response.thinking : ''
   const message = typeof response.message === 'string' ? response.message : ''
+  const code = typeof response.code === 'string' ? response.code : ''
+  const status = typeof response.status === 'string' ? response.status : ''
+  const outputType = typeof response.outputType === 'string' ? response.outputType : ''
+  const toolEvents = Array.isArray(response.events) ? response.events.filter(isRecord) : []
+  const images = readPromptTestImages(response.images)
+  const [previewImage, setPreviewImage] = useState<(PromptTestImage & { index: number }) | null>(null)
+  const requestPreview = isRecord(response.requestPreview) ? response.requestPreview : null
 
   return (
     <div className={cn('mt-3 rounded-md border bg-white p-3 text-xs', ok ? 'border-emerald-200' : 'border-red-200')}>
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className={cn('font-black', ok ? 'text-emerald-700' : 'text-red-700')}>
-          {ok ? t.agentRunSuccess : t.agentRunFailed}
+          {status === 'loading' || status === 'streaming' ? t.runningAgent : ok ? t.agentRunSuccess : t.agentRunFailed}
         </span>
         {response.durationMs ? <span className="text-slate-400">{t.duration}: {String(response.durationMs)}ms</span> : null}
       </div>
-      <div className="text-[11px] font-black uppercase text-slate-500">{t.assistantOutput}</div>
+      {status === 'loading' && outputType === 'image' ? (
+        <div className="mb-3 grid min-h-40 place-items-center rounded-md border border-dashed border-slate-200 bg-slate-50 text-xs font-black text-slate-500">
+          <RefreshCw className="mb-2 h-5 w-5 animate-spin text-[#d95a1b]" />
+          {t.generatingImage}
+        </div>
+      ) : null}
+      {images.length ? (
+        <div className="mb-3">
+          <div className="text-[11px] font-black uppercase text-slate-500">{t.generatedImages}</div>
+          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {images.map((image, index) => {
+              const alt = image.revisedPrompt || `${t.generatedImages} ${index + 1}`
+              const downloadName = getPromptTestImageDownloadName(image.src, index)
+
+              return (
+                <div key={`${image.src}-${index}`} className="group relative overflow-hidden rounded-md border border-slate-200 bg-slate-50">
+                  <button
+                    type="button"
+                    className="block w-full cursor-zoom-in"
+                    title={t.previewImage}
+                    aria-label={`${t.previewImage}: ${downloadName}`}
+                    onClick={() => setPreviewImage({ ...image, index })}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img className="aspect-square w-full object-contain" src={image.src} alt={alt} />
+                  </button>
+                  <a
+                    className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-md border border-white/70 bg-white/90 text-slate-700 opacity-0 shadow-sm transition hover:bg-white hover:text-[#d95a1b] group-hover:opacity-100 focus:opacity-100"
+                    href={image.src}
+                    download={downloadName}
+                    title={t.downloadImage}
+                    aria-label={`${t.downloadImage}: ${downloadName}`}
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </a>
+                  {image.revisedPrompt ? <span className="block border-t border-slate-200 p-2 text-[11px] leading-4 text-slate-600">{image.revisedPrompt}</span> : null}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ) : null}
+      {thinking ? (
+        <div className="mb-3">
+          <div className="text-[11px] font-black uppercase text-slate-500">{t.thinkingOutput}</div>
+          <pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap rounded bg-amber-50 p-2 text-[11px] leading-5 text-amber-900">{thinking}</pre>
+        </div>
+      ) : null}
+      {toolEvents.length ? (
+        <div className="mb-3">
+          <div className="text-[11px] font-black uppercase text-slate-500">{t.toolEvents}</div>
+          <div className="mt-2 space-y-1">
+            {toolEvents.map((event, index) => (
+              <div key={index} className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] font-semibold text-slate-600">
+                {readString(event.toolName || event.message || event.status || event.type)}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {!ok && status === 'error' && (message || code) ? (
+        <div className="mb-3 rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+          <div className="font-black">{t.runFailedReason}</div>
+          <div className="mt-1 whitespace-pre-wrap break-words">{[code, message].filter(Boolean).join(': ')}</div>
+        </div>
+      ) : null}
+      <div className="text-[11px] font-black uppercase text-slate-500">{images.length ? t.requestPreview : t.assistantOutput}</div>
       <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-[11px] leading-5 text-slate-700">
-        {output || message || JSON.stringify(response, null, 2)}
+        {images.length && requestPreview ? JSON.stringify(requestPreview, null, 2) : output || message || JSON.stringify(response, null, 2)}
       </pre>
+      {previewImage ? createPortal(
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm" onMouseDown={() => setPreviewImage(null)}>
+          <div className="absolute right-4 top-4 flex gap-2">
+            <a
+              className="grid h-9 w-9 place-items-center rounded-md border border-white/20 bg-white/10 text-white transition hover:bg-white/20"
+              href={previewImage.src}
+              download={getPromptTestImageDownloadName(previewImage.src, previewImage.index)}
+              title={t.downloadImage}
+              aria-label={t.downloadImage}
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <Download className="h-4 w-4" />
+            </a>
+            <button
+              type="button"
+              className="grid h-9 w-9 place-items-center rounded-md border border-white/20 bg-white/10 text-white transition hover:bg-white/20"
+              title={t.close}
+              aria-label={t.close}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={() => setPreviewImage(null)}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="max-h-[88vh] max-w-[92vw]" onMouseDown={(event) => event.stopPropagation()}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img className="max-h-[82vh] max-w-[92vw] rounded-lg bg-white object-contain shadow-2xl" src={previewImage.src} alt={previewImage.revisedPrompt || `${t.generatedImages} ${previewImage.index + 1}`} />
+            {previewImage.revisedPrompt ? (
+              <p className="mt-3 max-w-[92vw] rounded-md bg-white/95 p-3 text-xs leading-5 text-slate-700 shadow-xl">{previewImage.revisedPrompt}</p>
+            ) : null}
+          </div>
+        </div>,
+        document.body,
+      ) : null}
     </div>
   )
 }
 
-function collectZpmtTestVariables(document: ZpmtDocument, t: WorkbenchCopy, locale: Locale): ZpmtTestVariable[] {
+type PromptTestImage = { src: string; revisedPrompt?: string }
+
+function readPromptTestImages(value: unknown): PromptTestImage[] {
+  const source = Array.isArray(value) ? value : []
+  return source.flatMap((item): PromptTestImage[] => {
+    if (!isRecord(item)) return []
+    const src = readString(item.src || item.url || item.dataUrl)
+    if (!src) return []
+    const revisedPrompt = readString(item.revisedPrompt)
+    return [{ src, ...(revisedPrompt ? { revisedPrompt } : {}) }]
+  })
+}
+
+function getPromptTestImageDownloadName(src: string, index: number) {
+  return `generated-image-${index + 1}.${inferPromptTestImageExtension(src)}`
+}
+
+function inferPromptTestImageExtension(src: string) {
+  const dataMatch = /^data:image\/([a-zA-Z0-9.+-]+)[;,]/.exec(src)
+  if (dataMatch) return normalizeImageExtension(dataMatch[1])
+
+  try {
+    const pathname = new URL(src).pathname
+    const extension = pathname.split('.').pop() || ''
+    return normalizeImageExtension(extension)
+  } catch {
+    return 'png'
+  }
+}
+
+function normalizeImageExtension(value: string) {
+  const normalized = value.toLowerCase().replace(/^x-/, '').split('+')[0]
+  if (normalized === 'jpeg') return 'jpg'
+  if (normalized === 'jpg' || normalized === 'png' || normalized === 'webp' || normalized === 'gif') return normalized
+  return 'png'
+}
+
+function TestMediaUploadControl({
+  t,
+  variable,
+  files,
+  disabled,
+  unsupportedText,
+  onChange,
+  onError,
+}: {
+  t: WorkbenchCopy
+  variable: ZpmtTestVariable
+  files: ZpmtTestMediaFile[]
+  disabled?: boolean
+  unsupportedText?: string
+  onChange: (files: ZpmtTestMediaFile[]) => void
+  onError: (message: string) => void
+}) {
+  const countLimit = getMediaVariableCountLimit(variable)
+  const sizeLimit = getMediaVariableSizeLimit(variable)
+  const accept = variable.mediaKind === 'image' ? 'image/png,image/jpeg,image/webp,image/gif' : undefined
+
+  async function handleFilesSelected(event: ChangeEvent<HTMLInputElement>) {
+    const selectedFiles = Array.from(event.target.files || [])
+    event.target.value = ''
+    if (!selectedFiles.length) return
+    if (selectedFiles.length > countLimit) {
+      onError(`${t.mediaCountExceeded} (${countLimit})`)
+      return
+    }
+    if (variable.mediaKind === 'image' && selectedFiles.some((file) => !file.type.startsWith('image/'))) {
+      onError(t.mediaInvalidType)
+      return
+    }
+    const oversized = selectedFiles.find((file) => file.size > sizeLimit)
+    if (oversized) {
+      onError(`${t.mediaTooLarge}: ${oversized.name} (${formatBytes(oversized.size)} > ${formatBytes(sizeLimit)})`)
+      return
+    }
+
+    try {
+      const nextFiles = await Promise.all(selectedFiles.map(readTestMediaFile))
+      onChange(nextFiles)
+    } catch {
+      onError(t.mediaReadFailed)
+    }
+  }
+
+  return (
+    <div className="mt-2 rounded-md border border-slate-200 bg-white p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <label
+          className={cn(
+            'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md border border-[#ffd8c4] bg-[#fff8f4] px-2 text-[11px] font-black text-[#b94712] transition hover:bg-[#fff2ea]',
+            disabled && 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 hover:bg-slate-100',
+          )}
+        >
+          <Upload className="h-3.5 w-3.5" />
+          {files.length ? t.replaceMedia : t.uploadMedia}
+          <input
+            className="sr-only"
+            type="file"
+            accept={accept}
+            multiple={countLimit > 1}
+            disabled={disabled}
+            onChange={(event) => void handleFilesSelected(event)}
+          />
+        </label>
+        <span className="text-[11px] font-semibold text-slate-400">
+          {unsupportedText || `${t.mediaUploadHint} ${formatBytes(sizeLimit)} / ${countLimit}`}
+        </span>
+      </div>
+
+      {files.length ? (
+        <div className="mt-2 space-y-1.5">
+          {files.map((file, index) => (
+            <div key={`${file.filename}-${index}`} className="flex items-center gap-2 rounded border border-slate-100 bg-slate-50 px-2 py-1.5">
+              <FileText className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+              <span className="min-w-0 flex-1 truncate text-[11px] font-bold text-slate-700">
+                {file.filename}
+              </span>
+              <span className="shrink-0 text-[10px] font-semibold text-slate-400">{formatBytes(file.size)}</span>
+              <button
+                type="button"
+                className="grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+                title={t.removeMedia}
+                onClick={() => onChange(files.filter((_, currentIndex) => currentIndex !== index))}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function readTestMediaFile(file: File): Promise<ZpmtTestMediaFile> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error)
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') {
+        reject(new Error('FileReader result is not a data URL'))
+        return
+      }
+      resolve({
+        filename: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        size: file.size,
+        dataUrl: reader.result,
+      })
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
+function collectZpmtTestVariables(
+  document: ZpmtDocument,
+  t: WorkbenchCopy,
+  locale: Locale,
+  promptSurface?: AiModelPromptSurface | null,
+  categories: RecipeVariableCategory[] = DEFAULT_RECIPE_VARIABLE_CATEGORIES,
+): ZpmtTestVariable[] {
   const variables = new Map<string, ZpmtTestVariable>()
-  for (const tokenRange of [...findPromptTokenRanges(document.system), ...findPromptTokenRanges(document.user)]) {
+  for (const tokenRange of findZpmtDocumentPromptTokenRanges(document, promptSurface)) {
     const parsed = parsePromptToken(tokenRange.token)
     if (!parsed) continue
+    if (parsed.tokenType === 'const') continue
     const params = getPromptTokenParamMap(parsed.params)
     const key = getZpmtTestVariableKey(tokenRange.token)
     if (!key || variables.has(key)) continue
@@ -6193,35 +10064,148 @@ function collectZpmtTestVariables(document: ZpmtDocument, t: WorkbenchCopy, loca
       : isRecipe
         ? t.recipeVariableLabel
         : parsed.tokenType
-    const source = isRecipe ? resolveRecipeVariableSourceLabel(params.source || '', DEFAULT_RECIPE_VARIABLE_CATEGORIES, document.metadata, locale) || params.source : ''
+    const sourceId = params.source || ''
+    const recipeItem = isRecipe ? findRecipeVariableItemById(sourceId, categories) : null
+    const recipeSnapshot = isRecipe ? findRecipeVariableSnapshot(document.metadata, parsed.name, sourceId) : null
+    const recipeDefaultValues = isRecipe
+      ? parsePromptTestRecipeValues(params.default || '').length
+        ? parsePromptTestRecipeValues(params.default || '')
+        : recipeItem?.defaultValues?.length
+          ? recipeItem.defaultValues
+          : recipeSnapshot?.defaultValues || []
+      : []
+    const source = isRecipe ? resolveRecipeVariableSourceLabel(sourceId, categories, document.metadata, locale) || params.source : ''
     variables.set(key, {
       key,
       token: tokenRange.token,
       name: parsed.name,
-      label: `${typeLabel}:${parsed.name}`,
+      label: parsed.name,
       typeLabel,
-      defaultValue: params.default || '',
-      source,
+      variableType: parsed.variableType,
+      mediaKind: parsed.variableType === 'image' ? 'image' : parsed.variableType === 'file' ? 'file' : undefined,
+      defaultValue: isRecipe ? recipeDefaultValues.join(', ') : params.default || '',
+      source: source && source !== parsed.name ? source : '',
+      recipe: isRecipe
+        ? {
+            candidates: recipeItem?.candidates[locale] || recipeSnapshot?.candidates[locale] || [],
+            defaultValues: recipeDefaultValues,
+            multiple: recipeItem?.multiple ?? recipeSnapshot?.multiple ?? params.multi === 'true',
+          }
+        : undefined,
     })
   }
   return [...variables.values()]
 }
 
+function findZpmtDocumentPromptTokenRanges(document: ZpmtDocument, promptSurface?: AiModelPromptSurface | null) {
+  const includeNegativePrompt = document.kind !== 'image' || promptSurface?.kind !== 'image-prompt' || promptSurface.negativePrompt
+  const texts =
+    document.kind === 'image'
+      ? [document.prompt, includeNegativePrompt ? document.negativePrompt : '', getZpmtStyleText(document.style)]
+      : [document.system, document.user]
+  return texts.flatMap(findPromptTokenRanges)
+}
+
 function renderZpmtPromptForTest(text: string, values: Record<string, string>) {
   return text.replace(/\{\{[^{}\n]+\}\}/g, (token) => {
+    const parsed = parsePromptToken(token)
+    if (parsed?.tokenType === 'const') return resolveZpmtConstantValue(parsed)
     const key = getZpmtTestVariableKey(token)
     if (!key) return token
-    const parsed = parsePromptToken(token)
     const params = parsed ? getPromptTokenParamMap(parsed.params) : {}
     return values[key] ?? params.default ?? ''
   })
 }
 
+function renderZpmtPromptPreview(text: string, values: Record<string, string>, mediaValues: Record<string, ZpmtTestMediaFile[]>) {
+  return text.replace(/\{\{[^{}\n]+\}\}/g, (token) => {
+    const parsed = parsePromptToken(token)
+    if (parsed?.tokenType === 'const') return resolveZpmtConstantValue(parsed)
+    const key = getZpmtTestVariableKey(token)
+    if (!key) return token
+    const params = parsed ? getPromptTokenParamMap(parsed.params) : {}
+    if (parsed?.variableType === 'image' || parsed?.variableType === 'file') {
+      const files = mediaValues[key] || []
+      if (!files.length) return `[${params.default || '未上传'}]`
+      return files.map((file, index) => `[${createMediaAlias(parsed.name, index, file.filename)}]`).join('\n')
+    }
+    return values[key] ?? params.default ?? ''
+  })
+}
+
+function buildZpmtRenderedPromptPreview(document: ZpmtDocument, values: Record<string, string>, mediaValues: Record<string, ZpmtTestMediaFile[]>, promptSurface?: AiModelPromptSurface | null) {
+  if (document.kind === 'image') {
+    const includeNegativePrompt = promptSurface?.kind !== 'image-prompt' || promptSurface.negativePrompt
+    const renderedStyle = renderZpmtPromptPreview(getZpmtStyleText(document.style), values, mediaValues)
+    return [
+      `Prompt:\n${renderZpmtPromptPreview(document.prompt, values, mediaValues)}`,
+      includeNegativePrompt && document.negativePrompt.trim() ? `Negative Prompt:\n${renderZpmtPromptPreview(document.negativePrompt, values, mediaValues)}` : '',
+      renderedStyle.trim() ? `Style:\n${renderedStyle}` : '',
+      `Params:\n${JSON.stringify(document.config.responseConfig, null, 2)}`,
+    ].filter(Boolean).join('\n\n')
+  }
+
+  const renderedSystem = renderZpmtPromptForTest(document.system, values)
+  const renderedUser = renderZpmtPromptPreview(document.user, values, mediaValues)
+  return [renderedSystem, renderedUser].filter(Boolean).join('\n\n')
+}
+
+function resolveZpmtConstantValue(parsed: { name: string; params: string[] }) {
+  const params = getPromptTokenParamMap(parsed.params)
+  const kind = params.kind || parsed.name
+  const now = new Date()
+  if (kind === 'today') return now.toLocaleDateString('zh-CN')
+  if (kind === 'time') return now.toLocaleTimeString('zh-CN', { hour12: false })
+  if (kind === 'weekday') return now.toLocaleDateString('zh-CN', { weekday: 'long' })
+  if (kind === 'iso') return now.toISOString()
+  if (kind === 'timestamp') return String(now.getTime())
+  if (kind === 'uuid') return globalThis.crypto?.randomUUID?.() || createShortRandomId()
+  if (kind === 'shortId') return createShortRandomId()
+  return now.toLocaleString('zh-CN', { hour12: false })
+}
+
+function createShortRandomId() {
+  return Math.random().toString(36).slice(2, 10)
+}
+
 function getZpmtTestVariableKey(token: string) {
   const parsed = parsePromptToken(token)
   if (!parsed) return ''
+  if (parsed.tokenType === 'const') return ''
   const params = getPromptTokenParamMap(parsed.params)
   return `${parsed.tokenType}:${parsed.name}:${params.source || ''}`
+}
+
+function createMediaAlias(variableName: string, index: number, filename: string) {
+  const safeName = filename.replace(/[\\/:*?"<>|]/g, '_').trim() || 'upload'
+  return `${variableName}_${index + 1}_${safeName}`
+}
+
+function getMediaVariableCountLimit(variable: ZpmtTestVariable) {
+  const parsed = parsePromptToken(variable.token)
+  const params = parsed ? getPromptTokenParamMap(parsed.params) : {}
+  const raw = variable.mediaKind === 'image' ? String(params.count || '') : ''
+  const match = raw.match(/\d+/)
+  const parsedCount = match ? Number(match[0]) : 1
+  return Number.isFinite(parsedCount) ? Math.max(1, Math.min(20, Math.round(parsedCount))) : 1
+}
+
+function getMediaVariableSizeLimit(variable: ZpmtTestVariable) {
+  const parsed = parsePromptToken(variable.token)
+  const params = parsed ? getPromptTokenParamMap(parsed.params) : {}
+  return parseByteSize(String(params.size || '')) || 10 * 1024 * 1024
+}
+
+function parseByteSize(value: string) {
+  const match = /^\s*(?:[<>=~\s]*)?(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)?\s*$/i.exec(value)
+  if (!match) return 0
+  const amount = Number(match[1])
+  if (!Number.isFinite(amount) || amount <= 0) return 0
+  const unit = (match[2] || 'b').toLowerCase()
+  if (unit === 'gb') return Math.round(amount * 1024 * 1024 * 1024)
+  if (unit === 'mb') return Math.round(amount * 1024 * 1024)
+  if (unit === 'kb') return Math.round(amount * 1024)
+  return Math.round(amount)
 }
 
 function ToolRunResultCard({ t, response }: { t: WorkbenchCopy; response: Record<string, unknown> }) {
@@ -6496,16 +10480,146 @@ function RecipeVariablesPanel({ t, locale, categories }: { t: WorkbenchCopy; loc
   )
 }
 
+function PromptTemplatesPanel({
+  t,
+  locale,
+  document,
+  onApplyTemplate,
+}: {
+  t: WorkbenchCopy
+  locale: Locale
+  document: ZpmtDocument | null
+  onApplyTemplate: (template: PromptTemplateDefinition) => void
+}) {
+  const [search, setSearch] = useState('')
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const normalizedSearch = search.trim().toLocaleLowerCase()
+  const templates = useMemo(() => {
+    if (!document) return []
+    return PROMPT_TEMPLATES.filter((template) => template.kind === document.kind)
+  }, [document?.kind])
+  const groupedTemplates = useMemo(() => {
+    const groups = new Map<string, { id: string; name: LocalizedText; templates: PromptTemplateDefinition[] }>()
+    for (const template of templates) {
+      const searchable = [
+        template.categoryName.zh,
+        template.categoryName.en,
+        template.name.zh,
+        template.name.en,
+        template.description.zh,
+        template.description.en,
+        template.preview.zh,
+        template.preview.en,
+      ].join(' ').toLocaleLowerCase()
+      if (normalizedSearch && !searchable.includes(normalizedSearch)) continue
+      const current = groups.get(template.categoryId) || { id: template.categoryId, name: template.categoryName, templates: [] }
+      current.templates.push(template)
+      groups.set(template.categoryId, current)
+    }
+    return [...groups.values()]
+  }, [normalizedSearch, templates])
+
+  if (!document) {
+    return (
+      <div className="rounded-md border border-dashed border-slate-200 bg-white px-3 py-6 text-center text-xs font-semibold text-slate-500">
+        {t.promptTemplateNoFile}
+      </div>
+    )
+  }
+
+  function applyTemplate(template: PromptTemplateDefinition) {
+    if (!window.confirm(t.promptTemplateReplaceConfirm.replace('{name}', template.name[locale]))) return
+    onApplyTemplate(template)
+  }
+
+  return (
+    <section className="space-y-3">
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+        <Input
+          className="pl-7"
+          value={search}
+          placeholder={t.promptTemplateSearch}
+          onChange={(event) => setSearch(event.target.value)}
+        />
+      </div>
+
+      <div className="space-y-2.5">
+        {groupedTemplates.length ? (
+          groupedTemplates.map((group) => {
+            const open = normalizedSearch.length > 0 || expanded[group.id] !== false
+            return (
+              <section key={group.id} className="rounded-md border border-slate-200 bg-white">
+                <button
+                  type="button"
+                  className="flex min-h-10 w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-50"
+                  aria-expanded={open}
+                  onClick={() => setExpanded((current) => ({ ...current, [group.id]: !open }))}
+                >
+                  {open ? (
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-black text-slate-900">{group.name[locale]}</p>
+                    <p className="mt-0.5 truncate text-[11px] text-slate-500">{t.promptTemplatePreview}</p>
+                  </div>
+                  <Badge variant="outline" className="shrink-0">
+                    {group.templates.length}
+                  </Badge>
+                </button>
+
+                {open ? (
+                  <div className="space-y-2 border-t border-slate-100 p-2.5">
+                    {group.templates.map((template) => (
+                      <button
+                        key={template.id}
+                        type="button"
+                        className="block w-full rounded-md border border-slate-200 bg-slate-50/60 p-3 text-left transition hover:border-[#FB7E3D]/45 hover:bg-[#fff8f4] focus:outline-none focus:ring-2 focus:ring-[#FB7E3D]/20"
+                        onClick={() => applyTemplate(template)}
+                      >
+                        <div className="flex min-w-0 items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-black text-slate-950">{template.name[locale]}</p>
+                            <p className="mt-1 text-[11px] leading-4 text-slate-600">{template.description[locale]}</p>
+                          </div>
+                          <Badge variant="outline" className="shrink-0 bg-white">
+                            {t.promptTemplateApply}
+                          </Badge>
+                        </div>
+                        <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-slate-500">{template.preview[locale]}</p>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            )
+          })
+        ) : (
+          <div className="rounded-md border border-dashed border-slate-200 bg-white px-3 py-6 text-center text-xs font-semibold text-slate-500">
+            {t.promptTemplateEmpty}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
 function InspectorPanel({
   t,
   locale,
   recipeVariableCategories,
   modelCapabilities,
+  activeDocument,
+  onApplyTemplate,
 }: {
   t: WorkbenchCopy
   locale: Locale
   recipeVariableCategories: RecipeVariableCategory[]
   modelCapabilities: ZpmtModelCapabilityGate
+  activeDocument: ZpmtDocument | null
+  onApplyTemplate: (template: PromptTemplateDefinition) => void
 }) {
   const { supportsTools } = modelCapabilities
 
@@ -6515,17 +10629,21 @@ function InspectorPanel({
         <TabsList className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
           <TabsTrigger value="variables" className="px-2">{t.inspectorTabs[0]}</TabsTrigger>
           <TabsTrigger value="recipe" className="px-2">{t.inspectorTabs[1]}</TabsTrigger>
-          <TabsTrigger value="tools" className={cn('px-2', !supportsTools && 'text-slate-400')}>{t.inspectorTabs[2]}</TabsTrigger>
+          <TabsTrigger value="templates" className="px-2">{t.inspectorTabs[2]}</TabsTrigger>
+          <TabsTrigger value="tools" className={cn('px-2', !supportsTools && 'text-slate-400')}>{t.inspectorTabs[3]}</TabsTrigger>
         </TabsList>
         <Button variant="ghost" size="icon" className="mr-1 shrink-0">
           <MoreHorizontal className="h-3.5 w-3.5" />
         </Button>
       </div>
       <TabsContent value="variables" className="min-h-0 flex-1 overflow-auto">
-        <VariableTagsPanel t={t} modelCapabilities={modelCapabilities} />
+        <VariableTagsPanel t={t} locale={locale} modelCapabilities={modelCapabilities} />
       </TabsContent>
       <TabsContent value="recipe" className="min-h-0 flex-1 overflow-auto p-3">
         <RecipeVariablesPanel t={t} locale={locale} categories={recipeVariableCategories} />
+      </TabsContent>
+      <TabsContent value="templates" className="min-h-0 flex-1 overflow-auto p-3">
+        <PromptTemplatesPanel t={t} locale={locale} document={activeDocument} onApplyTemplate={onApplyTemplate} />
       </TabsContent>
       <TabsContent value="tools" className="min-h-0 flex-1 overflow-auto p-3">
         <InspectorToolsPanel t={t} locale={locale} disabled={!supportsTools} />
@@ -6570,6 +10688,7 @@ export function WorkbenchShell() {
   const [announcements, setAnnouncements] = useState<Announcement[]>([])
   const [dismissedAnnouncements, setDismissedAnnouncements] = useState<Set<string>>(() => new Set())
   const [announcementOpen, setAnnouncementOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [sessionUser, setSessionUser] = useState<SessionUser | null>(null)
   const [sessionAdmin, setSessionAdmin] = useState<AdminSession | null>(null)
@@ -6623,6 +10742,14 @@ export function WorkbenchShell() {
   const activeZpmtDocument = activeEditorTab && isZpmtFilePath(activeEditorTab.path) ? parseZpmtContent(activeEditorTab.content, aiProviders) : null
   const activeZpmtModelContext = activeZpmtDocument
     ? getSelectedAiModelContext(aiProviders, activeZpmtDocument.config.providerId, activeZpmtDocument.config.model, activeZpmtDocument.config.providerFile)
+    : null
+  const activeZpmtPromptSurface = activeZpmtDocument
+    ? resolveAiModelPromptSurface(
+        activeZpmtDocument.config.outputType,
+        activeZpmtModelContext?.provider.providerType,
+        activeZpmtDocument.config.model,
+        activeZpmtModelContext?.model,
+      )
     : null
   const activeZpmtModelCapabilities = useMemo(() => getZpmtModelCapabilityGate(activeZpmtModelContext?.model), [activeZpmtModelContext?.model])
   const visibleAnnouncements = announcements.filter((announcement) => !dismissedAnnouncements.has(dismissAnnouncementKey(announcement)))
@@ -7139,6 +11266,31 @@ export function WorkbenchShell() {
     setActiveEditorTabId(nextActiveTabId)
   }
 
+  function handleProjectEntriesMoved(projectId: string, moved: ProjectEntryMove[]) {
+    if (!moved.length) return
+    let nextActiveTabId = activeEditorTabId
+
+    setEditorTabs((current) =>
+      current.map((tab) => {
+        if (tab.projectId !== projectId) return tab
+        const operation = moved.find((item) => isPathOrDescendant(tab.path, item.oldPath))
+        if (!operation) return tab
+        const updatedPath = tab.path === operation.oldPath
+          ? operation.nextPath
+          : `${operation.nextPath}/${tab.path.slice(operation.oldPath.length + 1)}`
+        const updated = {
+          ...tab,
+          id: buildEditorTabId(projectId, updatedPath),
+          path: updatedPath,
+          name: tab.path === operation.oldPath ? updatedPath.split('/').pop() || tab.name : tab.name,
+        }
+        if (tab.id === activeEditorTabId) nextActiveTabId = updated.id
+        return updated
+      }),
+    )
+    setActiveEditorTabId(nextActiveTabId)
+  }
+
   async function openProjectFile(file: ProjectFileReference) {
     const tabId = buildEditorTabId(file.projectId, file.path)
     setActiveWindow('editor')
@@ -7185,6 +11337,33 @@ export function WorkbenchShell() {
         ),
     )
     dispatchSourceControlRefresh()
+  }
+
+  function applyPromptTemplate(template: PromptTemplateDefinition) {
+    if (!activeZpmtDocument) {
+      showAppAlert(t.promptTemplateNoFile)
+      return
+    }
+
+    const templateCategories = getTemplateRecipeCategories(recipeVariableCategories)
+    const content = template.build({ categories: templateCategories })
+    const nextDocument: ZpmtDocument = {
+      ...activeZpmtDocument,
+      kind: template.kind,
+      system: content.system || '',
+      user: content.user || '',
+      prompt: content.prompt || '',
+      negativePrompt: content.negativePrompt || '',
+      style:
+        template.kind === 'image' && content.styleText !== undefined
+          ? updateZpmtStyleEditableText(activeZpmtDocument.style, content.styleText)
+          : activeZpmtDocument.style,
+      tools: [],
+      metadata: { schemaVersion: 2, recipeVariables: [] },
+    }
+
+    changeActiveEditorContent(serializeZpmtDocument(nextDocument, aiProviders, templateCategories))
+    setActiveWindow('editor')
   }
 
   function closeEditorTab(tabId: string) {
@@ -7340,7 +11519,12 @@ export function WorkbenchShell() {
                 {t.admin}
               </span>
             ) : null}
-            <button className="grid h-7 w-7 place-items-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-900" aria-label={t.settings} title={t.settings}>
+            <button
+              className="grid h-7 w-7 place-items-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+              aria-label={t.settings}
+              title={t.settings}
+              onClick={() => setSettingsOpen(true)}
+            >
               <Settings className="h-3.5 w-3.5" />
             </button>
             <button
@@ -7391,6 +11575,7 @@ export function WorkbenchShell() {
       ) : null}
 
       <DndContext
+        id="ccks-workbench-dnd"
         sensors={dndSensors}
         collisionDetection={pointerWithin}
         onDragStart={handleInstructionDragStart}
@@ -7469,6 +11654,7 @@ export function WorkbenchShell() {
                 onProjectDeleted={handleProjectDeleted}
                 onEntryDeleted={handleProjectEntryDeleted}
                 onEntryRenamed={handleProjectEntryRenamed}
+                onEntriesMoved={handleProjectEntriesMoved}
                 onNotify={showAppAlert}
               />
             </WorkbenchWindow>
@@ -7529,7 +11715,9 @@ export function WorkbenchShell() {
                 locale={locale}
                 document={activeZpmtDocument}
                 activeFile={activeProjectFile}
-                supportsTools={activeZpmtModelCapabilities.supportsTools}
+                modelCapabilities={activeZpmtModelCapabilities}
+                promptSurface={activeZpmtPromptSurface}
+                recipeVariableCategories={recipeVariableCategories}
               />
             </WorkbenchWindow>
           </div>
@@ -7556,6 +11744,8 @@ export function WorkbenchShell() {
                 locale={locale}
                 recipeVariableCategories={recipeVariableCategories}
                 modelCapabilities={activeZpmtModelCapabilities}
+                activeDocument={activeZpmtDocument}
+                onApplyTemplate={applyPromptTemplate}
               />
             </WorkbenchWindow>
           </div>
@@ -7719,6 +11909,21 @@ export function WorkbenchShell() {
         />
       ) : null}
 
+      {settingsOpen ? (
+        <SettingsDialog
+          t={t}
+          theme={theme}
+          locale={locale}
+          isAdmin={Boolean(sessionAdmin)}
+          onToggleTheme={toggleTheme}
+          onToggleLocale={toggleLocale}
+          onCommonProvidersChanged={async () => {
+            await loadProjectConfigFiles(activeProject?.id || '')
+          }}
+          onClose={() => setSettingsOpen(false)}
+        />
+      ) : null}
+
       {feedbackOpen ? (
         <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/30 p-6 backdrop-blur-sm" onClick={() => setFeedbackOpen(false)}>
           <div className="flex h-[72vh] w-[min(920px,100%)] flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
@@ -7750,6 +11955,438 @@ export function WorkbenchShell() {
           onClose={() => setSourceControlDiff(null)}
         />
       ) : null}
+    </div>
+  )
+}
+
+function SettingsDialog({
+  t,
+  theme,
+  locale,
+  isAdmin,
+  onToggleTheme,
+  onToggleLocale,
+  onCommonProvidersChanged,
+  onClose,
+}: {
+  t: WorkbenchCopy
+  theme: ThemeMode
+  locale: Locale
+  isAdmin: boolean
+  onToggleTheme: () => void
+  onToggleLocale: () => void
+  onCommonProvidersChanged: () => Promise<void> | void
+  onClose: () => void
+}) {
+  const [activeSection, setActiveSection] = useState<'general' | 'systemAi' | 'apiToken' | 'commonProviders'>('general')
+
+  useEffect(() => {
+    if (!isAdmin && (activeSection === 'commonProviders' || activeSection === 'systemAi')) setActiveSection('general')
+  }, [activeSection, isAdmin])
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') onClose()
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
+  const navItems = ([
+    { id: 'general', label: t.settingsGeneral, description: t.settingsGeneralDesc },
+    { id: 'apiToken', label: '接口 Token', description: '配置个人提示词调用接口 Token。' },
+    { id: 'systemAi', label: '系统 LLM AI', description: '管理员配置随机参数和 AI 辅助使用的全局模型。', adminOnly: true },
+    { id: 'commonProviders', label: t.commonProviderManagement, description: t.commonProviderManagementDesc, adminOnly: true },
+  ] satisfies Array<{ id: 'general' | 'systemAi' | 'apiToken' | 'commonProviders'; label: string; description: string; adminOnly?: boolean }>).filter((item) => !item.adminOnly || isAdmin)
+
+  const activeNavItem = navItems.find((item) => item.id === activeSection) || navItems[0]
+
+  return (
+    <div className="fixed inset-0 z-[85] bg-slate-950/35 p-6 backdrop-blur-sm" onMouseDown={onClose}>
+      <div
+        className="mx-auto flex h-[min(760px,calc(100vh-48px))] w-[min(1100px,calc(100vw-48px))] overflow-hidden rounded-md border border-slate-200 bg-white shadow-[0_28px_80px_rgba(15,23,42,0.25)]"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t.settings}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <aside className="flex w-64 shrink-0 flex-col border-r border-slate-200 bg-slate-50">
+          <div className="flex h-12 shrink-0 items-center gap-2 border-b border-slate-200 px-3">
+            <Settings className="h-4 w-4 text-[#d95a1b]" />
+            <div className="min-w-0">
+              <h2 className="truncate text-sm font-black text-slate-950">{t.settings}</h2>
+              <p className="truncate text-[11px] font-semibold text-slate-500">{isAdmin ? t.admin : t.status.ready}</p>
+            </div>
+          </div>
+          <nav className="min-h-0 flex-1 overflow-auto p-2" aria-label={t.settings}>
+            {navItems.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={cn(
+                  'mb-1 flex w-full flex-col rounded-md border px-2.5 py-2 text-left transition',
+                  activeSection === item.id
+                    ? 'border-[#ffd8c4] bg-[#fff2ea] text-[#9a3412]'
+                    : 'border-transparent text-slate-600 hover:border-slate-200 hover:bg-white hover:text-slate-950',
+                )}
+                onClick={() => setActiveSection(item.id)}
+              >
+                <span className="text-xs font-black">{item.label}</span>
+                <span className="mt-0.5 line-clamp-2 text-[10px] font-semibold opacity-75">{item.description}</span>
+              </button>
+            ))}
+          </nav>
+        </aside>
+
+        <section className="flex min-w-0 flex-1 flex-col bg-white">
+          <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200 px-4">
+            <div className="min-w-0">
+              <h3 className="truncate text-sm font-black text-slate-950">
+                {activeNavItem.label}
+              </h3>
+              <p className="truncate text-[11px] font-semibold text-slate-500">
+                {activeNavItem.description}
+              </p>
+            </div>
+            <button className="grid h-7 w-7 place-items-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-900" aria-label={t.close} onClick={onClose}>
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-auto p-4">
+            {activeSection === 'commonProviders' && isAdmin ? (
+              <CommonAiProviderManager onChanged={onCommonProvidersChanged} />
+            ) : activeSection === 'systemAi' && isAdmin ? (
+              <SystemAiSettingsPanel />
+            ) : activeSection === 'apiToken' ? (
+              <UserApiTokenPanel />
+            ) : (
+              <div className="max-w-2xl rounded-md border border-slate-200 bg-slate-50 p-3">
+                <div className="grid gap-2">
+                  <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-white px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-black text-slate-900">{theme === 'dark' ? t.themeToLight : t.themeToDark}</p>
+                      <p className="mt-0.5 text-[11px] font-semibold text-slate-500">{theme === 'dark' ? 'Dark' : 'Light'}</p>
+                    </div>
+                    <Button size="sm" variant="outline" type="button" onClick={onToggleTheme}>
+                      {theme === 'dark' ? t.themeToLight : t.themeToDark}
+                    </Button>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-white px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-black text-slate-900">{t.language}</p>
+                      <p className="mt-0.5 text-[11px] font-semibold text-slate-500">{locale === 'zh' ? '中文' : 'English'}</p>
+                    </div>
+                    <Button size="sm" variant="outline" type="button" onClick={onToggleLocale}>
+                      {locale === 'zh' ? 'English' : '中文'}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+}
+
+type SystemAiSettingsState = {
+  providerType: string
+  baseUrl: string
+  apiKey: string
+  hasApiKey: boolean
+  models: AiProviderModel[]
+  model: string
+  reasoningEffort: string
+  maxToolRounds: number
+}
+
+function SystemAiSettingsPanel() {
+  const [form, setForm] = useState<SystemAiSettingsState>({
+    providerType: 'custom',
+    baseUrl: '',
+    apiKey: '',
+    hasApiKey: false,
+    models: [],
+    model: '',
+    reasoningEffort: 'auto',
+    maxToolRounds: 5,
+  })
+  const [loading, setLoading] = useState(false)
+  const [pulling, setPulling] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    void loadSetting()
+  }, [])
+
+  async function loadSetting() {
+    setLoading(true)
+    setMessage('')
+    const response = await fetch('/api/system-ai-settings')
+      .then((result) => result.json().catch(() => null))
+      .catch(() => null)
+      .finally(() => setLoading(false))
+    if (!response?.ok) {
+      setMessage(response?.message || '系统 AI 设置加载失败')
+      return
+    }
+    const setting = response.setting || {}
+    setForm({
+      providerType: setting.providerType || 'custom',
+      baseUrl: setting.baseUrl || '',
+      apiKey: '',
+      hasApiKey: Boolean(setting.hasApiKey),
+      models: Array.isArray(setting.models) ? setting.models : [],
+      model: setting.model || '',
+      reasoningEffort: setting.reasoningEffort || 'auto',
+      maxToolRounds: Number.isFinite(setting.maxToolRounds) ? setting.maxToolRounds : 5,
+    })
+  }
+
+  function applySystemAiPreset(providerType: string) {
+    const preset = AI_PROVIDER_PRESETS.find((item) => item.providerType === providerType) || AI_PROVIDER_PRESETS[0]
+    setForm((current) => ({
+      ...current,
+      providerType: preset.providerType,
+      baseUrl: preset.baseUrl,
+      models: [],
+      model: '',
+    }))
+  }
+
+  async function pullModels() {
+    setPulling(true)
+    setMessage('')
+    const response = await fetchJson('/api/system-ai-settings/models', {
+      method: 'POST',
+      body: {
+        providerType: form.providerType,
+        baseUrl: form.baseUrl,
+        apiKey: form.apiKey,
+      },
+    }).finally(() => setPulling(false))
+    if (!response?.ok || !Array.isArray(response.models)) {
+      setMessage(response?.message || '模型列表获取失败')
+      return
+    }
+    setForm((current) => ({ ...current, models: response.models, model: response.models[0]?.id || '' }))
+  }
+
+  async function saveSetting(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSaving(true)
+    setMessage('')
+    const response = await fetchJson('/api/system-ai-settings', {
+      method: 'PATCH',
+      body: {
+        providerType: form.providerType,
+        baseUrl: form.baseUrl,
+        apiKey: form.apiKey,
+        models: form.models,
+        model: form.model,
+        reasoningEffort: form.reasoningEffort,
+        maxToolRounds: form.maxToolRounds,
+      },
+    }).finally(() => setSaving(false))
+    if (!response?.ok) {
+      setMessage(response?.message || '系统 AI 设置保存失败')
+      return
+    }
+    const setting = response.setting || {}
+    setForm((current) => ({
+      ...current,
+      apiKey: '',
+      hasApiKey: Boolean(setting.hasApiKey),
+      models: Array.isArray(setting.models) ? setting.models : current.models,
+      model: setting.model || current.model,
+    }))
+    setMessage('系统 AI 设置已保存')
+  }
+
+  return (
+    <div className="max-w-4xl">
+      <form className="rounded-md border border-slate-200 bg-white p-3" onSubmit={saveSetting}>
+        <div className="mb-3 flex items-center gap-2 border-b border-slate-100 pb-3">
+          <Bot className="h-4 w-4 text-[#d95a1b]" />
+          <div className="min-w-0">
+            <h3 className="text-xs font-black text-slate-900">系统 LLM AI</h3>
+            <p className="text-[11px] font-semibold text-slate-500">用于随机字符串参数、编辑区 AI 辅助和 .zpmt 检查修复。</p>
+          </div>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <label className="block text-xs font-semibold text-slate-600">
+            常用供应商
+            <select
+              className="mt-1 h-9 w-full rounded-md border border-input bg-white px-2.5 text-xs outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+              value={form.providerType}
+              onChange={(event) => applySystemAiPreset(event.target.value)}
+            >
+              {AI_PROVIDER_PRESETS.map((preset) => (
+                <option key={preset.providerType} value={preset.providerType}>{preset.name}</option>
+              ))}
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+          <label className="block text-xs font-semibold text-slate-600">
+            供应商类型
+            <Input className="mt-1" value={form.providerType} onChange={(event) => setForm((current) => ({ ...current, providerType: event.target.value }))} />
+          </label>
+          <label className="block text-xs font-semibold text-slate-600 md:col-span-2">
+            Base URL
+            <Input className="mt-1" value={form.baseUrl} onChange={(event) => setForm((current) => ({ ...current, baseUrl: event.target.value, models: [], model: '' }))} placeholder="https://api.example.com/v1" />
+          </label>
+          <label className="block text-xs font-semibold text-slate-600 md:col-span-2">
+            API Key
+            <Input className="mt-1" type="password" value={form.apiKey} onChange={(event) => setForm((current) => ({ ...current, apiKey: event.target.value }))} placeholder={form.hasApiKey ? '留空则保留已保存密钥' : '填写系统 AI API Key'} />
+            <span className="mt-1 block text-[11px] font-semibold text-slate-400">{form.hasApiKey ? '密钥已加密保存，普通用户不可见。' : '尚未保存系统 AI 密钥。'}</span>
+          </label>
+          <div className="md:col-span-2">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-slate-600">模型</span>
+              <Button type="button" size="sm" variant="outline" onClick={() => void pullModels()} disabled={pulling || !form.baseUrl || !form.apiKey}>
+                {pulling ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                获取模型
+              </Button>
+            </div>
+            <select
+              className="h-9 w-full rounded-md border border-input bg-white px-2.5 text-xs outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+              value={form.model}
+              onChange={(event) => setForm((current) => ({ ...current, model: event.target.value }))}
+            >
+              <option value="">{loading ? '加载中...' : '请选择模型'}</option>
+              {form.models.map((model) => (
+                <option key={model.id} value={model.id}>{model.id}</option>
+              ))}
+            </select>
+          </div>
+          <label className="block text-xs font-semibold text-slate-600">
+            思考强度
+            <select
+              className="mt-1 h-9 w-full rounded-md border border-input bg-white px-2.5 text-xs outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+              value={form.reasoningEffort}
+              onChange={(event) => setForm((current) => ({ ...current, reasoningEffort: event.target.value }))}
+            >
+              {['auto', 'none', 'low', 'medium', 'high', 'xhigh', 'max'].map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-xs font-semibold text-slate-600">
+            最大工具调用轮数
+            <Input className="mt-1" type="number" min={0} max={20} value={String(form.maxToolRounds)} onChange={(event) => setForm((current) => ({ ...current, maxToolRounds: Math.max(0, Math.min(20, Math.round(Number(event.target.value) || 0))) }))} />
+          </label>
+        </div>
+        <div className="mt-3 flex items-center justify-between gap-3 border-t border-slate-100 pt-3">
+          <span className={cn('text-[11px] font-semibold', message.includes('失败') ? 'text-red-600' : 'text-emerald-600')}>{message}</span>
+          <Button type="submit" size="sm" disabled={saving || !form.baseUrl || !form.model || !form.models.length}>
+            {saving ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+            保存设置
+          </Button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function UserApiTokenPanel() {
+  const [summary, setSummary] = useState<Record<string, unknown> | null>(null)
+  const [manualToken, setManualToken] = useState('')
+  const [plainToken, setPlainToken] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    void loadToken()
+  }, [])
+
+  async function loadToken() {
+    setLoading(true)
+    const response = await fetch('/api/user-api-token')
+      .then((result) => result.json().catch(() => null))
+      .catch(() => null)
+      .finally(() => setLoading(false))
+    if (!response?.ok) {
+      setMessage(response?.message || '接口 Token 加载失败')
+      return
+    }
+    setSummary(response.token || null)
+  }
+
+  async function saveToken(token?: string) {
+    setMessage('')
+    const response = await fetchJson('/api/user-api-token', {
+      method: 'POST',
+      body: token ? { token } : {},
+    })
+    if (!response?.ok) {
+      setMessage(response?.message || '接口 Token 保存失败')
+      return
+    }
+    setSummary(response.token || null)
+    setPlainToken(response.plainToken || token || '')
+    setManualToken('')
+    setMessage('Token 已保存，请及时复制。')
+  }
+
+  async function deleteToken() {
+    if (!window.confirm('确认撤销当前接口 Token？撤销后外部调用会立即失败。')) return
+    const response = await fetch('/api/user-api-token', { method: 'DELETE' }).then((result) => result.json().catch(() => null)).catch(() => null)
+    if (!response?.ok) {
+      setMessage(response?.message || '接口 Token 撤销失败')
+      return
+    }
+    setSummary(response.token || null)
+    setPlainToken('')
+    setMessage('Token 已撤销')
+  }
+
+  const exists = Boolean(summary?.exists)
+  return (
+    <div className="max-w-3xl rounded-md border border-slate-200 bg-white p-3">
+      <div className="mb-3 flex items-center gap-2 border-b border-slate-100 pb-3">
+        <Code2 className="h-4 w-4 text-[#d95a1b]" />
+        <div>
+          <h3 className="text-xs font-black text-slate-900">个人接口 Token</h3>
+          <p className="text-[11px] font-semibold text-slate-500">用于外部系统通过接口调用你自己的项目提示词。</p>
+        </div>
+      </div>
+      <div className="grid gap-2">
+        <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+          <div className="font-black text-slate-800">当前状态</div>
+          <div className="mt-1 text-[11px] font-semibold text-slate-500">
+            {loading ? '加载中...' : exists ? `已启用：${String(summary?.tokenMasked || '')}` : '未启用'}
+          </div>
+          {summary?.lastUsedAt ? <div className="mt-1 text-[11px] font-semibold text-slate-400">最后调用：{String(summary.lastUsedAt)}</div> : null}
+        </div>
+        {plainToken ? (
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 p-2">
+            <div className="mb-1 text-[11px] font-black text-emerald-700">本次 Token 只显示一次</div>
+            <div className="flex gap-2">
+              <Input readOnly value={plainToken} className="bg-white text-xs" />
+              <Button type="button" size="sm" variant="outline" onClick={() => void copyTextToClipboard(plainToken)}>
+                <Copy className="h-3.5 w-3.5" />
+                复制
+              </Button>
+            </div>
+          </div>
+        ) : null}
+        <label className="block text-xs font-semibold text-slate-600">
+          手动填写 Token
+          <Input className="mt-1" value={manualToken} onChange={(event) => setManualToken(event.target.value)} placeholder="留空则点击生成随机 Token" />
+        </label>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">
+          <span className={cn('text-[11px] font-semibold', message.includes('失败') ? 'text-red-600' : 'text-emerald-600')}>{message}</span>
+          <div className="flex gap-2">
+            {exists ? <Button type="button" size="sm" variant="outline" onClick={() => void deleteToken()}><Trash2 className="h-3.5 w-3.5" />撤销</Button> : null}
+            <Button type="button" size="sm" variant="outline" onClick={() => void saveToken(manualToken.trim())}><Save className="h-3.5 w-3.5" />保存填写</Button>
+            <Button type="button" size="sm" onClick={() => void saveToken()}><RefreshCw className="h-3.5 w-3.5" />生成随机</Button>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -7995,6 +12632,181 @@ function fetchJson(url: string, init: { method: string; body?: Record<string, un
     .catch(() => null)
 }
 
+function flattenProjectTreePaths(tree?: TreeNode | null) {
+  const paths: string[] = []
+  function visit(node?: TreeNode | null) {
+    if (!node) return
+    if (node.path) paths.push(node.path)
+    node.children?.forEach(visit)
+  }
+  visit(tree)
+  return paths
+}
+
+function uniqueProjectPaths(paths: string[]) {
+  return [...new Set(paths.map((item) => item.trim()).filter(Boolean))]
+}
+
+function selectProjectPathRange(paths: string[], anchor: string, target: string, current: string[]) {
+  const anchorIndex = paths.indexOf(anchor)
+  const targetIndex = paths.indexOf(target)
+  if (anchorIndex < 0 || targetIndex < 0) return uniqueProjectPaths([...current, target])
+  const start = Math.min(anchorIndex, targetIndex)
+  const end = Math.max(anchorIndex, targetIndex)
+  return paths.slice(start, end + 1)
+}
+
+function hasProjectEntryDrag(dataTransfer: DataTransfer) {
+  return Array.from(dataTransfer.types || []).includes(PROJECT_ENTRY_DRAG_MIME)
+}
+
+function hasExternalFileDrag(dataTransfer: DataTransfer) {
+  return Array.from(dataTransfer.types || []).includes('Files')
+}
+
+function readProjectEntryDragPayload(dataTransfer: DataTransfer): ProjectEntryDragPayload | null {
+  const raw = dataTransfer.getData(PROJECT_ENTRY_DRAG_MIME)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as ProjectEntryDragPayload
+    if (parsed?.kind === 'project-entry' && typeof parsed.projectId === 'string' && Array.isArray(parsed.paths)) {
+      return {
+        kind: 'project-entry',
+        projectId: parsed.projectId,
+        paths: uniqueProjectPaths(parsed.paths.filter((item): item is string => typeof item === 'string')),
+      }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+async function readDroppedProjectFiles(dataTransfer: DataTransfer): Promise<ProjectUploadEntry[]> {
+  const entries: ProjectUploadEntry[] = []
+  const items = Array.from(dataTransfer.items || [])
+  for (const item of items) {
+    if (item.kind !== 'file') continue
+    const browserEntry = (item as DataTransferItem & { webkitGetAsEntry?: () => BrowserFileSystemEntry | null }).webkitGetAsEntry?.()
+    if (browserEntry) {
+      entries.push(...await readBrowserFileSystemEntry(browserEntry, ''))
+      continue
+    }
+    const file = item.getAsFile()
+    if (file) entries.push({ file, relativePath: normalizeBrowserRelativePath(file.webkitRelativePath || file.name) })
+  }
+  if (entries.length) return entries.filter((item) => item.relativePath)
+
+  return Array.from(dataTransfer.files || [])
+    .map((file) => ({ file, relativePath: normalizeBrowserRelativePath(file.webkitRelativePath || file.name) }))
+    .filter((item) => item.relativePath)
+}
+
+async function readBrowserFileSystemEntry(entry: BrowserFileSystemEntry, parentPath: string): Promise<ProjectUploadEntry[]> {
+  if (entry.isFile && entry.file) {
+    const file = await new Promise<File>((resolve, reject) => {
+      entry.file?.(resolve, reject)
+    })
+    return [{ file, relativePath: normalizeBrowserRelativePath(`${parentPath}${entry.name || file.name}`) }].filter((item) => item.relativePath)
+  }
+
+  if (!entry.isDirectory || !entry.createReader) return []
+  const reader = entry.createReader()
+  const children = await readAllBrowserDirectoryEntries(reader)
+  const nextParent = `${parentPath}${entry.name}/`
+  const files: ProjectUploadEntry[] = []
+  for (const child of children) {
+    files.push(...await readBrowserFileSystemEntry(child, nextParent))
+  }
+  return files
+}
+
+async function readAllBrowserDirectoryEntries(reader: ReturnType<NonNullable<BrowserFileSystemEntry['createReader']>>) {
+  const entries: BrowserFileSystemEntry[] = []
+  while (true) {
+    const batch = await new Promise<BrowserFileSystemEntry[]>((resolve, reject) => {
+      reader.readEntries(resolve, reject)
+    })
+    if (!batch.length) break
+    entries.push(...batch)
+  }
+  return entries
+}
+
+function normalizeBrowserRelativePath(value: string) {
+  const normalized = value.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim()
+  if (!normalized) return ''
+  const segments = normalized.split('/').filter(Boolean)
+  if (!segments.length || segments.some((segment) => segment === '.' || segment === '..')) return ''
+  return segments.join('/')
+}
+
+function normalizeProjectConflicts(value: unknown[]): ProjectEntryConflict[] {
+  return value.flatMap((item) => {
+    if (!isRecord(item)) return []
+    const pathValue = readString(item.path)
+    const targetPath = readString(item.targetPath)
+    return pathValue || targetPath ? [{ path: pathValue, targetPath }] : []
+  })
+}
+
+function normalizeProjectMoves(value: unknown[]): ProjectEntryMove[] {
+  return value.flatMap((item) => {
+    if (!isRecord(item)) return []
+    const oldPath = readString(item.oldPath)
+    const nextPath = readString(item.nextPath)
+    return oldPath && nextPath ? [{ oldPath, nextPath }] : []
+  })
+}
+
+function buildProjectArchiveUrl(projectId: string, paths: string[], raw = false) {
+  const query = new URLSearchParams({ projectId })
+  for (const item of uniqueProjectPaths(paths)) query.append('paths', item)
+  if (raw) query.set('raw', '1')
+  const path = `/api/projects/archive?${query.toString()}`
+  return typeof window === 'undefined' ? path : `${window.location.origin}${path}`
+}
+
+function buildProjectDragDownloadName(projectFileName: string, node: TreeNode, paths: string[], rawDownload: boolean) {
+  if (rawDownload) return node.name || paths[0]?.split('/').pop() || 'download'
+  return paths.length > 1 ? `${projectFileName}-selection.zip` : `${node.name || projectFileName}.zip`
+}
+
+function readDownloadFilename(contentDisposition: string | null) {
+  if (!contentDisposition) return ''
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1])
+    } catch {
+      return utf8Match[1]
+    }
+  }
+  const asciiMatch = contentDisposition.match(/filename="?([^";]+)"?/i)
+  return asciiMatch?.[1] || ''
+}
+
+function triggerBrowserDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename || 'download'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+function deriveProjectFileNameFromZip(value: string) {
+  const base = value
+    .replace(/\.zip$/i, '')
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase()
+  const normalized = /^[a-z]/.test(base) ? base : `p-${base || 'imported-project'}`
+  return normalized.slice(0, 64).replace(/-+$/g, '') || 'imported-project'
+}
+
 function ensureZpmtFileName(value: string) {
   const normalized = value.trim()
   if (!normalized) return 'untitled.zpmt'
@@ -8049,25 +12861,32 @@ function createZamfTemplate(fileName: string) {
 }
 
 function createZpmtContent(input: {
-  promptType: PromptFileType
+  promptKind: ZpmtPromptKind
   outputType: ZpmtOutputType
   provider: AiProviderSummary | null
   model: string
   responseConfig: ZpmtResponseConfig
 }) {
   const modelEntry = input.provider?.models.find((model) => model.id === input.model) || null
+  const outputType = input.promptKind === 'image' ? 'image' : 'text'
   return serializeZpmtDocument(
     {
+      schema: 'ccks.zpmt',
+      version: 3,
+      kind: input.promptKind,
       config: {
-        outputType: input.outputType,
+        outputType,
         providerFile: input.provider?.filePath || '',
         providerId: input.provider?.id || '',
         providerName: input.provider?.name || '',
         model: input.model,
-        responseConfig: normalizeResponseConfig(input.outputType, input.responseConfig, input.provider?.providerType, input.model, modelEntry),
+        responseConfig: normalizeResponseConfig(outputType, input.responseConfig, input.provider?.providerType, input.model, modelEntry),
       },
-      system: input.promptType === 'agent' ? '\n' : '',
+      system: input.promptKind === 'agent' ? '\n' : '',
       user: '',
+      prompt: '',
+      negativePrompt: '',
+      style: createDefaultZpmtImageStyle(resolveAiModelPromptSurface(outputType, input.provider?.providerType, input.model, modelEntry)),
       tools: [],
       metadata: { schemaVersion: 2, recipeVariables: [] },
     },
@@ -8165,6 +12984,7 @@ function serializeZamfDocument(document: ZamfDocument) {
         capabilities: model.capabilities,
         toolCalling: model.toolCalling,
         ...(model.parameterSchema === undefined || model.parameterSchema === '' ? {} : { parameterSchema: model.parameterSchema }),
+        ...(model.promptSurface === undefined || model.promptSurface === '' ? {} : { promptSurface: model.promptSurface }),
         ...(model.defaultResponseConfig === undefined || model.defaultResponseConfig === '' ? {} : { defaultResponseConfig: model.defaultResponseConfig }),
         ...(model.presetRef ? { presetRef: model.presetRef } : {}),
       })),
@@ -8176,11 +12996,13 @@ function serializeZamfDocument(document: ZamfDocument) {
 
 function parseZpmtContent(content: string, providers: AiProviderSummary[] = []): ZpmtDocument | null {
   try {
-    const parsed = JSON.parse(content) as Partial<ZpmtDocument> | null
-    if (!parsed || typeof parsed !== 'object') return null
+    const parsed = JSON.parse(content) as Record<string, unknown> | null
+    if (!isRecord(parsed)) return null
     const config = parsed.config && typeof parsed.config === 'object' ? parsed.config : {}
     const rawOutputType = (config as { outputType?: unknown }).outputType
-    const outputType = normalizeZpmtOutputType(rawOutputType)
+    const rawKind = readString(parsed.kind)
+    const inferredKind = normalizeZpmtPromptKind(rawKind || inferLegacyZpmtPromptKind(parsed, rawOutputType))
+    const outputType = inferredKind === 'image' ? 'image' : 'text'
     const providerFile = readString((config as { providerFile?: unknown }).providerFile)
     const providerId = readString((config as { providerId?: unknown }).providerId)
     const providerName = readString((config as { providerName?: unknown }).providerName)
@@ -8201,8 +13023,14 @@ function parseZpmtContent(content: string, providers: AiProviderSummary[] = []):
         model: modelId,
         responseConfig: normalizeResponseConfig(outputType, legacyJsonResponseConfig, selectedModelContext?.provider.providerType, modelId, selectedModelContext?.model),
       },
-      system: typeof parsed.system === 'string' ? parsed.system : '',
-      user: typeof parsed.user === 'string' ? parsed.user : '',
+      schema: 'ccks.zpmt',
+      version: 3,
+      kind: inferredKind,
+      system: readZpmtMessageContent(parsed.messages, 'system') || readString(parsed.system),
+      user: readZpmtMessageContent(parsed.messages, 'user') || readString(parsed.user),
+      prompt: readString(parsed.prompt) || (outputType === 'image' ? readString(parsed.user) : ''),
+      negativePrompt: readString(parsed.negativePrompt),
+      style: normalizeZpmtImageStyle(parsed.style, resolveAiModelPromptSurface(outputType, selectedModelContext?.provider.providerType, modelId, selectedModelContext?.model)),
       tools: normalizeZpmtTools((parsed as { tools?: unknown }).tools),
       metadata: normalizeRecipeVariableMetadata((parsed as { metadata?: unknown }).metadata),
     }
@@ -8218,40 +13046,55 @@ function serializeZpmtDocument(
 ) {
   const selectedModelContext = getSelectedAiModelContext(providers, document.config.providerId, document.config.model, document.config.providerFile)
   const metadata = buildZpmtRecipeVariableMetadata(document, categories)
-  return `${JSON.stringify(
-    {
-      config: {
-        outputType: normalizeZpmtOutputType(document.config.outputType),
-        providerFile: document.config.providerFile,
-        providerId: document.config.providerId,
-        providerName: document.config.providerName,
-        model: document.config.model,
-        responseConfig: normalizeResponseConfig(
-          document.config.outputType,
-          document.config.responseConfig,
-          selectedModelContext?.provider.providerType,
-          document.config.model,
-          selectedModelContext?.model,
-        ),
-      },
-      system: document.system,
-      user: document.user,
-      tools: document.tools.map((tool) => ({
-        id: tool.id,
-        toolId: tool.toolId || tool.id,
-        categoryId: tool.categoryId,
-        name: tool.name,
-        description: tool.description,
-        candidates: tool.candidates,
-        multiple: tool.multiple,
-        config: tool.config,
-        schemaVersion: tool.schemaVersion || AI_TOOL_SCHEMA_VERSION,
-      })),
-      metadata,
+  const outputType = document.kind === 'image' ? 'image' : 'text'
+  const base = {
+    schema: 'ccks.zpmt',
+    version: 3,
+    kind: document.kind,
+    config: {
+      outputType,
+      providerFile: document.config.providerFile,
+      providerId: document.config.providerId,
+      providerName: document.config.providerName,
+      model: document.config.model,
+      responseConfig: normalizeResponseConfig(
+        outputType,
+        document.config.responseConfig,
+        selectedModelContext?.provider.providerType,
+        document.config.model,
+        selectedModelContext?.model,
+      ),
     },
-    null,
-    2,
-  )}\n`
+    metadata,
+  }
+  const payload =
+    document.kind === 'image'
+      ? {
+          ...base,
+          prompt: document.prompt,
+          ...(document.negativePrompt.trim() ? { negativePrompt: document.negativePrompt } : {}),
+          ...(hasZpmtImageStyleValue(document.style) ? { style: document.style } : {}),
+        }
+      : {
+          ...base,
+          messages: buildZpmtMessages(document),
+          ...(document.kind === 'agent' && document.tools.length
+            ? {
+                tools: document.tools.map((tool) => ({
+                  id: tool.id,
+                  toolId: tool.toolId || tool.id,
+                  categoryId: tool.categoryId,
+                  name: tool.name,
+                  description: tool.description,
+                  candidates: tool.candidates,
+                  multiple: tool.multiple,
+                  config: tool.config,
+                  schemaVersion: tool.schemaVersion || AI_TOOL_SCHEMA_VERSION,
+                })),
+              }
+            : {}),
+        }
+  return `${JSON.stringify(payload, null, 2)}\n`
 }
 
 function buildZpmtRecipeVariableMetadata(
@@ -8261,7 +13104,7 @@ function buildZpmtRecipeVariableMetadata(
   const seen = new Set<string>()
   const recipeVariables: RecipeVariableSnapshot[] = []
 
-  for (const tokenRange of [...findPromptTokenRanges(document.system), ...findPromptTokenRanges(document.user)]) {
+  for (const tokenRange of findZpmtDocumentPromptTokenRanges(document)) {
     const parsed = parsePromptToken(tokenRange.token)
     if (!parsed || parsed.tokenType !== 'recipe') continue
     const params = getPromptTokenParamMap(parsed.params)
@@ -8294,8 +13137,76 @@ function buildZpmtRecipeVariableMetadata(
   }
 }
 
-function normalizeZpmtOutputType(value: unknown): ZpmtOutputType {
-  return value === 'image' || value === 'text' ? value : 'text'
+function normalizeZpmtPromptKind(value: unknown): ZpmtPromptKind {
+  return value === 'image' || value === 'agent' || value === 'chat' ? value : 'chat'
+}
+
+function isZpmtPromptSectionKey(value: ZpmtSectionKey): value is ZpmtPromptSectionKey {
+  return value === 'system' || value === 'user' || value === 'prompt' || value === 'negativePrompt' || value === 'style'
+}
+
+function inferLegacyZpmtPromptKind(parsed: Record<string, unknown>, rawOutputType: unknown): ZpmtPromptKind {
+  if (readString(rawOutputType) === 'image') return 'image'
+  if (readString(parsed.system).trim()) return 'agent'
+  return 'chat'
+}
+
+function readZpmtMessageContent(value: unknown, role: 'system' | 'user') {
+  const source = Array.isArray(value) ? value : []
+  const message = source.find((item) => isRecord(item) && item.role === role)
+  return isRecord(message) ? readString(message.content) : ''
+}
+
+function buildZpmtMessages(document: ZpmtDocument) {
+  if (document.kind === 'agent') {
+    return [
+      ...(document.system.trim() ? [{ role: 'system', content: document.system }] : []),
+      { role: 'user', content: document.user },
+    ]
+  }
+  return [{ role: 'user', content: document.user }]
+}
+
+function createDefaultZpmtImageStyle(surface: AiModelPromptSurface): ZpmtImageStyle {
+  const styleInput = surface.kind === 'image-prompt' ? surface.styleInput : { type: 'free-text' as ImageStyleInputType }
+  return {
+    mode: styleInput.type,
+    value: styleInput.type === 'preset' || styleInput.type === 'preset-with-extra-text' ? styleInput.options?.[0]?.value || '' : '',
+    extraText: '',
+  }
+}
+
+function normalizeZpmtImageStyle(value: unknown, surface: AiModelPromptSurface): ZpmtImageStyle {
+  const defaults = createDefaultZpmtImageStyle(surface)
+  if (typeof value === 'string') return { ...defaults, mode: 'free-text', value, extraText: '' }
+  if (!isRecord(value)) return defaults
+  const rawMode = readString(value.mode)
+  const mode: ImageStyleInputType =
+    rawMode === 'preset' || rawMode === 'preset-with-extra-text' || rawMode === 'free-text'
+      ? rawMode
+      : defaults.mode
+  return {
+    mode,
+    value: readString(value.value),
+    extraText: readString(value.extraText),
+  }
+}
+
+function hasZpmtImageStyleValue(style: ZpmtImageStyle) {
+  return Boolean(style.value.trim() || style.extraText.trim())
+}
+
+function getZpmtStyleText(style: ZpmtImageStyle) {
+  return [style.value, style.extraText].map((item) => item.trim()).filter(Boolean).join('\n')
+}
+
+function getZpmtStyleEditableText(style: ZpmtImageStyle) {
+  return style.mode === 'preset' || style.mode === 'preset-with-extra-text' ? style.extraText : style.value
+}
+
+function updateZpmtStyleEditableText(style: ZpmtImageStyle, value: string): ZpmtImageStyle {
+  if (style.mode === 'preset' || style.mode === 'preset-with-extra-text') return { ...style, extraText: value }
+  return { ...style, value }
 }
 
 function normalizeResponseConfig(
@@ -8319,7 +13230,7 @@ function createPromptEntryDialog(folder: TreeNode, providers: AiProviderSummary[
     mode: 'prompt',
     folder,
     name: '',
-    promptType: 'simple',
+    promptKind: 'chat',
     outputType,
     providerId: selection.providerRef,
     model: selection.model,
@@ -8348,6 +13259,10 @@ function selectDefaultAiModel(providers: AiProviderSummary[], outputType: ZpmtOu
 
 function getAiProviderRef(provider: AiProviderSummary) {
   return provider.filePath || provider.id
+}
+
+function isCommonAiProvider(provider: AiProviderSummary) {
+  return !provider.filePath && provider.id.startsWith(COMMON_AI_PROVIDER_ID_PREFIX)
 }
 
 function findAiProvider(providers: AiProviderSummary[], providerRef: string, providerFile = '') {
@@ -8381,9 +13296,22 @@ function getZpmtModelCapabilityGate(model: AiProviderModel | null | undefined): 
 
 function canUseInstructionPayload(payload: InstructionDragPayload, capabilities: ZpmtModelCapabilityGate) {
   if (payload.kind === 'tool') return capabilities.supportsTools
+  if (payload.kind === 'constant') return true
   if (payload.kind === 'variable' && payload.variableType === 'image') return capabilities.supportsReferenceImage
   if (payload.kind === 'variable' && payload.variableType === 'file') return capabilities.supportsReferenceFile
   return true
+}
+
+function canDropInstructionInPromptSection(
+  payload: InstructionDragPayload,
+  _promptKind: ZpmtPromptKind,
+  sectionKey: ZpmtPromptSectionKey,
+  capabilities: ZpmtModelCapabilityGate,
+) {
+  if (!canUseInstructionPayload(payload, capabilities)) return false
+  if (payload.kind !== 'variable') return true
+  if (payload.variableType !== 'image' && payload.variableType !== 'file') return true
+  return sectionKey !== 'system'
 }
 
 function isPromptTokenUnsupported(parsed: { variableType?: VariableType } | null, capabilities: ZpmtModelCapabilityGate) {
@@ -8397,6 +13325,10 @@ function getZpmtCapabilityRenderKey(capabilities: ZpmtModelCapabilityGate) {
     capabilities.supportsReferenceImage ? 'image' : 'no-image',
     capabilities.supportsReferenceFile ? 'file' : 'no-file',
   ].join(':')
+}
+
+function findZpmtConstant(kind: string) {
+  return ZPMT_CONSTANTS.find((item) => item.id === kind) || null
 }
 
 function readNumberInput(value: string, fallback: number) {
@@ -8488,6 +13420,7 @@ function normalizeZamfModelForEditor(value: unknown, index: number): ZamfModel {
     capabilities: capabilities.length ? capabilities : ['text'],
     toolCalling: normalizeToolCallingOption(source.toolCalling),
     parameterSchema: source.parameterSchema,
+    promptSurface: source.promptSurface,
     defaultResponseConfig: source.defaultResponseConfig,
     presetRef: normalizeAiModelPresetRef(source.presetRef),
   }
@@ -8589,11 +13522,15 @@ function getVariableDetailConfig(type: VariableType, t: WorkbenchCopy) {
   return configs[type]
 }
 
-function createVariableToken(type: VariableType, name: string, detailValue: string, defaultValue: string) {
+function createVariableToken(type: VariableType, name: string, detailValue: string, defaultValue: string, arrayItemType: ArrayItemType | '' = '') {
   const tokenType = VARIABLE_TOKEN_TYPES[type]
   const parts = [`${tokenType}:${name}`]
   const detail = detailValue.trim()
   const defaultText = defaultValue.trim()
+
+  if (type === 'array' && arrayItemType) {
+    parts.push(formatEqualsTagParam('itemType', arrayItemType))
+  }
 
   if (detail) {
     if (type === 'number') parts.push(formatEqualsTagParam('range', detail))
@@ -8620,6 +13557,29 @@ function createRecipeToken(item: RecipeVariableItem, name: string, defaultValue:
   return `{{${parts.join(';')}}}`
 }
 
+function createConstantToken(item: ConstantInstructionItem, locale: Locale) {
+  return `{{const:${sanitizePromptTokenName(item.tokenName[locale]) || item.id};kind=${item.id}}}`
+}
+
+function templateRecipeToken(context: PromptTemplateBuildContext, variableId: string, defaultValues?: string[]) {
+  const sourceId = `system:${variableId}`
+  const match =
+    findRecipeVariableBySourceId(context.categories, sourceId) ||
+    findRecipeVariableBySourceId(DEFAULT_RECIPE_VARIABLE_CATEGORIES, sourceId)
+  const item = match?.variable
+  if (item) return createRecipeToken(item, sanitizePromptTokenName(item.name.zh) || item.variableName, defaultValues || item.defaultValues)
+
+  const tokenName = createIdentifierSeed(variableId) || sanitizePromptTokenName(variableId) || '配方变量'
+  const parts = [`recipe:${tokenName}`, formatEqualsTagParam('source', sourceId), formatEqualsTagParam('multi', 'true')]
+  const defaultText = (defaultValues || []).map((value) => value.trim()).filter(Boolean).join(',')
+  if (defaultText) parts.push(formatEqualsTagParam('default', defaultText))
+  return `{{${parts.join(';')}}}`
+}
+
+function getTemplateRecipeCategories(categories: RecipeVariableCategory[]) {
+  return [...categories, ...DEFAULT_RECIPE_VARIABLE_CATEGORIES]
+}
+
 function formatPrefixTagParam(key: string, value: string) {
   const trimmed = sanitizeTagParamValue(value)
   return trimmed.startsWith(key) ? trimmed : `${key}${trimmed}`
@@ -8632,6 +13592,24 @@ function formatEqualsTagParam(key: string, value: string) {
 
 function sanitizeTagParamValue(value: string) {
   return value.trim().replace(/[{};]/g, '_')
+}
+
+function sanitizePromptTokenName(value: string) {
+  return value
+    .trim()
+    .replace(/[{};:\s]+/g, '_')
+    .replace(/[^\p{L}\p{N}_-]/gu, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 64)
+}
+
+function isValidPromptTokenName(value: string) {
+  return TAG_NAME_PATTERN.test(value)
+}
+
+function normalizeArrayItemType(value: unknown): ArrayItemType | '' {
+  return typeof value === 'string' && ARRAY_ITEM_TYPES.includes(value as ArrayItemType) ? value as ArrayItemType : ''
 }
 
 function insertTextAtOffset(value: string, offset: number, insertion: string) {
@@ -8647,10 +13625,10 @@ function replaceTextRange(value: string, start: number, end: number, replacement
 
 function extractZpmtTagNames(...texts: string[]) {
   const names = new Set<string>()
-  const tokenPattern = /\{\{\s*([a-z]+):([a-z][a-zA-Z0-9_]*)/g
   for (const text of texts) {
-    for (const match of text.matchAll(tokenPattern)) {
-      names.add(match[2])
+    for (const tokenRange of findPromptTokenRanges(text)) {
+      const parsed = parsePromptToken(tokenRange.token)
+      if (parsed && parsed.tokenType !== 'const') names.add(parsed.name)
     }
   }
   return names
@@ -8728,6 +13706,7 @@ function getZpmtTagDialogInitialValues(dialog: PendingZpmtTagDialog) {
     return {
       name: '',
       originalName: '',
+      arrayItemType: '' as ArrayItemType | '',
       detailValue: '',
       defaultValue: '',
       recipeDefaultValues: [] as string[],
@@ -8739,6 +13718,7 @@ function getZpmtTagDialogInitialValues(dialog: PendingZpmtTagDialog) {
     return {
       name: '',
       originalName: '',
+      arrayItemType: '' as ArrayItemType | '',
       detailValue: '',
       defaultValue: '',
       recipeDefaultValues: [] as string[],
@@ -8763,8 +13743,9 @@ function getZpmtTagDialogInitialValues(dialog: PendingZpmtTagDialog) {
   return {
     name: parsed.name,
     originalName: parsed.name,
+    arrayItemType: variableType === 'array' ? normalizeArrayItemType(params.itemType || params.type) : '',
     detailValue,
-    defaultValue: variableType && variableType !== 'color' && variableType !== 'boolean' ? params.default || '' : '',
+    defaultValue: variableType && isVariableDefaultValueSupported(variableType) ? params.default || '' : '',
     recipeDefaultValues: parsed.tokenType === 'recipe' && params.default ? params.default.split(',').map((item) => item.trim()).filter(Boolean) : [],
   }
 }
@@ -8874,19 +13855,23 @@ function resolvePromptTokenPresentation(
     }
   }
 
-  const styleKey = parsed.variableType || (parsed.tokenType === 'recipe' ? 'recipe' : 'unknown')
+  const styleKey = parsed.variableType || (parsed.tokenType === 'recipe' ? 'recipe' : parsed.tokenType === 'const' ? 'constant' : 'unknown')
   const unsupported = isPromptTokenUnsupported(parsed, modelCapabilities)
   const params = getPromptTokenParamMap(parsed.params)
   const recipeItem = parsed.tokenType === 'recipe' ? findRecipeVariableItemById(params.source || '', categories) : null
   const recipeSnapshot = parsed.tokenType === 'recipe' ? findRecipeVariableSnapshot(metadata, parsed.name, params.source || '') : null
+  const constantItem = parsed.tokenType === 'const' ? findZpmtConstant(params.kind || parsed.name) : null
   const typeLabel = parsed.variableType
     ? t.variableTypes[parsed.variableType]
     : parsed.tokenType === 'recipe'
       ? recipeItem?.name[locale] || recipeSnapshot?.name[locale] || t.recipeVariableLabel
+      : parsed.tokenType === 'const'
+        ? constantItem?.name[locale] || t.constantVariableLabel
       : parsed.tokenType
   const label = `${typeLabel}:${parsed.name}`
   const detailLines = parsed.params.map((param) => formatPromptTokenParam(param, t, locale, categories, metadata)).filter(Boolean)
   if (unsupported) detailLines.unshift(t.unsupportedByModel)
+  if (constantItem?.description[locale]) detailLines.push(constantItem.description[locale])
   if (recipeItem?.content[locale] || recipeSnapshot?.content[locale]) {
     detailLines.push(recipeItem?.content[locale] || recipeSnapshot?.content[locale] || '')
   }
@@ -8907,14 +13892,16 @@ function parsePromptToken(token: string) {
     .map((part) => part.trim())
     .filter(Boolean)
   const [head, ...params] = parts
-  const match = /^([a-z]+):([a-z][a-zA-Z0-9_]*)$/.exec(head || '')
-  if (!match) return null
-  const tokenType = match[1]
+  const separatorIndex = (head || '').indexOf(':')
+  if (separatorIndex <= 0) return null
+  const tokenType = (head || '').slice(0, separatorIndex).trim()
+  const name = (head || '').slice(separatorIndex + 1).trim()
+  if (!/^[a-z]+$/.test(tokenType) || !isValidPromptTokenName(name)) return null
   const variableType = VARIABLE_TYPES_BY_TOKEN[tokenType as VariableTokenType]
 
   return {
     tokenType,
-    name: match[2],
+    name,
     variableType,
     params,
   }
@@ -8930,12 +13917,13 @@ function formatPromptTokenParam(
   const parsed = parsePromptTokenParam(param)
   if (!parsed) return param
   const label = t.promptTokenParams[parsed.key as keyof WorkbenchCopy['promptTokenParams']] || parsed.key
-  const value =
-    parsed.key === 'multi' && (parsed.value === 'true' || parsed.value === 'false')
-      ? t.booleanText[parsed.value]
-      : parsed.key === 'source'
-        ? resolveRecipeVariableSourceLabel(parsed.value, categories, metadata, locale) || parsed.value
-      : parsed.value
+  const arrayItemType = parsed.key === 'itemType' ? normalizeArrayItemType(parsed.value) : ''
+  let value = parsed.value
+
+  if (arrayItemType) value = t.arrayItemTypes[arrayItemType]
+  else if (parsed.key === 'multi' && (parsed.value === 'true' || parsed.value === 'false')) value = t.booleanText[parsed.value]
+  else if (parsed.key === 'source') value = resolveRecipeVariableSourceLabel(parsed.value, categories, metadata, locale) || parsed.value
+
   return `${label}: ${value}`
 }
 
@@ -8986,10 +13974,21 @@ function escapeMarkdownLinkLabel(value: string) {
 }
 
 function getZpmtPromptMode(document: ZpmtDocument): PromptFileType {
-  return document.system.length > 0 ? 'agent' : 'simple'
+  return document.kind === 'agent' ? 'agent' : 'chat'
 }
 
 function buildZpmtPreviewMarkdown(document: ZpmtDocument, promptMode: PromptFileType) {
+  if (document.kind === 'image') {
+    return [
+      `## Prompt`,
+      document.prompt.trim(),
+      document.negativePrompt.trim() ? `## Negative Prompt\n\n${document.negativePrompt.trim()}` : '',
+      getZpmtStyleText(document.style).trim() ? `## Style\n\n${getZpmtStyleText(document.style).trim()}` : '',
+      `## Params`,
+      `\`\`\`json\n${JSON.stringify(document.config.responseConfig, null, 2)}\n\`\`\``,
+    ].filter(Boolean).join('\n\n')
+  }
+
   if (promptMode === 'agent') {
     return [`## System`, document.system.trim(), `## User`, document.user.trim()].filter(Boolean).join('\n\n')
   }
@@ -9069,9 +14068,9 @@ function createDefaultWorkbenchLayout(rowCount = DEFAULT_GRID_ROWS): GridLayoutI
 
   return [
     { i: 'files', x: 0, y: 0, w: 5, h: rows, minW: 3, minH: 8 },
-    { i: 'editor', x: 5, y: 0, w: 14, h: rows, minW: 8, minH: 9 },
-    { i: 'inspector', x: 19, y: 0, w: 5, h: instructionRows, minW: 4, minH: 6 },
-    { i: 'tests', x: 19, y: instructionRows, w: 5, h: testRows, minW: 4, minH: 6 },
+    { i: 'editor', x: 5, y: 0, w: 11, h: rows, minW: 8, minH: 9 },
+    { i: 'inspector', x: 16, y: 0, w: 8, h: instructionRows, minW: 5, minH: 6 },
+    { i: 'tests', x: 16, y: instructionRows, w: 8, h: testRows, minW: 5, minH: 6 },
   ]
 }
 
@@ -9301,14 +14300,14 @@ function isDefaultWorkbenchLayout(layout: GridLayoutItem[], rowCount = DEFAULT_G
     files.w === 5 &&
     editor.x === 5 &&
     editor.y === 0 &&
-    editor.w === 14 &&
+    (editor.w === 11 || editor.w === 14) &&
     editor.h === files.h &&
-    inspector.x === 19 &&
+    (inspector.x === 16 || inspector.x === 19) &&
     inspector.y === 0 &&
-    inspector.w === 5 &&
-    tests.x === 19 &&
+    (inspector.w === 8 || inspector.w === 5) &&
+    (tests.x === 16 || tests.x === 19) &&
     tests.y === inspector.h &&
-    tests.w === 5 &&
+    (tests.w === 8 || tests.w === 5) &&
     inspector.h + tests.h === files.h
   )
 }

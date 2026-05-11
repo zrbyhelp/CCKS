@@ -60,14 +60,14 @@ export async function POST(request: NextRequest) {
 
   const body = await request.json().catch(() => null)
   try {
-    const project = await createProjectFile(user.id, {
+    const result = await createProjectFile(user.id, {
       projectId: body?.projectId,
       parentPath: body?.parentPath,
       fileName: body?.fileName,
       content: body?.content,
     })
 
-    return NextResponse.json({ ok: true, project }, { status: 201 })
+    return NextResponse.json({ ok: true, project: result.project, file: result.file }, { status: 201 })
   } catch (error) {
     if (isProjectStoreError(error)) {
       return NextResponse.json({ ok: false, code: error.code, message: error.message }, { status: 400 })

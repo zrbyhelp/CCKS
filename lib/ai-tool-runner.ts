@@ -80,7 +80,7 @@ export class AiToolRunnerError extends Error {
 
 function readCurrentTime(input: AiToolConfig) {
   const date = new Date()
-  const timezone = readTimezone(input.timezone) || readTimezone(process.env.CCKS_DEFAULT_TIMEZONE) || Intl.DateTimeFormat().resolvedOptions().timeZone
+  const timezone = readTimezone(input.timezone) || Intl.DateTimeFormat().resolvedOptions().timeZone
   const locale = readLocale(input.locale)
   const formatter = new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', {
     dateStyle: 'full',
@@ -99,7 +99,7 @@ function readCurrentTime(input: AiToolConfig) {
 }
 
 function readTimezoneInfo(input: AiToolConfig) {
-  const timezone = readTimezone(input.timezone) || readTimezone(process.env.CCKS_DEFAULT_TIMEZONE) || Intl.DateTimeFormat().resolvedOptions().timeZone
+  const timezone = readTimezone(input.timezone) || Intl.DateTimeFormat().resolvedOptions().timeZone
   const now = new Date()
   const offsetMinutes = getTimezoneOffsetMinutes(timezone, now)
   const januaryOffset = getTimezoneOffsetMinutes(timezone, new Date(Date.UTC(now.getUTCFullYear(), 0, 1)))
@@ -117,7 +117,7 @@ function readTimezoneInfo(input: AiToolConfig) {
 }
 
 async function searchWeb(input: AiToolConfig, queryOverride?: string) {
-  const apiKey = requireEnv('BRAVE_SEARCH_API_KEY', '未配置 BRAVE_SEARCH_API_KEY，无法使用 Web 搜索')
+  const apiKey = readRequiredString(input.braveSearchApiKey, '请在工具运行配置中填写 Brave Search API Key')
   const query = readRequiredString(queryOverride || input.query, '搜索关键词不能为空')
   const count = clamp(readNumber(input.count, 5), 1, 20)
   const language = readLocale(input.language)
@@ -154,7 +154,8 @@ async function fetchWebContent(input: AiToolConfig, urlOverride?: string) {
   const maxChars = clamp(readNumber(input.maxChars, 12000), 1000, 60000)
   const readerUrl = `https://r.jina.ai/${targetUrl}`
   const headers: Record<string, string> = { accept: 'text/plain' }
-  if (process.env.JINA_API_KEY) headers.authorization = `Bearer ${process.env.JINA_API_KEY}`
+  const jinaApiKey = readString(input.jinaApiKey)
+  if (jinaApiKey) headers.authorization = `Bearer ${jinaApiKey}`
 
   const text = await fetchText(readerUrl, { headers, errorMessage: '网页内容获取失败' })
   return {
@@ -174,9 +175,10 @@ async function searchWikipedia(input: AiToolConfig, queryOverride?: string) {
   url.searchParams.set('limit', String(limit))
   const headers: Record<string, string> = {
     accept: 'application/json',
-    'api-user-agent': process.env.WIKIMEDIA_USER_AGENT || 'ccks/1.0 (https://localhost)',
+    'api-user-agent': readString(input.wikimediaUserAgent) || 'ccks/1.0 (https://localhost)',
   }
-  if (process.env.WIKIMEDIA_ACCESS_TOKEN) headers.authorization = `Bearer ${process.env.WIKIMEDIA_ACCESS_TOKEN}`
+  const wikimediaAccessToken = readString(input.wikimediaAccessToken)
+  if (wikimediaAccessToken) headers.authorization = `Bearer ${wikimediaAccessToken}`
 
   const data = await fetchJson(url.toString(), { headers, errorMessage: '维基百科查询失败' })
   const pages = readArray(readRecord(data).pages).slice(0, limit).map((item) => {
@@ -240,7 +242,7 @@ async function fetchWeather(input: AiToolConfig, locationOverride?: string) {
 }
 
 async function geocode(input: AiToolConfig) {
-  const token = requireEnv('MAPBOX_ACCESS_TOKEN', '未配置 MAPBOX_ACCESS_TOKEN，无法使用地图 / 地理工具')
+  const token = readRequiredString(input.mapboxAccessToken, '请在工具运行配置中填写 Mapbox Access Token')
   const mode = readString(input.mode) === 'reverse' ? 'reverse' : 'forward'
   const language = readLocale(input.language)
   const limit = clamp(readNumber(input.limit, 5), 1, 10)
@@ -278,13 +280,14 @@ async function geocode(input: AiToolConfig) {
 }
 
 async function createTempEmail(input: AiToolConfig) {
-  const baseUrl = requireEnv('CLOUDFLARE_TEMP_EMAIL_BASE_URL', '未配置 CLOUDFLARE_TEMP_EMAIL_BASE_URL，无法创建临时邮箱')
-  const adminAuth = process.env.CLOUDFLARE_TEMP_EMAIL_ADMIN_AUTH || ''
+  const baseUrl = readRequiredString(input.tempEmailBaseUrl, '请在工具运行配置中填写临时邮箱服务地址')
+  const adminAuth = readString(input.tempEmailAdminAuth)
+  const customAuth = readString(input.tempEmailCustomAuth)
   const endpoint = adminAuth ? '/admin/new_address' : '/api/new_address'
   const response = await fetchJson(`${trimTrailingSlash(baseUrl)}${endpoint}`, {
     method: 'POST',
     headers: {
-      ...tempEmailHeaders(),
+      ...tempEmailHeaders('', customAuth),
       ...(adminAuth ? { 'x-admin-auth': adminAuth } : {}),
     },
     body: {
@@ -299,16 +302,17 @@ async function createTempEmail(input: AiToolConfig) {
 }
 
 async function getTempEmail(input: AiToolConfig) {
-  const baseUrl = requireEnv('CLOUDFLARE_TEMP_EMAIL_BASE_URL', '未配置 CLOUDFLARE_TEMP_EMAIL_BASE_URL，无法读取临时邮箱')
+  const baseUrl = readRequiredString(input.tempEmailBaseUrl, '请在工具运行配置中填写临时邮箱服务地址')
+  const customAuth = readString(input.tempEmailCustomAuth)
   const address = readRequiredString(input.address, '邮箱地址不能为空')
   const addressJwt = readRequiredString(input.addressJwt, 'Address JWT 不能为空')
   const mailId = readString(input.mailId)
   if (mailId) {
     const parsedUrl = `${trimTrailingSlash(baseUrl)}/api/parsed_mail/${encodeURIComponent(mailId)}`
-    return fetchJson(parsedUrl, { headers: tempEmailHeaders(addressJwt), errorMessage: '邮件详情读取失败' }).catch((error) => {
+    return fetchJson(parsedUrl, { headers: tempEmailHeaders(addressJwt, customAuth), errorMessage: '邮件详情读取失败' }).catch((error) => {
       if (!isNotFoundToolError(error)) throw error
       return fetchJson(`${trimTrailingSlash(baseUrl)}/api/mail/${encodeURIComponent(mailId)}`, {
-        headers: tempEmailHeaders(addressJwt),
+        headers: tempEmailHeaders(addressJwt, customAuth),
         errorMessage: '邮件详情读取失败',
       })
     })
@@ -317,19 +321,19 @@ async function getTempEmail(input: AiToolConfig) {
   const parsedUrl = new URL(`${trimTrailingSlash(baseUrl)}/api/parsed_mails`)
   parsedUrl.searchParams.set('limit', String(clamp(readNumber(input.limit, 10), 1, 50)))
   parsedUrl.searchParams.set('offset', '0')
-  return fetchJson(parsedUrl.toString(), { headers: tempEmailHeaders(addressJwt), errorMessage: '临时邮箱读取失败' }).catch((error) => {
+  return fetchJson(parsedUrl.toString(), { headers: tempEmailHeaders(addressJwt, customAuth), errorMessage: '临时邮箱读取失败' }).catch((error) => {
     if (!isNotFoundToolError(error)) throw error
     const rawUrl = new URL(`${trimTrailingSlash(baseUrl)}/api/mails`)
     rawUrl.searchParams.set('limit', String(clamp(readNumber(input.limit, 10), 1, 50)))
     rawUrl.searchParams.set('offset', '0')
     rawUrl.searchParams.set('address', address)
-    return fetchJson(rawUrl.toString(), { headers: tempEmailHeaders(addressJwt), errorMessage: '临时邮箱读取失败' })
+    return fetchJson(rawUrl.toString(), { headers: tempEmailHeaders(addressJwt, customAuth), errorMessage: '临时邮箱读取失败' })
   })
 }
 
 async function sendEmail(input: AiToolConfig) {
-  const apiKey = requireEnv('RESEND_API_KEY', '未配置 RESEND_API_KEY，无法发送邮件')
-  const from = requireEnv('RESEND_FROM_EMAIL', '未配置 RESEND_FROM_EMAIL，无法发送邮件')
+  const apiKey = readRequiredString(input.resendApiKey, '请在工具运行配置中填写 Resend API Key')
+  const from = readRequiredString(input.resendFromEmail, '请在工具运行配置中填写发件人邮箱')
   const to = splitValues(readRequiredString(input.to, '收件人不能为空'))
   const subject = readRequiredString(input.subject, '邮件主题不能为空')
   const text = readRequiredString(input.text, '邮件正文不能为空')
@@ -458,8 +462,7 @@ async function fetchText(
   }
 }
 
-function tempEmailHeaders(addressJwt = '') {
-  const customAuth = process.env.CLOUDFLARE_TEMP_EMAIL_CUSTOM_AUTH || ''
+function tempEmailHeaders(addressJwt = '', customAuth = '') {
   return {
     accept: 'application/json',
     ...(addressJwt ? { authorization: `Bearer ${addressJwt}` } : {}),
@@ -536,12 +539,6 @@ function validateHttpUrl(value: string, message: string) {
   } catch {
     throw new AiToolRunnerError('URL_INVALID', message)
   }
-}
-
-function requireEnv(name: string, message: string) {
-  const value = process.env[name]
-  if (!value) throw new AiToolRunnerError('TOOL_ENV_MISSING', message)
-  return value
 }
 
 function readRequiredString(value: unknown, message: string) {

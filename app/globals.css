@@ -442,6 +442,25 @@ select {
   color: #d95a1b;
 }
 
+.zpmt-section__header--with-action {
+  padding-right: 6px;
+  cursor: default;
+}
+
+.zpmt-section__header-toggle {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
 .zpmt-section--collapsed .zpmt-section__header {
   border-bottom: 0;
 }
@@ -568,6 +587,12 @@ select {
   --zpmt-token-bg: #f5f3ff;
   --zpmt-token-border: #c4b5fd;
   --zpmt-token-text: #5b21b6;
+}
+
+.zpmt-token-chip--constant {
+  --zpmt-token-bg: #ecfdf5;
+  --zpmt-token-border: #6ee7b7;
+  --zpmt-token-text: #047857;
 }
 
 .zpmt-token-chip--unknown {

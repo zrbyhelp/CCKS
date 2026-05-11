@@ -18,7 +18,7 @@
 
 首页 `app/page.tsx` 渲染 `components/workbench-shell.tsx`。工作台支持拖拽布局、最小化窗体、还原默认布局、亮色/暗色模式和中英切换。左侧项目区采用 VS Code 风格 Activity Bar，可在文件列表和源代码管理之间切换；项目元数据写入 MySQL，项目文件存储在 `CCKS_PROJECT_ROOT`。
 
-文件树支持打开、保存、重命名、删除、新建文件夹、新建提示词文件，并根据 Git 状态显示颜色与标记。GitHub OAuth 只把 access token 写入浏览器 `localStorage.ccks-github-session`，不写入 MySQL。源代码管理面板读取用户项目目录内的 Git 状态，支持初始化、暂存/取消暂存、丢弃、差异查看、提交、fetch、pull、push、sync、分支切换、设置 remote、发布到 GitHub 和从 GitHub 导入。
+文件树支持打开、保存、重命名、删除、新建文件夹、新建提示词文件、多选、项目内拖拽移动、外部文件/文件夹拖入上传、ZIP 项目导入导出、右键打包下载，并根据 Git 状态显示颜色与标记。GitHub OAuth 只把 access token 写入浏览器 `localStorage.ccks-github-session`，不写入 MySQL。源代码管理面板读取用户项目目录内的 Git 状态，支持初始化、暂存/取消暂存、丢弃、差异查看、提交、fetch、pull、push、sync、分支切换、设置 remote、发布到 GitHub 和从 GitHub 导入。
 
 ## 本地运行
 
@@ -121,6 +121,10 @@ Authorization callback URL: http://localhost:3000/api/github/callback
 - `/api/announcements`：使用服务端凭据拉取门户公告。
 - `/api/projects`：读取或创建项目。
 - `/api/projects/files`：读取和保存项目文件。
+- `/api/projects/archive`：导出整个项目、所选文件 ZIP，或单文件原始下载。
+- `/api/projects/import-zip`：从 ZIP 导入并创建新项目。
+- `/api/projects/upload`：上传本机文件或拖入文件夹内容到项目目录。
+- `/api/projects/entries/move`：移动项目内文件或文件夹位置。
 - `/api/projects/import-github`：使用浏览器传入的 GitHub token 克隆仓库；导入先克隆到临时目录，成功后再写入项目。
 - `/api/projects/source-control`：读取 Git 状态、分组、文件装饰、分支和 remote。
 - `/api/projects/source-control/actions`：执行 init、stage、unstage、discard、commit、fetch、pull、push、sync、branch、remote、publish。
@@ -146,8 +150,34 @@ docker compose down
 - `lib/`：会话、项目文件、Git、Prisma 和通用工具。
 - `prisma/`：MySQL schema。
 - `public/`：静态图片与品牌资源。
+- `docs/development.md`：开发说明。
+- `docs/import-export.md`：项目导入导出与文件拖拽说明。
 - `components.json`：shadcn/ui 配置。
 - `tailwind.config.ts`：Tailwind 配置。
+
+## 许可证
+
+本项目使用自定义非商用源码许可证，允许自用、学习、评估和内部非商用使用，禁止未经授权的商用盈利、付费托管、售卖或作为商业 SaaS/产品的一部分使用。完整条款见 `LICENSE`。项目所有者保留自行商业化本网站、软件和相关服务的权利。
+
+## 来源说明
+
+- 项目代码由项目维护者围绕“从词开始”工作台需求实现，包含提示词文件编辑、变量管理、测试运行、AI 辅助、导入导出和源代码管理等功能。
+- 配方变量、模板与默认提示词内容基于用户提供的实验提示词数据进行人工阅读、整理、蒸馏和扩充；整理过程不依赖第三方 AI 服务调用。
+- 捐赠图片来自本仓库根目录 `捐赠/` 文件夹，仅用于项目说明页展示。
+- LINUX DO 相关内容为社区致谢说明，用于认可其对开源交流与分享氛围的推动，不表示本项目由该社区官方背书或发布。
+
+## 支持项目
+
+如果这个项目对你的学习、研究或自用工作流有帮助，可以通过下面的捐赠码支持后续维护。捐赠完全自愿，不构成商业授权、付费服务承诺或功能交付承诺；商业使用仍需遵守 `LICENSE` 中的授权限制。
+
+<p>
+  <img src="./捐赠/微信图片_20260511124938_184_76.jpg" alt="捐赠码 1" width="220" />
+  <img src="./捐赠/微信图片_20260511124939_185_76.jpg" alt="捐赠码 2" width="220" />
+</p>
+
+## 鸣谢
+
+认可并感谢 LINUX DO 社区对开源交流与分享氛围的推动。社区中持续的技术讨论、经验分享和互助实践，为个人开发者和开源项目提供了重要的交流土壤。
 
 ## 注意事项
 

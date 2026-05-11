@@ -16,8 +16,7 @@ import {
   applyAiModelPreset,
   createAiModelPresetRef,
   findAiModelPresetOption,
-  getAiModelPresetOptionKey,
-  hasAiModelPreset,
+  getAiModelPresetOptionKeyForModel,
   inferAiProviderTypeFromBaseUrl,
   listAiModelPresetOptions,
   type AiProviderModel,
@@ -64,6 +63,7 @@ const COPY = {
   referenceFile: '参考文件',
   modelPreset: '模型预设',
   modelPresetPlaceholder: '选择模型预设',
+  modelPresetMatched: '已匹配',
   outputTypes: {
     text: '文本',
     image: '图片',
@@ -576,8 +576,7 @@ function ModelPreviewList({
   return (
     <div className={cn('mt-1 grid max-h-52 gap-1.5 overflow-auto rounded-md border border-slate-200 bg-slate-50 p-2', compact ? 'max-h-36' : '')}>
       {models.map((model, index) => {
-        const unknownModel = !hasAiModelPreset(providerType, model.id)
-        const presetKey = getAiModelPresetOptionKey(model.presetRef)
+        const presetKey = getAiModelPresetOptionKeyForModel(providerType, model)
         return (
         <div key={model.id} className="grid min-h-8 gap-2 rounded-md border border-slate-200 bg-white px-2 py-1.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,150px)]">
           <div className="min-w-0">
@@ -586,15 +585,18 @@ function ModelPreviewList({
               <ModelTagBadges model={model} />
             </div>
           </div>
-          {unknownModel && onApplyPreset ? (
+          {onApplyPreset ? (
             <label className="grid min-w-0 gap-1 text-[10px] font-black text-slate-500">
-              {COPY.modelPreset}
+              <span className="flex min-w-0 items-center justify-between gap-2">
+                <span>{COPY.modelPreset}</span>
+                {presetKey ? <Badge variant="outline">{COPY.modelPresetMatched}</Badge> : null}
+              </span>
               <select
                 className="h-7 w-full max-w-full rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700 outline-none transition focus:border-[#d95a1b] focus:ring-2 focus:ring-[#d95a1b]/15"
                 value={presetKey}
                 onChange={(event) => onApplyPreset(index, event.target.value)}
               >
-                <option value="">{COPY.modelPresetPlaceholder}</option>
+                <option value="" disabled>{COPY.modelPresetPlaceholder}</option>
                 {listAiModelPresetOptions(providerType).map((option) => (
                   <option key={option.key} value={option.key}>
                     {option.providerName} / {option.model.id}

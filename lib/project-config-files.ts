@@ -4,9 +4,11 @@ import {
   AI_PROVIDER_PRESETS,
   createAiProviderModel,
   inferAiModelParameterSchema,
+  inferAiModelPromptSurface,
   inferAiProviderTypeFromBaseUrl,
   normalizeAiModelPresetRef,
   normalizeAiModelParameterSchema,
+  normalizeAiModelPromptSurface,
   normalizeAiResponseConfig,
   normalizeToolCallingSupport,
   type AiModelCapability,
@@ -80,14 +82,30 @@ export function createSystemZlexContent() {
     {
       schema: 'ccks.zlex',
       version: 1,
+      scope: 'system',
       categories: SYSTEM_RECIPE_VARIABLE_CATEGORIES.map((category) => ({
-        name: category.name.zh || category.name.en || category.id,
-        description: category.description.zh || category.description.en || '',
+        id: category.id,
+        scope: category.scope,
+        icon: category.icon,
+        name: category.name,
+        description: category.description,
+        tip: category.tip,
+        ...(category.createdAt ? { createdAt: category.createdAt } : {}),
+        ...(category.updatedAt ? { updatedAt: category.updatedAt } : {}),
+        ...(category.changeLog.length ? { changeLog: category.changeLog } : {}),
         variables: category.variables.map((variable) => ({
-          variableName: variable.name.zh || variable.name.en || variable.variableName,
-          description: variable.description.zh || variable.description.en || '',
-          candidates: variable.candidates.zh.length ? variable.candidates.zh : variable.candidates.en,
+          id: variable.id,
+          scope: variable.scope,
+          variableName: variable.variableName,
+          name: variable.name,
+          description: variable.description,
+          content: variable.content,
+          candidates: variable.candidates,
+          defaultValues: variable.defaultValues,
           multiple: variable.multiple,
+          ...(variable.createdAt ? { createdAt: variable.createdAt } : {}),
+          ...(variable.updatedAt ? { updatedAt: variable.updatedAt } : {}),
+          ...(variable.changeLog.length ? { changeLog: variable.changeLog } : {}),
         })),
       })),
     },
@@ -253,7 +271,7 @@ function normalizeZlexVariable(
       description,
       content,
       candidates: readPlainCandidates(value.candidates),
-      defaultValues: [],
+      defaultValues: readStringArray(value.defaultValues),
       multiple: value.multiple === true,
       createdAt,
       updatedAt,
@@ -273,10 +291,12 @@ function normalizeModels(value: unknown, providerType: string): AiProviderModel[
     const capabilities = normalizeCapabilities(item.capabilities)
     const inferred = createAiProviderModel(providerType, id, capabilities.length ? capabilities : undefined)
     const schema = normalizeAiModelParameterSchema(item.parameterSchema, inferred.parameterSchema || inferAiModelParameterSchema(providerType, id, inferred.capabilities))
+    const promptSurface = normalizeAiModelPromptSurface(item.promptSurface, inferred.promptSurface || inferAiModelPromptSurface(providerType, id, inferred.capabilities))
     const model: AiProviderModel = {
       ...inferred,
       toolCalling: normalizeToolCallingSupport(item.toolCalling, inferred.toolCalling),
       parameterSchema: schema,
+      promptSurface,
     }
     if (isRecord(item.defaultResponseConfig)) {
       model.defaultResponseConfig = normalizeAiResponseConfig(schema.kind, item.defaultResponseConfig, providerType, id, model)
@@ -326,8 +346,13 @@ function normalizeId(value: unknown) {
 }
 
 function normalizeVariableName(value: unknown) {
-  const normalized = readString(value).slice(0, 64)
-  return /^[a-z][a-zA-Z0-9_]{0,63}$/.test(normalized) ? normalized : ''
+  const normalized = readString(value)
+    .replace(/[{};:\s]+/g, '_')
+    .replace(/[^\p{L}\p{N}_-]/gu, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 64)
+  return /^[\p{L}\p{N}_-]{1,64}$/u.test(normalized) ? normalized : ''
 }
 
 function normalizeIcon(value: unknown) {

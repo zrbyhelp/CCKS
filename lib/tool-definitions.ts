@@ -17,6 +17,7 @@ export type AiToolField = {
   placeholder?: LocaleText
   helper?: LocaleText
   required?: boolean
+  secret?: boolean
   defaultValue?: string | number | boolean
   options?: AiToolFieldOption[]
 }
@@ -148,6 +149,14 @@ export const AI_TOOL_CATEGORIES: AiToolCategory[] = [
         supportsBatch: true,
         fields: [
           { name: 'count', type: 'number', label: { zh: '最大结果数', en: 'Max result count' }, defaultValue: 5 },
+          {
+            name: 'braveSearchApiKey',
+            type: 'text',
+            label: { zh: 'Brave Search API Key', en: 'Brave Search API Key' },
+            placeholder: { zh: '由用户在当前文件内填写', en: 'Filled by the user in this file' },
+            required: true,
+            secret: true,
+          },
         ],
         inputFields: [
           {
@@ -180,6 +189,13 @@ export const AI_TOOL_CATEGORIES: AiToolCategory[] = [
         supportsBatch: true,
         fields: [
           { name: 'maxChars', type: 'number', label: { zh: '最大字符数', en: 'Max characters' }, defaultValue: 12000 },
+          {
+            name: 'jinaApiKey',
+            type: 'text',
+            label: { zh: 'Jina API Key', en: 'Jina API Key' },
+            placeholder: { zh: '可选，使用 Jina Reader 鉴权时填写', en: 'Optional, for authenticated Jina Reader calls' },
+            secret: true,
+          },
         ],
         inputFields: [
           { name: 'url', type: 'text', label: { zh: 'URL', en: 'URL' }, placeholder: { zh: 'https://example.com', en: 'https://example.com' }, required: true },
@@ -198,6 +214,19 @@ export const AI_TOOL_CATEGORIES: AiToolCategory[] = [
         supportsBatch: true,
         fields: [
           { name: 'limit', type: 'number', label: { zh: '最大结果数', en: 'Max result count' }, defaultValue: 5 },
+          {
+            name: 'wikimediaUserAgent',
+            type: 'text',
+            label: { zh: 'Wikimedia User-Agent', en: 'Wikimedia User-Agent' },
+            placeholder: { zh: '例如 ccks/1.0 (contact@example.com)', en: 'e.g. ccks/1.0 (contact@example.com)' },
+          },
+          {
+            name: 'wikimediaAccessToken',
+            type: 'text',
+            label: { zh: 'Wikimedia Access Token', en: 'Wikimedia Access Token' },
+            placeholder: { zh: '可选', en: 'Optional' },
+            secret: true,
+          },
         ],
         inputFields: [
           { name: 'query', type: 'text', label: { zh: '关键词', en: 'Query' }, required: true },
@@ -237,6 +266,14 @@ export const AI_TOOL_CATEGORIES: AiToolCategory[] = [
         supportsBatch: false,
         fields: [
           { name: 'limit', type: 'number', label: { zh: '最大结果数', en: 'Max result count' }, defaultValue: 5 },
+          {
+            name: 'mapboxAccessToken',
+            type: 'text',
+            label: { zh: 'Mapbox Access Token', en: 'Mapbox Access Token' },
+            placeholder: { zh: '由用户在当前文件内填写', en: 'Filled by the user in this file' },
+            required: true,
+            secret: true,
+          },
         ],
         inputFields: [
           {
@@ -272,7 +309,29 @@ export const AI_TOOL_CATEGORIES: AiToolCategory[] = [
         multiple: true,
         requiresConfig: false,
         supportsBatch: false,
-        fields: [],
+        fields: [
+          {
+            name: 'tempEmailBaseUrl',
+            type: 'text',
+            label: { zh: '临时邮箱服务地址', en: 'Temp email service URL' },
+            placeholder: { zh: 'https://your-worker.example.com', en: 'https://your-worker.example.com' },
+            required: true,
+          },
+          {
+            name: 'tempEmailAdminAuth',
+            type: 'text',
+            label: { zh: 'Admin Auth', en: 'Admin Auth' },
+            placeholder: { zh: '可选，创建邮箱走 admin 接口时填写', en: 'Optional, for admin create endpoint' },
+            secret: true,
+          },
+          {
+            name: 'tempEmailCustomAuth',
+            type: 'text',
+            label: { zh: 'Custom Auth', en: 'Custom Auth' },
+            placeholder: { zh: '可选，服务要求自定义鉴权时填写', en: 'Optional, when the service requires custom auth' },
+            secret: true,
+          },
+        ],
         inputFields: [
           { name: 'name', type: 'text', label: { zh: '邮箱前缀', en: 'Email prefix' }, placeholder: { zh: '留空随机生成', en: 'Blank for random' } },
           { name: 'domain', type: 'text', label: { zh: '域名', en: 'Domain' }, placeholder: { zh: '留空使用 Worker 默认域名', en: 'Blank for worker default' } },
@@ -290,6 +349,20 @@ export const AI_TOOL_CATEGORIES: AiToolCategory[] = [
         supportsBatch: false,
         fields: [
           { name: 'limit', type: 'number', label: { zh: '最大列表数量', en: 'Max list limit' }, defaultValue: 10 },
+          {
+            name: 'tempEmailBaseUrl',
+            type: 'text',
+            label: { zh: '临时邮箱服务地址', en: 'Temp email service URL' },
+            placeholder: { zh: 'https://your-worker.example.com', en: 'https://your-worker.example.com' },
+            required: true,
+          },
+          {
+            name: 'tempEmailCustomAuth',
+            type: 'text',
+            label: { zh: 'Custom Auth', en: 'Custom Auth' },
+            placeholder: { zh: '可选，服务要求自定义鉴权时填写', en: 'Optional, when the service requires custom auth' },
+            secret: true,
+          },
         ],
         inputFields: [
           { name: 'address', type: 'text', label: { zh: '邮箱地址', en: 'Email address' }, required: true },
@@ -307,7 +380,23 @@ export const AI_TOOL_CATEGORIES: AiToolCategory[] = [
         multiple: true,
         requiresConfig: false,
         supportsBatch: false,
-        fields: [],
+        fields: [
+          {
+            name: 'resendApiKey',
+            type: 'text',
+            label: { zh: 'Resend API Key', en: 'Resend API Key' },
+            placeholder: { zh: '由用户在当前文件内填写', en: 'Filled by the user in this file' },
+            required: true,
+            secret: true,
+          },
+          {
+            name: 'resendFromEmail',
+            type: 'text',
+            label: { zh: '发件人邮箱', en: 'From email' },
+            placeholder: { zh: 'noreply@example.com', en: 'noreply@example.com' },
+            required: true,
+          },
+        ],
         inputFields: [
           { name: 'to', type: 'text', label: { zh: '收件人', en: 'To' }, placeholder: { zh: 'a@example.com, b@example.com', en: 'a@example.com, b@example.com' }, required: true },
           { name: 'subject', type: 'text', label: { zh: '主题', en: 'Subject' }, required: true },
@@ -403,6 +492,7 @@ export function summarizeAiToolConfig(toolId: string, config: Record<string, unk
     .map((field) => {
       const value = config?.[field.name]
       if (value === undefined || value === null || value === '') return ''
+      if (field.secret) return `${field.label[locale]}: ${locale === 'zh' ? '已填写' : 'filled'}`
       return `${field.label[locale]}: ${String(value).slice(0, 48)}`
     })
     .filter(Boolean)

@@ -50,7 +50,7 @@ type RecipeVariableCatalog = {
   stats: ReturnType<typeof getRecipeVariableStats>
 }
 
-const TAG_NAME_PATTERN = /^[a-z][a-zA-Z0-9_]{0,63}$/
+const TAG_NAME_PATTERN = /^[\p{L}\p{N}_-]{1,64}$/u
 
 export async function listRecipeVariableCatalog(userId: string): Promise<RecipeVariableCatalog> {
   const personal = await prisma.recipeVariableCategory.findMany({
@@ -287,7 +287,7 @@ async function ensurePersonalCopyCategory(userId: string, source: RecipeVariable
 }
 
 async function createAvailableVariableName(userId: string, preferred: string) {
-  const base = TAG_NAME_PATTERN.test(preferred) ? preferred : 'recipeVariable'
+  const base = TAG_NAME_PATTERN.test(preferred) ? preferred : '配方变量'
   const existing = await prisma.recipeVariable.findMany({
     where: { userId, variableName: { startsWith: base } },
     select: { variableName: true },
@@ -342,7 +342,7 @@ function normalizeVariableInput(input: RecipeVariableInput) {
   const defaultValues = readStringArray(input.defaultValues)
 
   if (!TAG_NAME_PATTERN.test(variableName)) {
-    throw new RecipeVariableStoreError('VARIABLE_NAME_INVALID', '变量名必须以小写英文字母开头，只能包含英文、数字或下划线')
+    throw new RecipeVariableStoreError('VARIABLE_NAME_INVALID', '名称可使用中文、英文、数字、下划线或连字符，长度 1-64 个字符')
   }
   if (!name.zh) throw new RecipeVariableStoreError('VARIABLE_TITLE_REQUIRED', '变量名称不能为空')
   if (!content.zh) throw new RecipeVariableStoreError('VARIABLE_CONTENT_REQUIRED', '变量内容不能为空')

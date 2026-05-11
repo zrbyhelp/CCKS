@@ -3,14 +3,19 @@ import type { AiModelCapability, AiProviderModel, AiProviderSummary } from '@/li
 import {
   createAiProviderModel,
   inferAiModelParameterSchema,
+  inferAiModelPromptSurface,
   inferAiProviderTypeFromBaseUrl,
   normalizeAiModelPresetRef,
   normalizeAiModelParameterSchema,
+  normalizeAiModelPromptSurface,
   normalizeAiResponseConfig,
   normalizeToolCallingSupport,
   ZPMT_OUTPUT_TYPES,
 } from '@/lib/ai-presets'
 import { prisma } from '@/lib/prisma'
+
+export const COMMON_AI_PROVIDER_USER_ID = '__ccks_common_ai_providers__'
+export const COMMON_AI_PROVIDER_ID_PREFIX = 'common:'
 
 type AiProviderRecord = {
   id: string
@@ -27,13 +32,32 @@ type AiProviderRecord = {
 const VALID_CAPABILITIES: AiModelCapability[] = ZPMT_OUTPUT_TYPES
 const ENCRYPTION_PREFIX = 'v1'
 
+type ReadProviderOptions = {
+  idPrefix?: string
+  hideBaseUrl?: boolean
+}
+
 export async function listAiProviders(userId: string): Promise<AiProviderSummary[]> {
   const providers = await prisma.aiProvider.findMany({
     where: { userId },
     orderBy: { updatedAt: 'desc' },
   })
 
-  return providers.map(readProvider)
+  return providers.map((provider) => readProvider(provider))
+}
+
+export async function listCommonAiProviders(options: { revealBaseUrl?: boolean } = {}): Promise<AiProviderSummary[]> {
+  const providers = await prisma.aiProvider.findMany({
+    where: { userId: COMMON_AI_PROVIDER_USER_ID },
+    orderBy: { updatedAt: 'desc' },
+  })
+
+  return providers.map((provider) =>
+    readProvider(provider, {
+      idPrefix: COMMON_AI_PROVIDER_ID_PREFIX,
+      hideBaseUrl: options.revealBaseUrl !== true,
+    }),
+  )
 }
 
 export async function createAiProvider(
@@ -66,6 +90,14 @@ export async function createAiProvider(
   })
 
   return readProvider(record)
+}
+
+export async function createCommonAiProvider(input: { name: unknown; providerType?: unknown; baseUrl: unknown; apiKey: unknown; models: unknown }) {
+  const provider = await createAiProvider(COMMON_AI_PROVIDER_USER_ID, input)
+  return {
+    ...provider,
+    id: toCommonAiProviderRef(provider.id),
+  }
 }
 
 export async function updateAiProvider(
@@ -107,6 +139,19 @@ export async function updateAiProvider(
   return readProvider(record)
 }
 
+export async function updateCommonAiProvider(
+  input: { providerId: unknown; name: unknown; providerType?: unknown; baseUrl: unknown; apiKey: unknown; models: unknown },
+) {
+  const provider = await updateAiProvider(COMMON_AI_PROVIDER_USER_ID, {
+    ...input,
+    providerId: readCommonAiProviderId(input.providerId),
+  })
+  return {
+    ...provider,
+    id: toCommonAiProviderRef(provider.id),
+  }
+}
+
 export async function deleteAiProvider(userId: string, providerIdInput: unknown) {
   const providerId = readString(providerIdInput)
   if (!providerId) throw new AiProviderStoreError('PROVIDER_NOT_FOUND', 'AI 供应商不存在')
@@ -117,6 +162,14 @@ export async function deleteAiProvider(userId: string, providerIdInput: unknown)
   return {
     id: provider.id,
     name: provider.name,
+  }
+}
+
+export async function deleteCommonAiProvider(providerIdInput: unknown) {
+  const provider = await deleteAiProvider(COMMON_AI_PROVIDER_USER_ID, readCommonAiProviderId(providerIdInput))
+  return {
+    ...provider,
+    id: toCommonAiProviderRef(provider.id),
   }
 }
 
@@ -148,6 +201,40 @@ export async function pullAiProviderModels(
   }))
 }
 
+export async function pullCommonAiProviderModels(input: { providerId?: unknown; providerType?: unknown; baseUrl: unknown; apiKey?: unknown }) {
+  return pullAiProviderModels(COMMON_AI_PROVIDER_USER_ID, {
+    ...input,
+    providerId: readCommonAiProviderId(input.providerId),
+  })
+}
+
+export async function getCommonAiProviderForRuntime(providerIdInput: unknown) {
+  const providerId = readCommonAiProviderId(providerIdInput)
+  if (!providerId) return null
+  const provider = await prisma.aiProvider.findFirst({ where: { id: providerId, userId: COMMON_AI_PROVIDER_USER_ID } })
+  if (!provider) return null
+
+  return {
+    ...readProvider(provider, { idPrefix: COMMON_AI_PROVIDER_ID_PREFIX }),
+    filePath: '',
+    apiKey: decryptSecret(provider.apiKeyEncrypted),
+    schemaVersion: 1,
+  }
+}
+
+export function isCommonAiProviderRef(value: unknown) {
+  return readString(value).startsWith(COMMON_AI_PROVIDER_ID_PREFIX)
+}
+
+export function toCommonAiProviderRef(providerId: string) {
+  return `${COMMON_AI_PROVIDER_ID_PREFIX}${providerId}`
+}
+
+export function readCommonAiProviderId(value: unknown) {
+  const raw = readString(value)
+  return raw.startsWith(COMMON_AI_PROVIDER_ID_PREFIX) ? raw.slice(COMMON_AI_PROVIDER_ID_PREFIX.length) : raw
+}
+
 export function isAiProviderStoreError(error: unknown): error is AiProviderStoreError {
   return error instanceof AiProviderStoreError
 }
@@ -168,12 +255,12 @@ async function requireProvider(userId: string, providerId: string) {
   return provider
 }
 
-function readProvider(provider: AiProviderRecord): AiProviderSummary {
+function readProvider(provider: AiProviderRecord, options: ReadProviderOptions = {}): AiProviderSummary {
   return {
-    id: provider.id,
+    id: options.idPrefix ? `${options.idPrefix}${provider.id}` : provider.id,
     name: provider.name,
     providerType: provider.providerType,
-    baseUrl: provider.baseUrl,
+    baseUrl: options.hideBaseUrl ? '' : provider.baseUrl,
     models: normalizeModels(provider.models, provider.providerType),
     hasApiKey: Boolean(provider.apiKeyEncrypted),
     createdAt: provider.createdAt.toISOString(),
@@ -218,8 +305,9 @@ function normalizeModels(value: unknown, providerType: string): AiProviderModel[
     const capabilities = normalizeCapabilities(raw.capabilities)
     const inferred = createAiProviderModel(providerType, id, capabilities.length ? capabilities : undefined)
     const schema = normalizeAiModelParameterSchema(raw.parameterSchema, inferred.parameterSchema || inferAiModelParameterSchema(providerType, id, inferred.capabilities))
+    const promptSurface = normalizeAiModelPromptSurface(raw.promptSurface, inferred.promptSurface || inferAiModelPromptSurface(providerType, id, inferred.capabilities))
     const toolCalling = normalizeToolCallingSupport(raw.toolCalling, inferred.toolCalling)
-    const model: AiProviderModel = { ...inferred, toolCalling, parameterSchema: schema }
+    const model: AiProviderModel = { ...inferred, toolCalling, parameterSchema: schema, promptSurface }
     if (isRecord(raw.defaultResponseConfig)) {
       model.defaultResponseConfig = normalizeAiResponseConfig(schema.kind, raw.defaultResponseConfig, providerType, id, model)
     }

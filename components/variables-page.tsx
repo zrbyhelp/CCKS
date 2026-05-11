@@ -504,7 +504,7 @@ export function VariablesPage() {
               }
             >
               <PanelToolbar>
-                <SearchInput value={variableSearch} placeholder="搜索变量名、默认值或内容" onChange={setVariableSearch} />
+                <SearchInput value={variableSearch} placeholder="搜索名称、默认值或内容" onChange={setVariableSearch} />
                 <ScopeSelect value={variableScope} onChange={setVariableScope} />
                 <div className="flex h-8 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-bold text-slate-500">
                   <Filter className="h-3.5 w-3.5" />
@@ -764,7 +764,7 @@ function VariableTable({
                 名称
               </label>
             </TableHead>
-            <TableHead className="w-[18%]">变量名</TableHead>
+            <TableHead className="w-[18%]">名称</TableHead>
             <TableHead>默认值</TableHead>
             <TableHead className="w-24">多选</TableHead>
             <TableHead className="w-36">更新时间</TableHead>
@@ -1023,8 +1023,8 @@ function VariableForm({
         <Field label="词条名称">
           <Input value={value.nameZh} onChange={(event) => onChange({ ...value, nameZh: event.target.value })} />
         </Field>
-        <Field label="变量名">
-          <Input value={value.variableName} placeholder="focalLength" onChange={(event) => onChange({ ...value, variableName: event.target.value })} />
+        <Field label="名称">
+          <Input value={value.variableName} placeholder="焦段 / focalLength" onChange={(event) => onChange({ ...value, variableName: event.target.value })} />
         </Field>
       </div>
       <Field label="配方变量具体内容">

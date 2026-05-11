@@ -11,7 +11,9 @@
     "db:generate": "prisma generate",
     "db:generate:local": "cross-env CCKS_DATABASE_MODE=sqlite prisma generate --schema prisma/schema.sqlite.prisma",
     "db:push": "prisma db push",
-    "db:push:local": "cross-env CCKS_DATABASE_MODE=sqlite prisma db push --schema prisma/schema.sqlite.prisma"
+    "db:push:local": "cross-env CCKS_DATABASE_MODE=sqlite prisma db push --schema prisma/schema.sqlite.prisma",
+    "zrimgs:export-prompts": "node scripts/export-zrimgs-prompts.mjs",
+    "zrimgs:distill-prompts": "node scripts/distill-zrimgs-prompts.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -28,6 +30,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "dotenv": "^17.2.3",
+    "fflate": "^0.8.2",
     "lucide-react": "^0.552.0",
     "mariadb": "^3.5.2",
     "monaco-editor": "^0.55.1",

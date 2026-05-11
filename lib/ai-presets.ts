@@ -10,6 +10,29 @@ export type ImageBackground = 'auto' | 'opaque' | 'transparent'
 export type ImageModeration = 'auto' | 'low'
 export type ImageStyle = 'vivid' | 'natural'
 export type ToolCallingSupport = 'supported' | 'unsupported' | 'unknown'
+export type PromptMessageRole = 'system' | 'user' | 'assistant' | 'tool'
+export type ImageStyleInputType = 'free-text' | 'preset' | 'preset-with-extra-text'
+
+export type ImageStyleOption = {
+  label: string
+  value: string
+}
+
+export type AiModelPromptSurface =
+  | {
+      kind: 'messages'
+      supportedRoles: PromptMessageRole[]
+    }
+  | {
+      kind: 'image-prompt'
+      negativePrompt: boolean
+      styleInput: {
+        type: ImageStyleInputType
+        options?: ImageStyleOption[]
+      }
+    }
+type TextPromptSurface = Extract<AiModelPromptSurface, { kind: 'messages' }>
+type ImagePromptSurface = Extract<AiModelPromptSurface, { kind: 'image-prompt' }>
 
 export type ReferenceInputSupport = {
   image?: boolean
@@ -64,6 +87,7 @@ export type ImageModelParameterSchema = {
   sizeMode: ImageSizeMode
   sizeOptions: string[]
   defaultImageSize: string
+  imageCount?: NumericParameterSchema
   allowCustomSize?: boolean
   customSizePlaceholder?: string
   sizeConstraints?: ImageSizeConstraints
@@ -100,6 +124,7 @@ export type ZpmtResponseConfig = {
   imageSize?: string
   imageResolution?: string
   imageAspectRatio?: string
+  imageCount?: number
   imageQuality?: string
   imageOutputFormat?: ImageOutputFormat
   imageOutputCompression?: number
@@ -115,6 +140,7 @@ export type AiProviderModel = {
   capabilities: AiModelCapability[]
   toolCalling: ToolCallingSupport
   parameterSchema?: AiModelParameterSchema
+  promptSurface?: AiModelPromptSurface
   defaultResponseConfig?: ZpmtResponseConfig
   presetRef?: AiModelPresetRef
 }
@@ -154,6 +180,17 @@ export type AiModelPresetRef = {
 }
 
 export const ZPMT_OUTPUT_TYPES: ZpmtOutputType[] = ['text', 'image']
+
+const DEFAULT_TEXT_PROMPT_SURFACE: TextPromptSurface = {
+  kind: 'messages',
+  supportedRoles: ['system', 'user', 'assistant', 'tool'],
+}
+
+const DEFAULT_IMAGE_PROMPT_SURFACE: ImagePromptSurface = {
+  kind: 'image-prompt',
+  negativePrompt: false,
+  styleInput: { type: 'free-text' },
+}
 
 const DEFAULT_TEXT_SCHEMA: TextModelParameterSchema = {
   kind: 'text',
@@ -207,6 +244,7 @@ const VOLCENGINE_TEXT_SCHEMA: TextModelParameterSchema = {
   maxTokens: { min: 1, max: 32768, step: 1, defaultValue: 4096 },
   responseFormats: ['text', 'json_object'],
   thinking: VOLCENGINE_THINKING_SCHEMA,
+  referenceInput: { image: true },
 }
 
 const VOLCENGINE_CODE_TEXT_SCHEMA: TextModelParameterSchema = {
@@ -218,12 +256,15 @@ const VOLCENGINE_CODE_TEXT_SCHEMA: TextModelParameterSchema = {
 }
 
 const OPENAI_OUTPUT_COMPRESSION: NumericParameterSchema = { min: 0, max: 100, step: 1, defaultValue: 0 }
+const IMAGE_COUNT_1_TO_10: NumericParameterSchema = { min: 1, max: 10, step: 1, defaultValue: 1 }
+const IMAGE_COUNT_SINGLE: NumericParameterSchema = { min: 1, max: 1, step: 1, defaultValue: 1 }
 
 const OPENAI_GPT_IMAGE_2_SCHEMA: ImageModelParameterSchema = {
   kind: 'image',
   sizeMode: 'custom_constraints',
   sizeOptions: ['auto'],
   defaultImageSize: 'auto',
+  imageCount: IMAGE_COUNT_1_TO_10,
   allowCustomSize: true,
   customSizePlaceholder: '1536x1024',
   sizeConstraints: {
@@ -250,6 +291,7 @@ const OPENAI_GPT_IMAGE_SCHEMA: ImageModelParameterSchema = {
   sizeMode: 'fixed_options',
   sizeOptions: ['auto', '1024x1024', '1536x1024', '1024x1536'],
   defaultImageSize: 'auto',
+  imageCount: IMAGE_COUNT_1_TO_10,
   imageQualities: ['auto', 'low', 'medium', 'high'],
   defaultImageQuality: 'auto',
   outputFormats: ['png', 'jpeg', 'webp'],
@@ -267,6 +309,7 @@ const OPENAI_DALLE_3_SCHEMA: ImageModelParameterSchema = {
   sizeMode: 'fixed_options',
   sizeOptions: ['1024x1024', '1792x1024', '1024x1792'],
   defaultImageSize: '1024x1024',
+  imageCount: IMAGE_COUNT_SINGLE,
   imageQualities: ['standard', 'hd'],
   defaultImageQuality: 'standard',
   responseFormats: ['url', 'b64_json'],
@@ -280,6 +323,7 @@ const OPENAI_DALLE_2_SCHEMA: ImageModelParameterSchema = {
   sizeMode: 'fixed_options',
   sizeOptions: ['256x256', '512x512', '1024x1024'],
   defaultImageSize: '1024x1024',
+  imageCount: IMAGE_COUNT_1_TO_10,
   imageQualities: [],
   responseFormats: ['url', 'b64_json'],
   defaultImageResponseFormat: 'url',
@@ -287,10 +331,12 @@ const OPENAI_DALLE_2_SCHEMA: ImageModelParameterSchema = {
 }
 
 const VOLCENGINE_SEEDREAM_COMMON = {
+  imageCount: IMAGE_COUNT_1_TO_10,
   imageQualities: [],
   responseFormats: ['url', 'b64_json'] as ImageResponseFormat[],
   defaultImageResponseFormat: 'url' as ImageResponseFormat,
   watermark: { defaultValue: true },
+  referenceInput: { image: true },
 }
 
 const VOLCENGINE_1K_SIZES: ImageAspectRatioSize[] = [
@@ -392,6 +438,7 @@ const VOLCENGINE_SEEDEDIT_30_IMAGE_SCHEMA: ImageModelParameterSchema = {
   sizeMode: 'adaptive',
   sizeOptions: ['adaptive'],
   defaultImageSize: 'adaptive',
+  imageCount: IMAGE_COUNT_1_TO_10,
   imageQualities: [],
   responseFormats: ['url', 'b64_json'],
   defaultImageResponseFormat: 'url',
@@ -404,6 +451,7 @@ const DEFAULT_IMAGE_SCHEMA: ImageModelParameterSchema = {
   sizeMode: 'fixed_options',
   sizeOptions: ['1024x1024', '1024x1536', '1536x1024'],
   defaultImageSize: '1024x1024',
+  imageCount: IMAGE_COUNT_1_TO_10,
   imageQualities: [],
 }
 
@@ -503,7 +551,18 @@ export function createAiProviderModel(
     capabilities: normalizedCapabilities,
     toolCalling: toolCalling || inferToolCallingSupport(providerType, id, normalizedCapabilities),
     parameterSchema: inferAiModelParameterSchema(providerType, id, normalizedCapabilities),
+    promptSurface: inferAiModelPromptSurface(providerType, id, normalizedCapabilities),
   }
+}
+
+export function inferAiModelPromptSurface(
+  providerType: string,
+  modelId: string,
+  capabilities: AiModelCapability[] = inferAiModelCapabilities(providerType, modelId),
+): AiModelPromptSurface {
+  const preset = findAiModelPreset(providerType, modelId)
+  if (preset?.promptSurface) return preset.promptSurface
+  return capabilities.includes('image') ? DEFAULT_IMAGE_PROMPT_SURFACE : DEFAULT_TEXT_PROMPT_SURFACE
 }
 
 export function inferToolCallingSupport(
@@ -588,6 +647,7 @@ export function normalizeAiModelParameterSchema(value: unknown, fallback: AiMode
     const defaultImageResolution = readString(value.defaultImageResolution) || imageFallback.defaultImageResolution
     const defaultImageAspectRatio = readString(value.defaultImageAspectRatio) || imageFallback.defaultImageAspectRatio
     const defaultImageSize = readString(value.defaultImageSize) || imageFallback.defaultImageSize
+    const imageCount = normalizeNumericParameterSchema(value.imageCount, imageFallback.imageCount || IMAGE_COUNT_1_TO_10)
     const referenceInput = normalizeReferenceInputSupport(value.referenceInput, imageFallback.referenceInput)
 
     return {
@@ -595,6 +655,7 @@ export function normalizeAiModelParameterSchema(value: unknown, fallback: AiMode
       sizeMode: value.sizeMode,
       sizeOptions: sizeOptions.length ? sizeOptions : imageFallback.sizeOptions,
       defaultImageSize,
+      imageCount,
       ...(value.allowCustomSize === true || imageFallback.allowCustomSize ? { allowCustomSize: true } : {}),
       ...(readString(value.customSizePlaceholder) || imageFallback.customSizePlaceholder
         ? { customSizePlaceholder: readString(value.customSizePlaceholder) || imageFallback.customSizePlaceholder }
@@ -643,6 +704,48 @@ export function normalizeAiModelParameterSchema(value: unknown, fallback: AiMode
   return fallback
 }
 
+export function normalizeAiModelPromptSurface(value: unknown, fallback: AiModelPromptSurface): AiModelPromptSurface {
+  if (!isRecord(value)) return fallback
+
+  if (value.kind === 'messages') {
+    const supportedRoles = readStringArray(value.supportedRoles).filter((role): role is PromptMessageRole =>
+      role === 'system' || role === 'user' || role === 'assistant' || role === 'tool',
+    )
+    const messageFallback = fallback.kind === 'messages' ? fallback : DEFAULT_TEXT_PROMPT_SURFACE
+    return {
+      kind: 'messages',
+      supportedRoles: supportedRoles.length ? supportedRoles : messageFallback.supportedRoles,
+    }
+  }
+
+  if (value.kind === 'image-prompt') {
+    const imageFallback = fallback.kind === 'image-prompt' ? fallback : DEFAULT_IMAGE_PROMPT_SURFACE
+    const styleInput = isRecord(value.styleInput) ? value.styleInput : {}
+    const rawStyleType = readString(styleInput.type)
+    const styleType: ImageStyleInputType =
+      rawStyleType === 'preset' || rawStyleType === 'preset-with-extra-text' || rawStyleType === 'free-text'
+        ? rawStyleType
+        : imageFallback.styleInput.type
+    const sourceOptions = Array.isArray(styleInput.options) ? styleInput.options : []
+    const options = sourceOptions.flatMap((item): ImageStyleOption[] => {
+      if (!isRecord(item)) return []
+      const label = readString(item.label)
+      const optionValue = readString(item.value)
+      return label && optionValue ? [{ label, value: optionValue }] : []
+    })
+    return {
+      kind: 'image-prompt',
+      negativePrompt: value.negativePrompt === true || imageFallback.negativePrompt,
+      styleInput: {
+        type: styleType,
+        ...(options.length ? { options } : imageFallback.styleInput.options?.length ? { options: imageFallback.styleInput.options } : {}),
+      },
+    }
+  }
+
+  return fallback
+}
+
 export function resolveAiModelParameterSchema(
   outputType: ZpmtOutputType,
   providerType?: string,
@@ -653,6 +756,18 @@ export function resolveAiModelParameterSchema(
   const schema = model?.parameterSchema || preset?.parameterSchema
   if (schema?.kind === outputType) return schema
   return outputType === 'image' ? inferAiModelParameterSchema(providerType || '', modelId || '', ['image']) : DEFAULT_TEXT_SCHEMA
+}
+
+export function resolveAiModelPromptSurface(
+  outputType: ZpmtOutputType,
+  providerType?: string,
+  modelId?: string,
+  model?: AiProviderModel | null,
+): AiModelPromptSurface {
+  const preset = findAiModelPreset(providerType, modelId)
+  const surface = model?.promptSurface || preset?.promptSurface
+  if (surface && surface.kind === (outputType === 'image' ? 'image-prompt' : 'messages')) return surface
+  return inferAiModelPromptSurface(providerType || '', modelId || '', [outputType])
 }
 
 export function defaultAiResponseConfig(
@@ -748,6 +863,17 @@ export function getAiModelPresetOptionKey(ref: AiModelPresetRef | null | undefin
   return ref?.providerType && ref.modelId ? `${ref.providerType}:${ref.modelId}` : ''
 }
 
+export function getAiModelPresetOptionKeyForModel(
+  providerType: string | undefined,
+  model: { id?: string; presetRef?: AiModelPresetRef | null } | null | undefined,
+) {
+  const explicitKey = getAiModelPresetOptionKey(model?.presetRef)
+  if (explicitKey && findAiModelPresetOption(explicitKey)) return explicitKey
+  const modelId = readString(model?.id)
+  if (!modelId) return ''
+  return listAiModelPresetOptions(providerType).find((option) => option.model.id === modelId)?.key || ''
+}
+
 export function createAiModelPresetRef(option: AiModelPresetOption): AiModelPresetRef {
   return {
     providerType: option.providerType,
@@ -778,15 +904,18 @@ export function applyAiModelPreset<
     capabilities: AiModelCapability[]
     toolCalling: ToolCallingSupport
     parameterSchema?: unknown
+    promptSurface?: unknown
     defaultResponseConfig?: unknown
     presetRef?: AiModelPresetRef
   },
 >(model: T, preset: AiProviderModel, presetRef?: AiModelPresetRef): T {
+  const promptSurface = preset.promptSurface || inferAiModelPromptSurface(presetRef?.providerType || '', preset.id, preset.capabilities)
   const next = {
     ...model,
     capabilities: [...preset.capabilities],
     toolCalling: preset.toolCalling,
     parameterSchema: preset.parameterSchema,
+    promptSurface,
     ...(presetRef ? { presetRef } : {}),
   } as T
 
@@ -820,6 +949,7 @@ function readReferenceInputSupport(model: { parameterSchema?: unknown } | null |
 
 function normalizeImageResponseConfig(schema: ImageModelParameterSchema, source: Record<string, unknown>): ZpmtResponseConfig {
   const sizeConfig = normalizeImageSizeConfig(schema, source)
+  const imageCount = schema.imageCount || IMAGE_COUNT_1_TO_10
   const outputFormat = normalizeImageOutputFormat(source.imageOutputFormat, schema.outputFormats) || schema.defaultOutputFormat || schema.outputFormats?.[0]
   const responseFormat =
     normalizeImageResponseFormat(source.imageResponseFormat, schema.responseFormats) ||
@@ -832,6 +962,7 @@ function normalizeImageResponseConfig(schema: ImageModelParameterSchema, source:
 
   return {
     ...sizeConfig,
+    imageCount: Math.round(clampNumber(readFiniteNumber(source.imageCount, imageCount.defaultValue), imageCount.min, imageCount.max)),
     ...(imageQuality ? { imageQuality } : {}),
     ...(outputFormat ? { imageOutputFormat: outputFormat } : {}),
     ...(schema.outputCompression && outputFormat && isCompressibleImageFormat(outputFormat)
