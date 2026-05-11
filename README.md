@@ -71,6 +71,7 @@ cp .env.example .env
 
 ```env
 PORT=3000
+CCKS_PUBLIC_URL=https://your-domain.com
 ```
 
 Docker Compose 默认启动 MySQL，并在应用启动前执行 `prisma db push`。容器内数据库连接默认使用：
@@ -83,6 +84,7 @@ CCKS_PROJECT_ROOT=/data/ccks-projects
 如需对接统一门户，继续配置：
 
 ```env
+CCKS_PUBLIC_URL=https://your-domain.com
 NEXT_PUBLIC_ZR_PORTAL_URL=https://portal.example.com
 NEXT_PUBLIC_ZR_SERVICE_SLUG=ccks
 ZR_CLIENT_ID=your-client-id

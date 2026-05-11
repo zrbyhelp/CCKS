@@ -29,6 +29,7 @@ services:
       NODE_ENV: production
       PORT: ${PORT:-3000}
       HOSTNAME: 0.0.0.0
+      CCKS_PUBLIC_URL: ${CCKS_PUBLIC_URL:-}
       CCKS_DATABASE_MODE: ${CCKS_DATABASE_MODE:-mysql}
       DATABASE_URL: ${DATABASE_URL:-mysql://ccks:ccks_password@mysql:3306/ccks}
       CCKS_PROJECT_ROOT: ${CCKS_PROJECT_ROOT:-/data/ccks-projects}

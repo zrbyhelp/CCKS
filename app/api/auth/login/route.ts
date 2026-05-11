@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { NextRequest, NextResponse } from 'next/server'
+import { buildPublicUrl, buildSameOriginRedirectUrl } from '@/lib/public-url'
 
 const LOGIN_STATE_COOKIE = 'ccks_login_state'
 
@@ -7,7 +8,7 @@ export function GET(request: NextRequest) {
   const next = request.nextUrl.searchParams.get('next') || '/'
 
   if (process.env.LOCAL_AUTH_BYPASS === 'true') {
-    return NextResponse.redirect(new URL(next, request.url))
+    return NextResponse.redirect(buildSameOriginRedirectUrl(request, next))
   }
 
   const portalUrl = process.env.NEXT_PUBLIC_ZR_PORTAL_URL
@@ -18,7 +19,7 @@ export function GET(request: NextRequest) {
   }
 
   const state = randomBytes(18).toString('base64url')
-  const callback = process.env.ZR_CALLBACK_URL || new URL('/api/auth/callback', request.url).toString()
+  const callback = process.env.ZR_CALLBACK_URL || buildPublicUrl(request, '/api/auth/callback').toString()
   const loginUrl = new URL('/login', portalUrl)
 
   loginUrl.searchParams.set('client_id', clientId)

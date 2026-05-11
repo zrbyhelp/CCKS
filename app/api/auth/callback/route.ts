@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { buildSameOriginRedirectUrl } from '@/lib/public-url'
 import { SESSION_COOKIE, SESSION_MAX_AGE_SECONDS, encodeSession, type SessionUser } from '@/lib/server-session'
 
 const LOGIN_STATE_COOKIE = 'ccks_login_state'
@@ -39,7 +40,7 @@ export async function GET(request: NextRequest) {
 
   const payload = await tokenResponse.json().catch(() => null)
   const user = normalizeUser(payload)
-  const response = NextResponse.redirect(new URL(storedState.next || '/', request.url))
+  const response = NextResponse.redirect(buildSameOriginRedirectUrl(request, storedState.next || '/'))
 
   response.cookies.delete(LOGIN_STATE_COOKIE)
   response.cookies.set(SESSION_COOKIE, encodeSession({ user }), {

@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto'
 import { NextRequest, NextResponse } from 'next/server'
+import { buildPublicUrl } from '@/lib/public-url'
 
 const GITHUB_STATE_COOKIE = 'ccks_github_state'
 
@@ -8,7 +9,7 @@ export function GET(request: NextRequest) {
   if (!clientId) return NextResponse.json({ ok: false, message: 'GITHUB_CLIENT_ID 未配置' }, { status: 500 })
 
   const state = randomUUID()
-  const callback = process.env.GITHUB_CALLBACK_URL || new URL('/api/github/callback', request.url).toString()
+  const callback = process.env.GITHUB_CALLBACK_URL || buildPublicUrl(request, '/api/github/callback').toString()
   const next = request.nextUrl.searchParams.get('next') || '/'
   const authorizeUrl = new URL('https://github.com/login/oauth/authorize')
   authorizeUrl.searchParams.set('client_id', clientId)

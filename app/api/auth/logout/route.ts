@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { buildPublicUrl } from '@/lib/public-url'
 
 const SESSION_COOKIE = 'ccks_session'
 
 export function GET(request: NextRequest) {
-  const response = NextResponse.redirect(new URL('/', request.url))
+  const response = NextResponse.redirect(buildPublicUrl(request, '/'))
   response.cookies.delete(SESSION_COOKIE)
   return response
 }
