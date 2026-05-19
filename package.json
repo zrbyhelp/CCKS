@@ -16,8 +16,11 @@
     "zrimgs:distill-prompts": "node scripts/distill-zrimgs-prompts.mjs"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "@dnd-kit/core": "^6.3.1",
     "@hookform/resolvers": "^5.2.2",
+    "@langchain/core": "^1.1.47",
+    "@langchain/langgraph": "^1.3.1",
     "@monaco-editor/react": "^4.7.0",
     "@prisma/adapter-better-sqlite3": "^7.8.0",
     "@prisma/adapter-mariadb": "^7.8.0",

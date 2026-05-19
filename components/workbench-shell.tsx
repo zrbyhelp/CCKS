@@ -1,7 +1,7 @@
 'use client'
 
 import dynamic from 'next/dynamic'
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import type { BeforeMount } from '@monaco-editor/react'
 import {
@@ -20,14 +20,38 @@ import {
 } from '@dnd-kit/core'
 import ReactGridLayout, { WidthProvider } from 'react-grid-layout/legacy'
 import type { LayoutConstraint } from 'react-grid-layout/core'
+import {
+  Background,
+  Handle,
+  MarkerType,
+  MiniMap,
+  Panel,
+  Position,
+  ReactFlow,
+  SelectionMode,
+  useNodeConnections,
+  useEdgesState,
+  useNodesState,
+  type Connection,
+  type Edge as ReactFlowEdge,
+  type EdgeChange,
+  type Node as ReactFlowNode,
+  type NodeChange,
+  type NodeProps,
+  type ReactFlowInstance,
+  type Viewport,
+} from '@xyflow/react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Tree } from 'react-arborist'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
+import dagre from '@dagrejs/dagre'
 import {
+  Bell,
   Boxes,
+  Braces,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -36,34 +60,54 @@ import {
   AlertCircle,
   Bot,
   Copy,
+  Database,
   Download,
+  FileInput,
   FileJson,
   FilePlus2,
   FileText,
   Folder,
   FolderPlus,
   GitBranch,
+  GitMerge,
+  Hand,
   Home,
+  LayoutGrid,
+  ListFilter,
   LogOut,
+  Mail,
   Maximize2,
+  Merge,
   MessageSquare,
   Minus,
   MessageSquareWarning,
+  MousePointer2,
   MoreHorizontal,
   Pencil,
   Play,
   Plus,
   RefreshCw,
+  Repeat2,
   RotateCcw,
+  Route,
   Save,
   Search,
+  Send,
   Settings,
+  Shuffle,
+  Split,
   Trash2,
   Upload,
   UserRound,
   WandSparkles,
+  Timer,
+  Variable,
+  Webhook,
   Workflow,
   X,
+  Zap,
+  ZoomIn,
+  ZoomOut,
   type LucideIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -204,6 +248,16 @@ type ProjectEntryDragPayload = {
   projectId: string
   paths: string[]
 }
+type ZpmtFileDragEntry = {
+  path: string
+  promptKind?: ZpmtPromptKind
+}
+type ZpmtFileDragPayload = {
+  kind: 'zpmt-files'
+  projectId: string
+  files: ZpmtFileDragEntry[]
+  paths?: string[]
+}
 type ZipImportDialogState = {
   file: File
   name: string
@@ -275,7 +329,8 @@ type PromptTemplateDefinition = {
   preview: LocalizedText
   build: (context: PromptTemplateBuildContext) => PromptTemplateContent
 }
-type EditorMode = 'normal' | 'preview' | 'assist' | 'source'
+type EditorMode = 'normal' | 'preview' | 'assist' | 'source' | 'run'
+type StandardEditorMode = Exclude<EditorMode, 'run'>
 type PromptFileType = Extract<ZpmtPromptKind, 'chat' | 'agent'>
 type ZpmtSectionKey = 'config' | 'system' | 'user' | 'prompt' | 'negativePrompt' | 'style'
 type ZpmtPromptSectionKey = Extract<ZpmtSectionKey, 'system' | 'user' | 'prompt' | 'negativePrompt' | 'style'>
@@ -406,6 +461,7 @@ type GridLayoutItem = {
 type MinimizedState = Record<WindowId, boolean>
 type EntryDialogState =
   | { mode: 'folder'; folder: TreeNode; name: string }
+  | { mode: 'zflow'; folder: TreeNode; name: string }
   | { mode: 'lexicon'; folder: TreeNode; name: string }
   | { mode: 'provider'; folder: TreeNode; name: string }
   | {
@@ -523,6 +579,151 @@ type ZamfDocument = {
   apiKey: string
   models: ZamfModel[]
 }
+type ZflowNodeCategoryId = 'control' | 'integration' | 'notification' | 'start'
+type ZflowNodeRuntime = 'branch' | 'transform' | 'notify' | 'start' | 'terminal'
+type ZflowPortValueType = 'any' | 'string' | 'number' | 'text' | 'object' | 'array' | 'color' | 'boolean' | 'image' | 'file' | 'error'
+type ZflowNodePort = {
+  id: string
+  label: string
+  valueType?: ZflowPortValueType
+}
+type ZflowNodeData = Record<string, unknown> & {
+  label: string
+  description?: string
+  category?: ZflowNodeCategoryId
+  nodeType?: string
+  kind?: string
+  icon?: string
+  runtime?: ZflowNodeRuntime
+  inputs?: ZflowNodePort[]
+  outputs?: ZflowNodePort[]
+  inputPorts?: ZflowNodePort[]
+  outputPorts?: ZflowNodePort[]
+  outputData?: ZflowNodePort[]
+  config?: Record<string, unknown>
+}
+type ZflowInputBindingMode = 'value' | 'source'
+type ZflowInputBinding = {
+  mode?: ZflowInputBindingMode
+  value?: string
+  values?: string[]
+  sourceNodeId?: string
+  sourceHandle?: string
+  sourceOutputId?: string
+  sourcePath?: string
+  valueType?: ZflowPortValueType
+}
+type ZflowConditionMode = 'all' | 'any'
+type ZflowConditionOperator = 'eq' | 'neq' | 'empty' | 'notEmpty' | 'gt' | 'gte' | 'lt' | 'lte'
+type ZflowConditionRule = {
+  id: string
+  sourceNodeId: string
+  sourceOutputId: string
+  operator: ZflowConditionOperator
+  value: string
+}
+type ZflowConditionConfig = {
+  conditionMode: ZflowConditionMode
+  conditions: ZflowConditionRule[]
+}
+type ZflowInputBindingItem = {
+  key: string
+  label: string
+  typeLabel: string
+  valueType: ZflowPortValueType
+  defaultValue: string
+  recipe?: { candidates: string[]; defaultValues: string[]; multiple: boolean }
+}
+type ZflowInputBindingStatusKind = 'loading' | 'error' | 'empty'
+type ZflowInputBindingView = {
+  items: ZflowInputBindingItem[]
+  status?: ZflowInputBindingStatusKind
+}
+type ZflowPromptRunVariableSnapshot =
+  | { status: 'ready'; items: ZflowInputBindingItem[] }
+  | { status: ZflowInputBindingStatusKind; items: [] }
+type ZflowUpstreamOutputOption = {
+  id: string
+  nodeId: string
+  outputId: string
+  sourcePath: string
+  nodeLabel: string
+  label: string
+  valueType: ZflowPortValueType
+  imageCollection?: boolean
+}
+type ZflowPromptFileCacheEntry = {
+  content?: string
+  error?: string
+}
+type ZflowNode = ReactFlowNode<ZflowNodeData>
+type ZflowEdgeData = Record<string, unknown> & {
+  invalid?: boolean
+  invalidReason?: string
+  sourceType?: ZflowPortValueType
+  targetType?: ZflowPortValueType
+}
+type ZflowEdge = ReactFlowEdge<ZflowEdgeData>
+type ZflowDocument = {
+  schema: 'ccks.zflow.langgraph'
+  version: number
+  nodes: ZflowNode[]
+  edges: ZflowEdge[]
+  viewport: Viewport
+}
+const ZFLOW_NODE_WIDTH = 188
+const ZFLOW_NODE_HEIGHT = 88
+const ZFLOW_SNAP_GRID: [number, number] = [24, 24]
+const ZFLOW_ALIGNMENT_THRESHOLD_PX = 8
+const ZFLOW_START_NODE_ID = 'start'
+const ZFLOW_START_NODE_TYPE = 'start'
+const ZFLOW_SCHEMA = 'ccks.zflow.langgraph'
+const ZFLOW_START_OUTPUT_TYPES: ZflowPortValueType[] = ['string', 'number', 'array', 'color', 'boolean', 'image', 'file']
+const ZFLOW_START_FLOW_PORT: ZflowNodePort = { id: 'out', label: '输出', valueType: 'any' }
+const ZFLOW_CONDITION_OUTPUT_PORTS: ZflowNodePort[] = [
+  { id: 'true', label: '符合条件 true', valueType: 'any' },
+  { id: 'false', label: '不符合条件 false', valueType: 'any' },
+]
+const ZFLOW_CONDITION_OPERATORS: ZflowConditionOperator[] = ['eq', 'neq', 'empty', 'notEmpty', 'gt', 'gte', 'lt', 'lte']
+type ZflowNodeTemplatePort = {
+  id: string
+  label: LocalizedText
+  valueType?: ZflowPortValueType
+}
+type ZflowNodeTemplate = {
+  id: string
+  category: ZflowNodeCategoryId
+  label: LocalizedText
+  description: LocalizedText
+  icon: LucideIcon
+  iconName: string
+  runtime: ZflowNodeRuntime
+  inputs: ZflowNodeTemplatePort[]
+  outputs: ZflowNodeTemplatePort[]
+  config?: Record<string, unknown>
+}
+type ZflowNodeCategoryDefinition = {
+  id: ZflowNodeCategoryId
+  label: LocalizedText
+  icon: LucideIcon
+}
+type ZflowInteractionMode = 'pan' | 'select'
+type ZflowAlignmentGuide = {
+  id: string
+  axis: 'x' | 'y'
+  position: number
+  start: number
+  end: number
+}
+type ZflowPromptKindByPath = Record<string, ZpmtPromptKind | undefined>
+type ZflowClipboardPayload = {
+  nodes: ZflowNode[]
+  edges: ZflowEdge[]
+  pasteCount: number
+}
+type ZflowRunPanelTab = 'input' | 'monitor'
+type ZflowRunNodeStatus = 'running' | 'success' | 'error'
+type ZflowRunInputValues = Record<string, string | ZpmtTestMediaFile[]>
 type ProjectConfigParseResult<T> =
   | { ok: true; document: T }
   | { ok: false; message: string }
@@ -620,7 +821,9 @@ const PROMPT_FILE_TYPES: PromptFileType[] = ['chat', 'agent']
 const ZPMT_PROMPT_EDITOR_MIN_HEIGHT = 160
 const COMMON_AI_PROVIDER_ID_PREFIX = 'common:'
 const PROJECT_ENTRY_DRAG_MIME = 'application/x-ccks-project-entry'
+const ZPMT_FILE_DRAG_MIME = 'application/x-ccks-zpmt-file'
 const PROJECT_ARCHIVE_MIME = 'application/zip'
+const ZFLOW_NODE_DRAG_MIME = 'application/x-ccks-zflow-node'
 
 const DEFAULT_MINIMIZED: MinimizedState = {
   files: false,
@@ -698,6 +901,7 @@ const UI_COPY = {
     },
     newFolder: '新建文件夹',
     newPromptFile: '新建提示词文件',
+    newZflowFile: '新建流程画板',
     promptFileType: '提示词类型',
     simplePrompt: '文本提示词',
     agentPrompt: 'Agent 提示词',
@@ -940,6 +1144,63 @@ const UI_COPY = {
     },
     markdownPreview: 'Markdown 阅览',
     sourceCode: 'ccks 源码',
+    zflowCanvas: '流程画板',
+    zflowNodeCount: '{count} 个节点',
+    zflowEdgeCount: '{count} 条连线',
+    zflowNodePanel: '节点面板',
+    zflowNodeList: '节点列表',
+    zflowNodeEditor: '节点编辑',
+    zflowNodeName: '节点名称',
+    zflowNodeDescription: '节点说明',
+    zflowNodeInputs: '输入',
+    zflowNodeOutputs: '输出',
+    zflowNodeInputPorts: '输入端点',
+    zflowNodeOutputPorts: '输出端点',
+    zflowNodeOutputData: '输出数据',
+    zflowConditionRules: '判断条件',
+    zflowConditionModeAll: '全部满足',
+    zflowConditionModeAny: '任一满足',
+    zflowConditionAddRule: '新增条件',
+    zflowConditionSourceNode: '前置节点',
+    zflowConditionSourceVariable: '变量',
+    zflowConditionValue: '比较值',
+    zflowConditionOperators: {
+      eq: '等于',
+      neq: '不等于',
+      empty: '为空',
+      notEmpty: '不为空',
+      gt: '大于',
+      gte: '大于等于',
+      lt: '小于',
+      lte: '小于等于',
+    },
+    zflowStartNode: '起点',
+    zflowStartNodeDescription: '流程自带起点，不能删除。通过输出定义用户提交给流程的输入变量。',
+    zflowStartAddOutput: '新增输出',
+    zflowBranchAddPort: '新增端点',
+    zflowOutputName: '输出名称',
+    zflowOutputType: '输出类型',
+    zflowStats: '{nodes} 节点 / {edges} 连线',
+    zflowToolbarMove: '移动画布',
+    zflowToolbarSelect: '框选节点',
+    zflowToolbarAutoLayout: '自动整理',
+    zflowToolbarFitView: '适配视图',
+    zflowToolbarZoomIn: '放大',
+    zflowToolbarZoomOut: '缩小',
+    zflowEdgeInvalid: '类型不兼容，无法连接',
+    zflowTypeLabels: {
+      any: '任意',
+      string: '字符串',
+      number: '数值',
+      text: '文本',
+      object: '对象',
+      array: '数组',
+      color: '颜色',
+      boolean: '布尔',
+      image: '图片',
+      file: '文件',
+      error: '错误',
+    },
     aiAssist: {
       title: 'AI辅助',
       status: '开发中，敬请期待',
@@ -1192,6 +1453,7 @@ const UI_COPY = {
     },
     newFolder: 'New folder',
     newPromptFile: 'New prompt file',
+    newZflowFile: 'New flow canvas',
     promptFileType: 'Prompt type',
     simplePrompt: 'Text prompt',
     agentPrompt: 'Agent prompt',
@@ -1434,6 +1696,63 @@ const UI_COPY = {
     },
     markdownPreview: 'Markdown Preview',
     sourceCode: 'ccks Source',
+    zflowCanvas: 'Flow canvas',
+    zflowNodeCount: '{count} nodes',
+    zflowEdgeCount: '{count} edges',
+    zflowNodePanel: 'Node panel',
+    zflowNodeList: 'Node list',
+    zflowNodeEditor: 'Node editor',
+    zflowNodeName: 'Node name',
+    zflowNodeDescription: 'Description',
+    zflowNodeInputs: 'Inputs',
+    zflowNodeOutputs: 'Outputs',
+    zflowNodeInputPorts: 'Input ports',
+    zflowNodeOutputPorts: 'Output ports',
+    zflowNodeOutputData: 'Output data',
+    zflowConditionRules: 'Conditions',
+    zflowConditionModeAll: 'All',
+    zflowConditionModeAny: 'Any',
+    zflowConditionAddRule: 'Add condition',
+    zflowConditionSourceNode: 'Upstream node',
+    zflowConditionSourceVariable: 'Variable',
+    zflowConditionValue: 'Compare value',
+    zflowConditionOperators: {
+      eq: 'Equals',
+      neq: 'Not equals',
+      empty: 'Is empty',
+      notEmpty: 'Is not empty',
+      gt: 'Greater than',
+      gte: 'Greater or equal',
+      lt: 'Less than',
+      lte: 'Less or equal',
+    },
+    zflowStartNode: 'Start',
+    zflowStartNodeDescription: 'Built-in flow start node. It cannot be deleted. Use outputs to define user input variables.',
+    zflowStartAddOutput: 'Add output',
+    zflowBranchAddPort: 'Add port',
+    zflowOutputName: 'Output name',
+    zflowOutputType: 'Output type',
+    zflowStats: '{nodes} nodes / {edges} edges',
+    zflowToolbarMove: 'Pan canvas',
+    zflowToolbarSelect: 'Box select',
+    zflowToolbarAutoLayout: 'Auto layout',
+    zflowToolbarFitView: 'Fit view',
+    zflowToolbarZoomIn: 'Zoom in',
+    zflowToolbarZoomOut: 'Zoom out',
+    zflowEdgeInvalid: 'Incompatible types. Connection blocked.',
+    zflowTypeLabels: {
+      any: 'Any',
+      string: 'String',
+      number: 'Number',
+      text: 'Text',
+      object: 'Object',
+      array: 'Array',
+      color: 'Color',
+      boolean: 'Boolean',
+      image: 'Image',
+      file: 'File',
+      error: 'Error',
+    },
     aiAssist: {
       title: 'AI Assist',
       status: 'In development. Stay tuned.',
@@ -1630,6 +1949,121 @@ const UI_COPY = {
 }
 
 type WorkbenchCopy = (typeof UI_COPY)['zh']
+
+const ZFLOW_INPUT_PORT: ZflowNodeTemplatePort = { id: 'in', label: { zh: '输入', en: 'Input' }, valueType: 'any' }
+const ZFLOW_OUTPUT_PORT: ZflowNodeTemplatePort = { id: 'out', label: { zh: '输出', en: 'Output' }, valueType: 'any' }
+
+const ZFLOW_NODE_CATEGORY_DEFINITIONS: ZflowNodeCategoryDefinition[] = [
+  { id: 'control', label: { zh: '流程控制', en: 'Flow control' }, icon: Route },
+  { id: 'integration', label: { zh: '提示词/接口', en: 'Prompts & APIs' }, icon: Webhook },
+]
+
+const ZFLOW_NODE_TEMPLATES: ZflowNodeTemplate[] = [
+  {
+    id: 'prompt',
+    category: 'integration',
+    label: { zh: '提示词执行', en: 'Prompt' },
+    description: { zh: '引用 .zpmt 并把变量绑定到 state。', en: 'Runs a .zpmt prompt with state bindings.' },
+    icon: MessageSquare,
+    iconName: 'message-square',
+    runtime: 'transform',
+    inputs: [{ ...ZFLOW_INPUT_PORT, valueType: 'any' }],
+    outputs: [{ ...ZFLOW_OUTPUT_PORT, valueType: 'text' }],
+    config: { filePath: '', outputPath: 'result', bindings: {} },
+  },
+  {
+    id: 'http',
+    category: 'integration',
+    label: { zh: '接口请求', en: 'HTTP API' },
+    description: { zh: '定义 GET/POST URL、输入和输出变量。', en: 'Defines GET/POST URL, input and output.' },
+    icon: Webhook,
+    iconName: 'webhook',
+    runtime: 'transform',
+    inputs: [{ ...ZFLOW_INPUT_PORT, valueType: 'any' }],
+    outputs: [{ ...ZFLOW_OUTPUT_PORT, valueType: 'object' }],
+    config: { method: 'GET', url: '', headers: '', body: '', outputPath: 'response' },
+  },
+  {
+    id: 'router',
+    category: 'control',
+    label: { zh: '条件路由', en: 'Router' },
+    description: { zh: '按 state 条件路由到 true 或 false 分支。', en: 'Routes to true or false by state condition.' },
+    icon: Route,
+    iconName: 'route',
+    runtime: 'branch',
+    inputs: [{ ...ZFLOW_INPUT_PORT, valueType: 'any' }],
+    outputs: [
+      { id: 'true', label: { zh: '符合条件 true', en: 'Matched true' }, valueType: 'any' },
+      { id: 'false', label: { zh: '不符合条件 false', en: 'Unmatched false' }, valueType: 'any' },
+    ],
+    config: { left: '{{result}}', operator: 'notEmpty', right: '' },
+  },
+  {
+    id: 'parallel-merge',
+    category: 'control',
+    label: { zh: '并发合并', en: 'Parallel merge' },
+    description: { zh: '等待多个上游分支全部完成后继续。', en: 'Waits for all upstream branches before continuing.' },
+    icon: GitMerge,
+    iconName: 'git-merge',
+    runtime: 'branch',
+    inputs: [{ ...ZFLOW_INPUT_PORT, valueType: 'any' }],
+    outputs: [{ ...ZFLOW_OUTPUT_PORT, valueType: 'any' }],
+    config: { outputPath: '' },
+  },
+  {
+    id: 'end',
+    category: 'control',
+    label: { zh: '结束节点', en: 'End' },
+    description: { zh: '流程终点，接收输入后结束当前流程。', en: 'Terminates the current flow after receiving input.' },
+    icon: CheckCircle2,
+    iconName: 'check-circle',
+    runtime: 'terminal',
+    inputs: [{ ...ZFLOW_INPUT_PORT, valueType: 'any' }],
+    outputs: [],
+    config: {},
+  },
+]
+
+const ZFLOW_NODE_ICON_MAP: Record<string, LucideIcon> = {
+  alert: MessageSquareWarning,
+  bell: Bell,
+  braces: Braces,
+  'check-circle': CheckCircle2,
+  database: Database,
+  'file-input': FileInput,
+  'git-merge': GitMerge,
+  'list-filter': ListFilter,
+  mail: Mail,
+  merge: Merge,
+  'message-square': MessageSquare,
+  'message-warning': MessageSquareWarning,
+  play: Play,
+  repeat: Repeat2,
+  route: Route,
+  send: Send,
+  shuffle: Shuffle,
+  split: Split,
+  timer: Timer,
+  'user-round': UserRound,
+  variable: Variable,
+  webhook: Webhook,
+  workflow: Workflow,
+  'wand-sparkles': WandSparkles,
+  zap: Zap,
+}
+
+const ZFLOW_LEGACY_KIND_TEMPLATE_IDS: Record<string, string> = {
+  input: ZFLOW_START_NODE_TYPE,
+  'manual-trigger': ZFLOW_START_NODE_TYPE,
+  'user-input-trigger': ZFLOW_START_NODE_TYPE,
+  'schedule-trigger': ZFLOW_START_NODE_TYPE,
+  'file-trigger': ZFLOW_START_NODE_TYPE,
+  'api-trigger': ZFLOW_START_NODE_TYPE,
+  prompt: 'prompt',
+  variable: 'state',
+  test: ZFLOW_START_NODE_TYPE,
+  review: 'notify-inapp',
+}
 
 const promptCode = `---
 title: "ccks"
@@ -2520,6 +2954,7 @@ function getZpmtPromptIconMeta(kind?: ZpmtPromptKind | null): { icon: LucideIcon
 
 function getFileIconMeta(filePath: string, promptKind?: ZpmtPromptKind | null): { icon: LucideIcon; className: string; badge?: string } {
   if (isZpmtFilePath(filePath)) return getZpmtPromptIconMeta(promptKind)
+  if (isZflowFilePath(filePath)) return { icon: Workflow, className: 'text-violet-600', badge: 'ZFLOW' }
   if (isZlexFilePath(filePath)) return { icon: Boxes, className: 'text-amber-600', badge: 'ZLEX' }
   if (isZamfFilePath(filePath)) return { icon: Bot, className: 'text-sky-500', badge: 'ZAMF' }
   if (filePath.toLowerCase().endsWith('.json')) return { icon: FileJson, className: 'text-slate-400' }
@@ -3241,6 +3676,7 @@ function ProjectFilesPanel({
   const [uploadTargetPath, setUploadTargetPath] = useState('')
   const fileTree = activeProject?.tree ? [activeProject.tree] : []
   const flatFileTreePaths = useMemo(() => flattenProjectTreePaths(activeProject?.tree), [activeProject?.tree])
+  const projectTreeNodeByPath = useMemo(() => buildProjectTreeNodeByPath(activeProject?.tree), [activeProject?.tree])
   const fileTreeHeight = Math.max(160, (fileTreeViewportHeight || 360) - 16)
   const gitActionBusy = Boolean(sourceControlBusyAction)
   const showGitActions = sourceControlConnected
@@ -3324,6 +3760,19 @@ function ProjectFilesPanel({
             model: dialog.model,
             responseConfig: dialog.responseConfig,
           }),
+        },
+      })
+    }
+
+    if (dialog.mode === 'zflow') {
+      const fileName = ensureZflowFileName(dialog.name)
+      return fetchJson('/api/projects/files', {
+        method: 'POST',
+        body: {
+          projectId,
+          parentPath: dialog.folder.path || '',
+          fileName,
+          content: createZflowTemplate(fileName),
         },
       })
     }
@@ -3424,8 +3873,17 @@ function ProjectFilesPanel({
     const rawDownload = paths.length === 1 && node.kind === 'file'
     const downloadUrl = buildProjectArchiveUrl(activeProject.id, paths, rawDownload)
     const downloadName = buildProjectDragDownloadName(activeProject.fileName, node, paths, rawDownload)
+    const zpmtFiles = paths
+      .filter(isZpmtFilePath)
+      .map((path) => ({ path, promptKind: projectTreeNodeByPath[path]?.promptKind }))
     event.dataTransfer.effectAllowed = 'copyMove'
     event.dataTransfer.setData(PROJECT_ENTRY_DRAG_MIME, JSON.stringify(payload))
+    if (zpmtFiles.length) {
+      event.dataTransfer.setData(
+        ZPMT_FILE_DRAG_MIME,
+        JSON.stringify({ kind: 'zpmt-files', projectId: activeProject.id, files: zpmtFiles, paths: zpmtFiles.map((file) => file.path) } satisfies ZpmtFileDragPayload),
+      )
+    }
     event.dataTransfer.setData('text/plain', paths.join('\n'))
     event.dataTransfer.setData('text/uri-list', downloadUrl)
     event.dataTransfer.setData('DownloadURL', `${rawDownload ? 'application/octet-stream' : PROJECT_ARCHIVE_MIME}:${downloadName}:${downloadUrl}`)
@@ -3829,6 +4287,14 @@ function ProjectFilesPanel({
                 }}
               />
               <ContextMenuButton
+                icon={Workflow}
+                label={t.newZflowFile}
+                onClick={() => {
+                  setEntryDialog({ mode: 'zflow', folder: contextMenu.node, name: '提示词流程.zflow' })
+                  setContextMenu(null)
+                }}
+              />
+              <ContextMenuButton
                 icon={FileJson}
                 label={t.newLexiconFile}
                 onClick={() => {
@@ -4213,14 +4679,16 @@ function EntryDialogOverlay({
       ? t.newFolder
       : dialog.mode === 'prompt'
         ? t.newPromptFile
-        : dialog.mode === 'lexicon'
-          ? t.newLexiconFile
-          : dialog.mode === 'provider'
-            ? t.newProviderModelFile
-            : t.rename
+        : dialog.mode === 'zflow'
+          ? t.newZflowFile
+          : dialog.mode === 'lexicon'
+            ? t.newLexiconFile
+            : dialog.mode === 'provider'
+              ? t.newProviderModelFile
+              : t.rename
   const label = dialog.mode === 'folder' ? t.folderName : dialog.mode === 'rename' ? t.renameTo : t.fileName
   const submitLabel = dialog.mode === 'folder' ? t.createFolder : dialog.mode === 'rename' ? t.rename : t.createFile
-  const Icon = dialog.mode === 'folder' ? FolderPlus : dialog.mode === 'rename' ? Pencil : dialog.mode === 'prompt' ? FilePlus2 : FileJson
+  const Icon = dialog.mode === 'folder' ? FolderPlus : dialog.mode === 'rename' ? Pencil : dialog.mode === 'prompt' ? FilePlus2 : dialog.mode === 'zflow' ? Workflow : FileJson
   const compatibleModels = dialog.mode === 'prompt' ? listCompatibleModelsForProvider(aiProviders, dialog.providerId, dialog.outputType) : []
   const selectedModelContext = dialog.mode === 'prompt' ? getSelectedAiModelContext(aiProviders, dialog.providerId, dialog.model) : null
   const projectProviders = dialog.mode === 'prompt' ? aiProviders.filter((provider) => !isCommonAiProvider(provider)) : []
@@ -4524,28 +4992,6 @@ function ResponseConfigFields({
               value={value.imageSize || ''}
               placeholder={schema.customSizePlaceholder || '1024x1024'}
               onChange={(event) => onChange({ ...value, imageSize: event.target.value.trim() })}
-            />
-          </label>
-        ) : null}
-        {schema.imageCount ? (
-          <label className={labelClassName}>
-            {t.imageGenerateCount}
-            <Input
-              className={controlClassName || 'mt-1'}
-              type="number"
-              min={schema.imageCount.min}
-              max={schema.imageCount.max}
-              step={schema.imageCount.step}
-              value={String(value.imageCount ?? schema.imageCount.defaultValue)}
-              disabled={schema.imageCount.min === schema.imageCount.max}
-              onChange={(event) =>
-                onChange({
-                  ...value,
-                  imageCount: Math.round(
-                    Math.min(schema.imageCount?.max || 10, Math.max(schema.imageCount?.min || 1, readNumberInput(event.target.value, schema.imageCount?.defaultValue || 1))),
-                  ),
-                })
-              }
             />
           </label>
         ) : null}
@@ -5214,7 +5660,7 @@ function SourceControlChangeRow({
   )
 }
 
-const EDITOR_MODES: EditorMode[] = ['preview', 'assist', 'source', 'normal']
+const EDITOR_MODES: StandardEditorMode[] = ['preview', 'assist', 'source', 'normal']
 
 function EditorModeSwitch({
   mode,
@@ -5244,6 +5690,40 @@ function EditorModeSwitch({
           {t.editorModes[item]}
         </ToggleGroupItem>
       ))}
+    </ToggleGroup>
+  )
+}
+
+function ZflowModeSwitch({
+  mode,
+  t,
+  onChange,
+}: {
+  mode: EditorMode
+  t: WorkbenchCopy
+  onChange: (mode: EditorMode) => void
+}) {
+  return (
+    <ToggleGroup
+      type="single"
+      value={mode === 'source' ? 'source' : mode === 'run' ? 'run' : 'normal'}
+      className="h-7 overflow-hidden rounded-md border border-border bg-card"
+      aria-label="zflow mode"
+      onValueChange={(value) => {
+        if (value === 'source') onChange('source')
+        if (value === 'normal') onChange('normal')
+        if (value === 'run') onChange('run')
+      }}
+    >
+      <ToggleGroupItem value="normal" aria-label={t.zflowCanvas}>
+        {t.zflowCanvas}
+      </ToggleGroupItem>
+      <ToggleGroupItem value="source" aria-label={t.editorModes.source}>
+        {t.editorModes.source}
+      </ToggleGroupItem>
+      <ToggleGroupItem value="run" aria-label={t.runningAgent}>
+        运行
+      </ToggleGroupItem>
     </ToggleGroup>
   )
 }
@@ -5925,7 +6405,7 @@ function buildEditorTabId(projectId: string, filePath: string) {
 
 function getEditorLanguage(filePath: string) {
   const normalized = filePath.toLowerCase()
-  if (normalized.endsWith('.json') || normalized.endsWith('.zpmt') || isProjectConfigFilePath(normalized)) return 'json'
+  if (normalized.endsWith('.json') || normalized.endsWith('.zpmt') || normalized.endsWith('.zflow') || isProjectConfigFilePath(normalized)) return 'json'
   if (normalized.endsWith('.md') || normalized.endsWith('.markdown') || normalized.endsWith('.prompt')) return 'markdown'
   if (normalized.endsWith('.ts') || normalized.endsWith('.tsx')) return 'typescript'
   if (normalized.endsWith('.js') || normalized.endsWith('.jsx')) return 'javascript'
@@ -5963,6 +6443,7 @@ function EditorPanel({
   locale,
   monacoTheme,
   aiProviders,
+  promptKindByPath,
   recipeVariableCategories,
   tabs,
   activeTab,
@@ -5975,12 +6456,13 @@ function EditorPanel({
   locale: Locale
   monacoTheme: string
   aiProviders: AiProviderSummary[]
+  promptKindByPath: ZflowPromptKindByPath
   recipeVariableCategories: RecipeVariableCategory[]
   tabs: EditorFileTab[]
   activeTab: EditorFileTab | null
   onActivateTab: (tabId: string) => void
   onCloseTab: (tabId: string) => void
-  onChangeActiveContent: (value: string) => void
+  onChangeActiveContent: (value: string, options?: { refreshSourceControl?: boolean }) => void
   onSaveActive: () => void
 }) {
   const [editorMode, setEditorMode] = useState<EditorMode>('normal')
@@ -5988,8 +6470,11 @@ function EditorPanel({
   const [zpmtCollapsedSections, setZpmtCollapsedSections] = useState<Record<string, ZpmtCollapsedSections>>({})
   const [apiDialogOpen, setApiDialogOpen] = useState(false)
   const isSourceMode = editorMode === 'source'
-  const hasSidePanel = editorMode === 'preview' || editorMode === 'assist'
   const editorValue = activeTab?.content || ''
+  const activeZflowResult = activeTab && isZflowFilePath(activeTab.path) ? parseZflowContent(editorValue) : null
+  const hasSidePanel = !activeZflowResult && (editorMode === 'preview' || editorMode === 'assist')
+  const autoSaveZflowCanvas = Boolean(activeZflowResult?.ok && activeTab?.dirty && !activeTab.saving && !isSourceMode)
+  const showSaveButton = !activeZflowResult || isSourceMode
   const activeZpmtDocument = activeTab && isZpmtFilePath(activeTab.path) ? parseZpmtContent(editorValue, aiProviders) : null
   const activeZpmtModelContext = activeZpmtDocument
     ? getSelectedAiModelContext(aiProviders, activeZpmtDocument.config.providerId, activeZpmtDocument.config.model, activeZpmtDocument.config.providerFile)
@@ -6023,6 +6508,14 @@ function EditorPanel({
     if (!activeZpmtTabId) return
     setZpmtPromptModes((current) => (current[activeZpmtTabId] ? current : { ...current, [activeZpmtTabId]: activeZpmtInitialMode }))
   }, [activeZpmtInitialMode, activeZpmtTabId])
+
+  useEffect(() => {
+    if (!autoSaveZflowCanvas) return
+    const timer = window.setTimeout(() => {
+      onSaveActive()
+    }, 900)
+    return () => window.clearTimeout(timer)
+  }, [activeTab?.content, activeTab?.id, autoSaveZflowCanvas, onSaveActive])
 
   function toggleActiveZpmtSection(section: ZpmtSectionKey) {
     if (!activeZpmtTabId) return
@@ -6083,22 +6576,47 @@ function EditorPanel({
           <span className={`hidden xl:inline ${activeTab?.dirty || activeTab?.error ? 'text-[#d95a1b]' : 'text-emerald-600'}`}>
             {savedText}
           </span>
-          <Button variant="outline" size="sm" disabled={!activeTab || activeTab.saving} onClick={onSaveActive}>
-            <Save className="h-3 w-3" /> {saveText}
-          </Button>
+          {showSaveButton ? (
+            <Button variant="outline" size="sm" disabled={!activeTab || activeTab.saving} onClick={onSaveActive}>
+              <Save className="h-3 w-3" /> {saveText}
+            </Button>
+          ) : null}
           {activeZpmtDocument && activeTab ? (
             <Button variant="outline" size="sm" onClick={() => setApiDialogOpen(true)}>
               <Code2 className="h-3 w-3" /> 查看接口
             </Button>
           ) : null}
-          <EditorModeSwitch mode={editorMode} t={t} onChange={setEditorMode} />
+          {activeZflowResult ? (
+            <ZflowModeSwitch mode={editorMode} t={t} onChange={setEditorMode} />
+          ) : (
+            <EditorModeSwitch mode={editorMode} t={t} onChange={setEditorMode} />
+          )}
         </div>
       </div>
 
       <div className={hasSidePanel ? 'editor-workspace editor-workspace--split' : 'editor-workspace'}>
         <div className="editor-surface min-h-0">
           {activeTab ? (
-            isSourceMode ? (
+            activeZflowResult && !isSourceMode ? (
+              activeZflowResult.ok ? (
+                <ZflowCanvasEditor
+                  key={activeTab.id}
+                  t={t}
+                  locale={locale}
+                  projectId={activeTab.projectId}
+                  promptKindByPath={promptKindByPath}
+                  aiProviders={aiProviders}
+                  recipeVariableCategories={recipeVariableCategories}
+                  editorTabs={tabs}
+                  document={activeZflowResult.document}
+                  mode={editorMode === 'run' ? 'run' : 'edit'}
+                  onChange={(nextDocument) => onChangeActiveContent(serializeZflowDocument(nextDocument), { refreshSourceControl: false })}
+                  onOpenSource={() => setEditorMode('source')}
+                />
+              ) : (
+                <ConfigParseErrorPanel t={t} filePath={activeTab.path} message={activeZflowResult.message} onOpenSource={() => setEditorMode('source')} />
+              )
+            ) : isSourceMode ? (
               <MonacoEditor
                 key={`${activeTab.id}:source`}
                 height="100%"
@@ -6262,6 +6780,3540 @@ function ConfigParseErrorPanel({
         </div>
       </div>
     </div>
+  )
+}
+
+function ZflowCanvasEditor({
+  t,
+  locale,
+  projectId,
+  promptKindByPath,
+  aiProviders,
+  recipeVariableCategories,
+  editorTabs,
+  document,
+  mode,
+  onChange,
+  onOpenSource,
+}: {
+  t: WorkbenchCopy
+  locale: Locale
+  projectId: string
+  promptKindByPath: ZflowPromptKindByPath
+  aiProviders: AiProviderSummary[]
+  recipeVariableCategories: RecipeVariableCategory[]
+  editorTabs: EditorFileTab[]
+  document: ZflowDocument
+  mode: 'edit' | 'run'
+  onChange: (document: ZflowDocument) => void
+  onOpenSource: () => void
+}) {
+  const [nodes, setNodes, applyNodesChange] = useNodesState<ZflowNode>(document.nodes)
+  const [edges, setEdges, applyEdgesChange] = useEdgesState<ZflowEdge>(document.edges)
+  const [viewport, setViewport] = useState<Viewport>(() => document.viewport)
+  const [selectedNodeId, setSelectedNodeId] = useState('')
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([])
+  const [selectedEdgeIds, setSelectedEdgeIds] = useState<string[]>([])
+  const [promptFileCache, setPromptFileCache] = useState<Record<string, ZflowPromptFileCacheEntry>>({})
+  const [panelTab, setPanelTab] = useState<'nodes' | 'editor'>('nodes')
+  const [runPanelTab, setRunPanelTab] = useState<ZflowRunPanelTab>('input')
+  const [runInputValues, setRunInputValues] = useState<ZflowRunInputValues>({})
+  const [interactionMode, setInteractionMode] = useState<ZflowInteractionMode>('pan')
+  const [alignmentGuides, setAlignmentGuides] = useState<ZflowAlignmentGuide[]>([])
+  const [runEvents, setRunEvents] = useState<Array<Record<string, unknown>>>([])
+  const [isRunning, setIsRunning] = useState(false)
+  const isRunMode = mode === 'run'
+  const [connectionLineStyle, setConnectionLineStyle] = useState<React.CSSProperties>({
+    stroke: 'var(--zflow-edge-stroke)',
+    strokeWidth: 2.25,
+  })
+  const stageRef = useRef<HTMLDivElement | null>(null)
+  const reactFlowInstanceRef = useRef<ReactFlowInstance<ZflowNode, ZflowEdge> | null>(null)
+  const documentRef = useRef(document)
+  const latestStateRef = useRef({ nodes: document.nodes, edges: document.edges, viewport: document.viewport })
+  const promptFileCacheRef = useRef<Record<string, ZflowPromptFileCacheEntry>>({})
+  const promptFileRequestsRef = useRef<Set<string>>(new Set())
+  const zflowSyncRef = useRef({ serialized: serializeZflowDocument(document), dirty: false })
+  const syncTimerRef = useRef<number | null>(null)
+  const runEventQueueRef = useRef<Array<Record<string, unknown>>>([])
+  const runEventFlushFrameRef = useRef<number | null>(null)
+  const draggingRef = useRef(false)
+  const alignmentGuidesRef = useRef<ZflowAlignmentGuide[]>([])
+  const clipboardRef = useRef<ZflowClipboardPayload | null>(null)
+  const nodeTypes = useMemo(() => ({ zflow: ZflowWorkflowNode }), [])
+  const defaultEdgeOptions = useMemo(() => ({ type: 'smoothstep' }), [])
+  const presentedEdges = useMemo(
+    () => edges.map((edge) => decorateZflowEdge(edge, nodes, promptKindByPath)),
+    [edges, nodes, promptKindByPath],
+  )
+  const runNodeStatuses = useMemo(() => getZflowRunNodeStatuses(runEvents), [runEvents])
+  const presentedNodes = useMemo(
+    () => nodes.map((node) => decorateZflowNodeWithRunStatus(decorateZflowNode(node, promptKindByPath), isRunMode ? runNodeStatuses[node.id] : undefined)),
+    [isRunMode, nodes, promptKindByPath, runNodeStatuses],
+  )
+  const promptRunFilePaths = useMemo(
+    () => Array.from(new Set(nodes.map(getZflowPromptRunFilePath).filter(Boolean))),
+    [nodes],
+  )
+  const promptRunFilePathKey = promptRunFilePaths.join('\n')
+  const openedPromptPathKey = useMemo(
+    () => editorTabs.filter((tab) => tab.projectId === projectId && isZpmtFilePath(tab.path)).map((tab) => tab.path).sort().join('\n'),
+    [editorTabs, projectId],
+  )
+
+  const flushQueuedRunEvents = useCallback(() => {
+    if (runEventFlushFrameRef.current !== null) {
+      window.cancelAnimationFrame(runEventFlushFrameRef.current)
+      runEventFlushFrameRef.current = null
+    }
+    const queuedEvents = runEventQueueRef.current
+    if (!queuedEvents.length) return
+    runEventQueueRef.current = []
+    setRunEvents((current) => current.concat(queuedEvents).slice(-80))
+  }, [])
+
+  const enqueueRunEvent = useCallback((event: Record<string, unknown>) => {
+    runEventQueueRef.current.push(event)
+    if (runEventFlushFrameRef.current !== null) return
+    runEventFlushFrameRef.current = window.requestAnimationFrame(() => {
+      runEventFlushFrameRef.current = null
+      const queuedEvents = runEventQueueRef.current
+      if (!queuedEvents.length) return
+      runEventQueueRef.current = []
+      setRunEvents((current) => current.concat(queuedEvents).slice(-80))
+    })
+  }, [])
+  const renderedGuides = useMemo(() => {
+    if (!alignmentGuides.length || !reactFlowInstanceRef.current || !stageRef.current) return []
+    const stageBounds = stageRef.current.getBoundingClientRect()
+    return alignmentGuides.flatMap((guide) => {
+      const start = guide.axis === 'x'
+        ? reactFlowInstanceRef.current?.flowToScreenPosition({ x: guide.position, y: guide.start })
+        : reactFlowInstanceRef.current?.flowToScreenPosition({ x: guide.start, y: guide.position })
+      const end = guide.axis === 'x'
+        ? reactFlowInstanceRef.current?.flowToScreenPosition({ x: guide.position, y: guide.end })
+        : reactFlowInstanceRef.current?.flowToScreenPosition({ x: guide.end, y: guide.position })
+      if (!start || !end) return []
+      return [{
+        id: guide.id,
+        style: guide.axis === 'x'
+          ? {
+              left: Math.round(start.x - stageBounds.left),
+              top: Math.round(start.y - stageBounds.top),
+              height: Math.max(1, Math.round(end.y - start.y)),
+            }
+          : {
+              left: Math.round(start.x - stageBounds.left),
+              top: Math.round(start.y - stageBounds.top),
+              width: Math.max(1, Math.round(end.x - start.x)),
+            },
+        axis: guide.axis,
+      }]
+    })
+  }, [alignmentGuides, viewport])
+
+  useEffect(() => {
+    const serialized = serializeZflowDocument(document)
+    documentRef.current = document
+    if (serialized === zflowSyncRef.current.serialized) return
+    zflowSyncRef.current = { serialized, dirty: false }
+    setNodes(document.nodes)
+    setEdges(document.edges)
+    setViewport(document.viewport)
+    setSelectedNodeId('')
+    setSelectedNodeIds([])
+    setSelectedEdgeIds([])
+    setAlignmentGuides([])
+  }, [document, setEdges, setNodes])
+
+  useEffect(() => {
+    latestStateRef.current = { nodes, edges, viewport }
+  }, [edges, nodes, viewport])
+
+  useEffect(() => {
+    promptFileCacheRef.current = promptFileCache
+  }, [promptFileCache])
+
+  useEffect(() => {
+    alignmentGuidesRef.current = alignmentGuides
+  }, [alignmentGuides])
+
+  useEffect(() => () => {
+    if (runEventFlushFrameRef.current !== null) {
+      window.cancelAnimationFrame(runEventFlushFrameRef.current)
+      runEventFlushFrameRef.current = null
+    }
+  }, [])
+
+  const flushZflowChange = useCallback(() => {
+    if (!zflowSyncRef.current.dirty) return
+    const nextDocument: ZflowDocument = { ...documentRef.current, ...latestStateRef.current }
+    const serialized = serializeZflowDocument(nextDocument)
+    if (serialized !== zflowSyncRef.current.serialized) {
+      zflowSyncRef.current.serialized = serialized
+      documentRef.current = nextDocument
+      onChange(nextDocument)
+    }
+    zflowSyncRef.current.dirty = false
+  }, [onChange])
+
+  const scheduleZflowSync = useCallback(
+    (delay = 420) => {
+      if (!zflowSyncRef.current.dirty || draggingRef.current) return
+      if (syncTimerRef.current !== null) window.clearTimeout(syncTimerRef.current)
+      syncTimerRef.current = window.setTimeout(() => {
+        syncTimerRef.current = null
+        if (!draggingRef.current) flushZflowChange()
+      }, delay)
+    },
+    [flushZflowChange],
+  )
+
+  useEffect(() => {
+    return () => {
+      if (syncTimerRef.current !== null) window.clearTimeout(syncTimerRef.current)
+    }
+  }, [])
+
+  const handleNodesChange = useCallback(
+    (changes: NodeChange<ZflowNode>[]) => {
+      const safeChanges = changes.filter((change) => !(change.type === 'remove' && change.id === ZFLOW_START_NODE_ID))
+      const hasPersistableChange = safeChanges.some(isPersistableZflowNodeChange)
+      if (hasPersistableChange) zflowSyncRef.current.dirty = true
+      applyNodesChange(safeChanges)
+      if (hasPersistableChange) scheduleZflowSync()
+    },
+    [applyNodesChange, scheduleZflowSync],
+  )
+
+  const handleEdgesChange = useCallback(
+    (changes: EdgeChange<ZflowEdge>[]) => {
+      const hasPersistableChange = changes.some(isPersistableZflowEdgeChange)
+      if (hasPersistableChange) zflowSyncRef.current.dirty = true
+      applyEdgesChange(changes)
+      if (hasPersistableChange) scheduleZflowSync()
+    },
+    [applyEdgesChange, scheduleZflowSync],
+  )
+
+  const handleNodeDragStart = useCallback(() => {
+    draggingRef.current = true
+    if (syncTimerRef.current !== null) {
+      window.clearTimeout(syncTimerRef.current)
+      syncTimerRef.current = null
+    }
+  }, [])
+
+  const handleNodeDrag = useCallback(
+    (_: React.MouseEvent, node: ZflowNode, draggedNodes: ZflowNode[]) => {
+      if (draggedNodes.length !== 1) {
+        if (alignmentGuidesRef.current.length) {
+          alignmentGuidesRef.current = []
+          setAlignmentGuides([])
+        }
+        return
+      }
+      const result = getZflowNodeAlignmentResult(node, latestStateRef.current.nodes, latestStateRef.current.viewport.zoom)
+      if (!areZflowAlignmentGuidesEqual(alignmentGuidesRef.current, result.guides)) {
+        alignmentGuidesRef.current = result.guides
+        setAlignmentGuides(result.guides)
+      }
+      if (!result.changed) return
+      setNodes((currentNodes) => {
+        const nextNodes = currentNodes.map((currentNode) =>
+          currentNode.id === node.id ? { ...currentNode, position: result.position } : currentNode,
+        )
+        latestStateRef.current = { ...latestStateRef.current, nodes: nextNodes }
+        return nextNodes
+      })
+    },
+    [setNodes],
+  )
+
+  const handleNodeDragStop = useCallback(() => {
+    draggingRef.current = false
+    if (alignmentGuidesRef.current.length) {
+      alignmentGuidesRef.current = []
+      setAlignmentGuides([])
+    }
+    scheduleZflowSync(220)
+  }, [scheduleZflowSync])
+
+  const updateViewport = useCallback(
+    (nextViewport: Viewport) => {
+      if (areZflowViewportsEqual(latestStateRef.current.viewport, nextViewport)) return
+      const normalizedViewport = normalizeZflowViewport(nextViewport)
+      latestStateRef.current = { ...latestStateRef.current, viewport: normalizedViewport }
+      zflowSyncRef.current.dirty = true
+      setViewport(normalizedViewport)
+      scheduleZflowSync()
+    },
+    [scheduleZflowSync],
+  )
+
+  const isValidConnection = useCallback(
+    (connection: ZflowEdge | Connection) =>
+      !isRunMode && canCreateZflowConnection(connection, latestStateRef.current.nodes, latestStateRef.current.edges, promptKindByPath),
+    [isRunMode, promptKindByPath],
+  )
+
+  const handleConnect = useCallback(
+    (connection: Connection) => {
+      if (isRunMode) return
+      if (!connection.source || !connection.target || connection.source === connection.target) return
+      zflowSyncRef.current.dirty = true
+      setEdges((currentEdges) => {
+        if (!canCreateZflowConnection(connection, latestStateRef.current.nodes, currentEdges, promptKindByPath)) return currentEdges
+        const nextEdge = createZflowEdgeFromConnection(connection, latestStateRef.current.nodes, currentEdges, promptKindByPath)
+        if (!nextEdge) return currentEdges
+        const duplicate = currentEdges.some(
+          (edge) =>
+            edge.source === nextEdge.source &&
+            edge.target === nextEdge.target &&
+            edge.sourceHandle === nextEdge.sourceHandle &&
+            edge.targetHandle === nextEdge.targetHandle,
+        )
+        if (duplicate) return currentEdges
+        const nextEdges = currentEdges.concat(nextEdge)
+        latestStateRef.current = { ...latestStateRef.current, edges: nextEdges }
+        return nextEdges
+      })
+      scheduleZflowSync(120)
+    },
+    [isRunMode, promptKindByPath, scheduleZflowSync, setEdges],
+  )
+
+  const handleBeforeDelete = useCallback(
+    async ({ nodes: nodesToDelete, edges: edgesToDelete }: { nodes: ZflowNode[]; edges: ZflowEdge[] }) => {
+      const filteredNodes = nodesToDelete.filter((node) => !isZflowStartNode(node))
+      const blockedStartNodeIds = new Set(nodesToDelete.filter(isZflowStartNode).map((node) => node.id))
+      const filteredEdges = edgesToDelete.filter((edge) => !blockedStartNodeIds.has(edge.source) && !blockedStartNodeIds.has(edge.target))
+      return { nodes: filteredNodes, edges: filteredEdges }
+    },
+    [],
+  )
+
+  const updateZflowNodeData = useCallback(
+    (nodeId: string, data: Partial<ZflowNodeData>) => {
+      zflowSyncRef.current.dirty = true
+      setNodes((currentNodes) => {
+        const nextNodes = currentNodes.map((node) => (node.id === nodeId ? { ...node, data: { ...node.data, ...data } } : node))
+        latestStateRef.current = { ...latestStateRef.current, nodes: nextNodes }
+        return nextNodes
+      })
+      scheduleZflowSync(160)
+    },
+    [scheduleZflowSync, setNodes],
+  )
+
+  const updateZflowNodeOutputData = useCallback(
+    (nodeId: string, outputData: ZflowNodePort[]) => {
+      zflowSyncRef.current.dirty = true
+      setNodes((currentNodes) => {
+        const nextNodes = currentNodes.map((node) => (node.id === nodeId ? { ...node, data: { ...node.data, outputData } } : node))
+        latestStateRef.current = { ...latestStateRef.current, nodes: nextNodes }
+        return nextNodes
+      })
+      scheduleZflowSync(120)
+    },
+    [scheduleZflowSync, setNodes],
+  )
+
+  const updateZflowNodeOutputPorts = useCallback(
+    (nodeId: string, outputPorts: ZflowNodePort[], removedOutputPortIds: string[] = []) => {
+      zflowSyncRef.current.dirty = true
+      setNodes((currentNodes) => {
+        const nextNodes = currentNodes.map((node) => (node.id === nodeId ? { ...node, data: { ...node.data, outputPorts } } : node))
+        latestStateRef.current = { ...latestStateRef.current, nodes: nextNodes }
+        return nextNodes
+      })
+      if (removedOutputPortIds.length) {
+        const removed = new Set(removedOutputPortIds.map(normalizeZflowHandleId).filter((id): id is string => Boolean(id)))
+        setEdges((currentEdges) => {
+          const nextEdges = currentEdges.filter((edge) => edge.source !== nodeId || !removed.has(normalizeZflowHandleId(edge.sourceHandle) || ''))
+          latestStateRef.current = { ...latestStateRef.current, edges: nextEdges }
+          return nextEdges
+        })
+      }
+      scheduleZflowSync(120)
+    },
+    [scheduleZflowSync, setEdges, setNodes],
+  )
+
+  const handleFlowNodeClick = useCallback((_: React.MouseEvent, node: ZflowNode) => {
+    setSelectedNodeId(node.id)
+    setSelectedNodeIds([node.id])
+    setSelectedEdgeIds([])
+    setPanelTab('editor')
+  }, [])
+
+  const handleSelectionChange = useCallback(({ nodes: selectedNodes, edges: selectedEdges }: { nodes: ZflowNode[]; edges: ZflowEdge[] }) => {
+    const ids = selectedNodes.map((node) => node.id)
+    setSelectedEdgeIds(selectedEdges.map((edge) => edge.id))
+    setSelectedNodeIds(ids)
+    if (ids.length === 1) {
+      setSelectedNodeId(ids[0] || '')
+      setPanelTab('editor')
+      return
+    }
+    setSelectedNodeId('')
+    setPanelTab('nodes')
+  }, [])
+
+  const handlePaneClick = useCallback(() => {
+    setSelectedNodeId('')
+    setSelectedNodeIds([])
+    setSelectedEdgeIds([])
+    setAlignmentGuides([])
+    setPanelTab('nodes')
+  }, [])
+
+  const handleCanvasDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    const types = Array.from(event.dataTransfer.types || [])
+    if (!types.includes(ZFLOW_NODE_DRAG_MIME) && !hasZpmtFileDrag(event.dataTransfer)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }, [])
+
+  const handleCanvasDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      const templateId = event.dataTransfer.getData(ZFLOW_NODE_DRAG_MIME)
+      const template = getZflowNodeTemplateById(templateId)
+      const position = reactFlowInstanceRef.current
+        ? reactFlowInstanceRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY })
+        : { x: event.clientX, y: event.clientY }
+
+      if (template) {
+        event.preventDefault()
+        zflowSyncRef.current.dirty = true
+        setNodes((currentNodes) => {
+          const nextNode = createZflowNodeFromTemplate(template, position, locale, currentNodes)
+          const nextNodes = currentNodes.concat(nextNode)
+          latestStateRef.current = { ...latestStateRef.current, nodes: nextNodes }
+          return nextNodes
+        })
+        scheduleZflowSync(80)
+        return
+      }
+
+      const zpmtPayload = readZpmtFileDragPayload(event.dataTransfer)
+      if (!zpmtPayload?.files.length) return
+      event.preventDefault()
+      if (zpmtPayload.projectId !== projectId) return
+      zflowSyncRef.current.dirty = true
+      setNodes((currentNodes) => {
+        const nextNodes = currentNodes.slice()
+        zpmtPayload.files.forEach((file, index) => {
+          nextNodes.push(createZflowNodeFromZpmtFile(file, { x: position.x + index * 36, y: position.y + index * 28 }, locale, nextNodes))
+        })
+        latestStateRef.current = { ...latestStateRef.current, nodes: nextNodes }
+        return nextNodes
+      })
+      scheduleZflowSync(80)
+    },
+    [locale, projectId, scheduleZflowSync, setNodes],
+  )
+
+  useEffect(() => {
+    scheduleZflowSync()
+  }, [nodes, edges, viewport, scheduleZflowSync])
+
+  useEffect(() => {
+    if (!selectedNodeId) return
+    if (nodes.some((node) => node.id === selectedNodeId)) return
+    setSelectedNodeId('')
+    setSelectedNodeIds([])
+    setSelectedEdgeIds([])
+    setPanelTab('nodes')
+  }, [nodes, selectedNodeId])
+
+  const copySelectedZflowNodes = useCallback(() => {
+    const nodeIds = new Set(selectedNodeIds)
+    const nodesToCopy = latestStateRef.current.nodes.filter((node) => nodeIds.has(node.id) && !isZflowStartNode(node))
+    if (!nodesToCopy.length) return false
+    const copyIds = new Set(nodesToCopy.map((node) => node.id))
+    const edgesToCopy = latestStateRef.current.edges.filter((edge) => copyIds.has(edge.source) && copyIds.has(edge.target))
+    clipboardRef.current = {
+      nodes: nodesToCopy.map(cloneZflowNodeForClipboard),
+      edges: edgesToCopy.map(cloneZflowEdgeForClipboard),
+      pasteCount: 0,
+    }
+    return true
+  }, [selectedNodeIds])
+
+  const pasteZflowClipboard = useCallback(() => {
+    const payload = clipboardRef.current
+    if (!payload?.nodes.length) return false
+    const pasteCount = payload.pasteCount + 1
+    const offset = 36 * pasteCount
+    const idMap = new Map<string, string>()
+    const currentNodes = latestStateRef.current.nodes
+    const currentEdges = latestStateRef.current.edges
+    const nextNodesToAdd = payload.nodes.map((node) => {
+      const nextId = createUniqueZflowNodeId(node.id, currentNodes.concat(Array.from(idMap.values()).map((id) => ({ id } as ZflowNode))))
+      idMap.set(node.id, nextId)
+      return cloneZflowNodeForPaste(node, nextId, offset)
+    })
+    const nextEdgesToAdd = payload.edges.flatMap((edge): ZflowEdge[] => {
+      const source = idMap.get(edge.source)
+      const target = idMap.get(edge.target)
+      if (!source || !target) return []
+      const nextConnection = { source, target, sourceHandle: edge.sourceHandle || 'out', targetHandle: edge.targetHandle || 'in' }
+      return [{
+        ...cloneZflowEdgeForClipboard(edge),
+        id: createZflowEdgeId(nextConnection, currentEdges),
+        source,
+        target,
+        sourceHandle: edge.sourceHandle,
+        targetHandle: edge.targetHandle,
+        selected: true,
+      }]
+    })
+    const pastedIds = nextNodesToAdd.map((node) => node.id)
+    zflowSyncRef.current.dirty = true
+    setNodes((current) => {
+      const nextNodes: ZflowNode[] = [...current.map((node): ZflowNode => ({ ...node, selected: false })), ...nextNodesToAdd]
+      latestStateRef.current = { ...latestStateRef.current, nodes: nextNodes }
+      return nextNodes
+    })
+    setEdges((current) => {
+      const nextEdges: ZflowEdge[] = [...current.map((edge): ZflowEdge => ({ ...edge, selected: false })), ...nextEdgesToAdd]
+      latestStateRef.current = { ...latestStateRef.current, edges: nextEdges }
+      return nextEdges
+    })
+    clipboardRef.current = { ...payload, pasteCount }
+    setSelectedNodeIds(pastedIds)
+    setSelectedEdgeIds(nextEdgesToAdd.map((edge) => edge.id))
+    setSelectedNodeId(pastedIds.length === 1 ? pastedIds[0] || '' : '')
+    setPanelTab(pastedIds.length === 1 ? 'editor' : 'nodes')
+    scheduleZflowSync(80)
+    return true
+  }, [scheduleZflowSync, setEdges, setNodes])
+
+  const cutSelectedZflowNodes = useCallback(() => {
+    if (!copySelectedZflowNodes()) return false
+    const nodeIds = new Set(selectedNodeIds)
+    const edgeIds = new Set(selectedEdgeIds)
+    const removableNodeIds = new Set(latestStateRef.current.nodes.filter((node) => nodeIds.has(node.id) && !isZflowStartNode(node)).map((node) => node.id))
+    if (!removableNodeIds.size && !edgeIds.size) return false
+    zflowSyncRef.current.dirty = true
+    setNodes((current) => {
+      const nextNodes = current.filter((node) => !removableNodeIds.has(node.id))
+      latestStateRef.current = { ...latestStateRef.current, nodes: nextNodes }
+      return nextNodes
+    })
+    setEdges((current) => {
+      const nextEdges = current.filter((edge) => !edgeIds.has(edge.id) && !removableNodeIds.has(edge.source) && !removableNodeIds.has(edge.target))
+      latestStateRef.current = { ...latestStateRef.current, edges: nextEdges }
+      return nextEdges
+    })
+    setSelectedNodeId('')
+    setSelectedNodeIds([])
+    setSelectedEdgeIds([])
+    setPanelTab('nodes')
+    scheduleZflowSync(80)
+    return true
+  }, [copySelectedZflowNodes, scheduleZflowSync, selectedEdgeIds, selectedNodeIds, setEdges, setNodes])
+
+  useEffect(() => {
+    function handleKeyboardShortcut(event: KeyboardEvent) {
+      if (isRunMode) return
+      if (!isZflowClipboardShortcutEvent(event)) return
+      if (isEditableZflowShortcutTarget(event.target)) return
+      const key = event.key.toLowerCase()
+      const handled = key === 'c'
+        ? copySelectedZflowNodes()
+        : key === 'x'
+          ? cutSelectedZflowNodes()
+          : key === 'v'
+            ? pasteZflowClipboard()
+            : false
+      if (!handled) return
+      event.preventDefault()
+      event.stopPropagation()
+    }
+
+    window.addEventListener('keydown', handleKeyboardShortcut)
+    return () => window.removeEventListener('keydown', handleKeyboardShortcut)
+  }, [copySelectedZflowNodes, cutSelectedZflowNodes, isRunMode, pasteZflowClipboard])
+
+  const handleConnectStart = useCallback(
+    (_event: MouseEvent | TouchEvent, params: { nodeId: string | null; handleId: string | null; handleType?: 'source' | 'target' | null }) => {
+      if (!params.nodeId || params.handleType === 'target') return
+      const node = latestStateRef.current.nodes.find((item) => item.id === params.nodeId)
+      if (!node) return
+      const valueType = resolveZflowNodePortValueType(node, 'source', params.handleId, promptKindByPath)
+      setConnectionLineStyle({
+        stroke: getZflowValueTypeColor(valueType),
+        strokeWidth: 2.25,
+      })
+    },
+    [promptKindByPath],
+  )
+
+  const handleConnectEnd = useCallback(() => {
+    setConnectionLineStyle({
+      stroke: 'var(--zflow-edge-stroke)',
+      strokeWidth: 2.25,
+    })
+  }, [])
+
+  const handleAutoLayout = useCallback(() => {
+    const selectedIds = selectedNodeIds.length > 1 ? selectedNodeIds : undefined
+    let fitNodes: ZflowNode[] = []
+    zflowSyncRef.current.dirty = true
+    setNodes((currentNodes) => {
+      const nextNodes = layoutZflowNodes(currentNodes, latestStateRef.current.edges, selectedIds)
+      fitNodes = selectedIds?.length ? nextNodes.filter((node) => selectedIds.includes(node.id)) : nextNodes.filter((node) => !node.hidden)
+      latestStateRef.current = { ...latestStateRef.current, nodes: nextNodes }
+      return nextNodes
+    })
+    scheduleZflowSync(120)
+    window.requestAnimationFrame(() => {
+      void reactFlowInstanceRef.current?.fitView({
+        nodes: fitNodes,
+        duration: 240,
+        padding: 0.18,
+        includeHiddenNodes: false,
+      })
+    })
+  }, [scheduleZflowSync, selectedNodeIds, setNodes])
+
+  const visibleNodeCount = presentedNodes.filter((node) => !node.hidden).length
+  const visibleEdgeCount = presentedEdges.filter((edge) => !edge.hidden).length
+  const selectedNode = selectedNodeId ? presentedNodes.find((node) => node.id === selectedNodeId) || null : null
+
+  const handleRunFlow = useCallback(async (inputValues: ZflowRunInputValues = runInputValues) => {
+    if (isRunning) return
+    flushZflowChange()
+    if (runEventFlushFrameRef.current !== null) {
+      window.cancelAnimationFrame(runEventFlushFrameRef.current)
+      runEventFlushFrameRef.current = null
+    }
+    runEventQueueRef.current = []
+    setIsRunning(true)
+    setRunEvents([])
+    setRunPanelTab('monitor')
+    try {
+      const startInputs = getZflowStartRunInput(latestStateRef.current.nodes, inputValues)
+      const response = await fetch('/api/flows/run', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          projectId,
+          document: { ...documentRef.current, ...latestStateRef.current },
+          input: startInputs,
+          maxSteps: 60,
+        }),
+      })
+      if (!response.ok || !response.body) {
+        const data = await response.json().catch(() => null)
+        flushQueuedRunEvents()
+        setRunEvents([{ type: 'run:error', message: readString(data?.message) || '流程运行失败' }])
+        return
+      }
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const chunks = buffer.split('\n\n')
+        buffer = chunks.pop() || ''
+        for (const chunk of chunks) {
+          const dataLine = chunk.split('\n').find((line) => line.startsWith('data: '))
+          if (!dataLine) continue
+          const event = JSON.parse(dataLine.slice(6)) as Record<string, unknown>
+          enqueueRunEvent(event)
+        }
+      }
+      flushQueuedRunEvents()
+    } catch (error) {
+      flushQueuedRunEvents()
+      setRunEvents([{ type: 'run:error', message: error instanceof Error ? error.message : '流程运行失败' }])
+    } finally {
+      setIsRunning(false)
+    }
+  }, [enqueueRunEvent, flushQueuedRunEvents, flushZflowChange, isRunning, projectId, runInputValues])
+
+  useEffect(() => {
+    if (!projectId || !promptRunFilePaths.length) return
+    const openedPromptPaths = new Set(editorTabs.filter((tab) => tab.projectId === projectId && isZpmtFilePath(tab.path)).map((tab) => tab.path))
+    const pathsToLoad = promptRunFilePaths.filter((filePath) => {
+      if (openedPromptPaths.has(filePath)) return false
+      const cached = promptFileCacheRef.current[createZflowPromptFileCacheKey(projectId, filePath)]
+      return !cached?.content && !cached?.error && !promptFileRequestsRef.current.has(createZflowPromptFileCacheKey(projectId, filePath))
+    })
+    if (!pathsToLoad.length) return
+
+    for (const filePath of pathsToLoad) {
+      const cacheKey = createZflowPromptFileCacheKey(projectId, filePath)
+      promptFileRequestsRef.current.add(cacheKey)
+      const query = new URLSearchParams({ projectId, path: filePath })
+      fetch(`/api/projects/files?${query.toString()}`)
+        .then((response) => (response.ok ? response.json() : response.json().catch(() => null)))
+        .then((response) => {
+          if (!response?.ok || !response.file) {
+            setPromptFileCache((current) => ({ ...current, [cacheKey]: { error: readString(response?.message) || '文件读取失败' } }))
+            return
+          }
+          setPromptFileCache((current) => ({ ...current, [cacheKey]: { content: readString(response.file.content) } }))
+        })
+        .catch((error) => {
+          setPromptFileCache((current) => ({ ...current, [cacheKey]: { error: error instanceof Error ? error.message : '文件读取失败' } }))
+        })
+        .finally(() => {
+          promptFileRequestsRef.current.delete(cacheKey)
+        })
+    }
+  }, [openedPromptPathKey, projectId, promptRunFilePathKey, promptRunFilePaths])
+
+  return (
+    <div className="zflow-canvas-editor">
+      <div ref={stageRef} className="zflow-canvas-editor__stage" onDragOver={handleCanvasDragOver} onDrop={handleCanvasDrop}>
+        <ReactFlow
+          nodes={presentedNodes}
+          edges={presentedEdges}
+          nodeTypes={nodeTypes}
+          defaultEdgeOptions={defaultEdgeOptions}
+          defaultViewport={document.viewport}
+          minZoom={0.25}
+          maxZoom={2}
+          snapToGrid
+          snapGrid={ZFLOW_SNAP_GRID}
+          nodesDraggable={!isRunMode}
+          nodesConnectable={!isRunMode}
+          elementsSelectable
+          selectionOnDrag={interactionMode === 'select'}
+          selectionMode={SelectionMode.Partial}
+          panOnDrag={interactionMode === 'pan' ? true : [1, 2]}
+          panOnScroll
+          fitView={false}
+        deleteKeyCode={isRunMode ? null : ['Backspace', 'Delete']}
+        onlyRenderVisibleElements
+        connectionLineStyle={connectionLineStyle}
+          proOptions={{ hideAttribution: true }}
+          isValidConnection={isValidConnection}
+          onInit={(instance) => {
+            reactFlowInstanceRef.current = instance
+          }}
+          onConnectStart={handleConnectStart}
+          onConnectEnd={handleConnectEnd}
+          onConnect={handleConnect}
+          onBeforeDelete={handleBeforeDelete}
+          onNodesChange={handleNodesChange}
+          onEdgesChange={handleEdgesChange}
+          onSelectionChange={handleSelectionChange}
+          onNodeClick={handleFlowNodeClick}
+          onPaneClick={handlePaneClick}
+          onNodeDragStart={handleNodeDragStart}
+          onNodeDrag={handleNodeDrag}
+          onNodeDragStop={handleNodeDragStop}
+          onMoveEnd={(_, nextViewport) => updateViewport(nextViewport)}
+        >
+          <Panel position="top-center">
+            <div className="zflow-canvas-toolbar">
+              <Button
+                type="button"
+                size="icon"
+                variant={interactionMode === 'pan' ? 'secondary' : 'outline'}
+                title={t.zflowToolbarMove}
+                aria-label={t.zflowToolbarMove}
+                onClick={() => setInteractionMode('pan')}
+              >
+                <Hand className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                type="button"
+                size="icon"
+                variant={interactionMode === 'select' ? 'secondary' : 'outline'}
+                title={t.zflowToolbarSelect}
+                aria-label={t.zflowToolbarSelect}
+                onClick={() => setInteractionMode('select')}
+              >
+                <MousePointer2 className="h-3.5 w-3.5" />
+              </Button>
+              <div className="zflow-canvas-toolbar__divider" />
+              <Button type="button" size="icon" variant="outline" title={t.zflowToolbarAutoLayout} aria-label={t.zflowToolbarAutoLayout} onClick={handleAutoLayout}>
+                <LayoutGrid className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                type="button"
+                size="icon"
+                variant="outline"
+                title={t.zflowToolbarFitView}
+                aria-label={t.zflowToolbarFitView}
+                onClick={() => void reactFlowInstanceRef.current?.fitView({ duration: 220, padding: 0.18, includeHiddenNodes: false })}
+              >
+                <Maximize2 className="h-3.5 w-3.5" />
+              </Button>
+              <Button type="button" size="icon" variant="outline" title={t.zflowToolbarZoomIn} aria-label={t.zflowToolbarZoomIn} onClick={() => void reactFlowInstanceRef.current?.zoomIn({ duration: 180 })}>
+                <ZoomIn className="h-3.5 w-3.5" />
+              </Button>
+              <Button type="button" size="icon" variant="outline" title={t.zflowToolbarZoomOut} aria-label={t.zflowToolbarZoomOut} onClick={() => void reactFlowInstanceRef.current?.zoomOut({ duration: 180 })}>
+                <ZoomOut className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </Panel>
+          <Background gap={24} size={1.1} color="rgba(100,116,139,0.28)" />
+          <MiniMap
+            pannable
+            zoomable
+            bgColor="var(--zflow-minimap-bg)"
+            nodeColor={(node) => getZflowMiniMapNodeColor(node as ZflowNode)}
+            nodeStrokeColor="var(--zflow-minimap-node-stroke)"
+            nodeStrokeWidth={1.5}
+            nodeBorderRadius={6}
+            maskColor="var(--zflow-minimap-mask)"
+            maskStrokeColor="var(--zflow-minimap-mask-stroke)"
+            maskStrokeWidth={1}
+          />
+        </ReactFlow>
+        {renderedGuides.length ? (
+          <div className="zflow-canvas-guides" aria-hidden="true">
+            {renderedGuides.map((guide) => (
+              <div
+                key={guide.id}
+                className={guide.axis === 'x' ? 'zflow-canvas-guide zflow-canvas-guide--vertical' : 'zflow-canvas-guide zflow-canvas-guide--horizontal'}
+                style={guide.style}
+              />
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <ZflowNodePanel
+        t={t}
+        locale={locale}
+        nodeCount={visibleNodeCount}
+        edgeCount={visibleEdgeCount}
+        mode={mode}
+        isRunning={isRunning}
+        runPanelTab={runPanelTab}
+        runInputValues={runInputValues}
+        runEvents={runEvents}
+        activeTab={selectedNode ? panelTab : 'nodes'}
+        selectedNode={selectedNode}
+        onTabChange={setPanelTab}
+        onNodeDataChange={updateZflowNodeData}
+        onOutputDataChange={updateZflowNodeOutputData}
+        onOutputPortsChange={updateZflowNodeOutputPorts}
+        nodes={presentedNodes}
+        edges={presentedEdges}
+        promptKindByPath={promptKindByPath}
+        aiProviders={aiProviders}
+        recipeVariableCategories={recipeVariableCategories}
+        editorTabs={editorTabs}
+        promptFileCache={promptFileCache}
+        projectId={projectId}
+        onOpenSource={onOpenSource}
+        onRunPanelTabChange={setRunPanelTab}
+        onRunInputChange={setRunInputValues}
+        onRunFlow={() => void handleRunFlow()}
+      />
+    </div>
+  )
+}
+
+function ZflowNodePanel({
+  t,
+  locale,
+  nodeCount,
+  edgeCount,
+  mode,
+  isRunning,
+  runPanelTab,
+  runInputValues,
+  runEvents,
+  activeTab,
+  selectedNode,
+  onTabChange,
+  onNodeDataChange,
+  onOutputDataChange,
+  onOutputPortsChange,
+  nodes,
+  edges,
+  promptKindByPath,
+  aiProviders,
+  recipeVariableCategories,
+  editorTabs,
+  promptFileCache,
+  projectId,
+  onOpenSource,
+  onRunPanelTabChange,
+  onRunInputChange,
+  onRunFlow,
+}: {
+  t: WorkbenchCopy
+  locale: Locale
+  nodeCount: number
+  edgeCount: number
+  mode: 'edit' | 'run'
+  isRunning: boolean
+  runPanelTab: ZflowRunPanelTab
+  runInputValues: ZflowRunInputValues
+  runEvents: Array<Record<string, unknown>>
+  activeTab: 'nodes' | 'editor'
+  selectedNode: ZflowNode | null
+  onTabChange: (tab: 'nodes' | 'editor') => void
+  onNodeDataChange: (nodeId: string, data: Partial<ZflowNodeData>) => void
+  onOutputDataChange: (nodeId: string, outputData: ZflowNodePort[]) => void
+  onOutputPortsChange: (nodeId: string, outputPorts: ZflowNodePort[], removedOutputPortIds?: string[]) => void
+  nodes: ZflowNode[]
+  edges: ZflowEdge[]
+  promptKindByPath: ZflowPromptKindByPath
+  aiProviders: AiProviderSummary[]
+  recipeVariableCategories: RecipeVariableCategory[]
+  editorTabs: EditorFileTab[]
+  promptFileCache: Record<string, ZflowPromptFileCacheEntry>
+  projectId: string
+  onOpenSource: () => void
+  onRunPanelTabChange: (tab: ZflowRunPanelTab) => void
+  onRunInputChange: (values: ZflowRunInputValues) => void
+  onRunFlow: () => void
+}) {
+  const stats = t.zflowStats.replace('{nodes}', String(nodeCount)).replace('{edges}', String(edgeCount))
+  const isRunMode = mode === 'run'
+
+  return (
+    <aside className="zflow-node-panel">
+      <div className="zflow-node-panel__topbar">
+        <div className="min-w-0">
+          <div className="zflow-node-panel__title">{isRunMode ? (locale === 'en' ? 'Test panel' : '测试面板') : t.zflowNodePanel}</div>
+          <div className="zflow-node-panel__stats">{stats}</div>
+        </div>
+        {!isRunMode ? <Button type="button" size="sm" variant="outline" onClick={onOpenSource}>
+          <Code2 className="h-3.5 w-3.5" />
+          {t.editorModes.source}
+        </Button> : null}
+      </div>
+      {isRunMode ? (
+        <ZflowRunPanel
+          t={t}
+          locale={locale}
+          tab={runPanelTab}
+          inputValues={runInputValues}
+          runEvents={runEvents}
+          isRunning={isRunning}
+          nodes={nodes}
+          onTabChange={onRunPanelTabChange}
+          onInputChange={onRunInputChange}
+          onRun={onRunFlow}
+        />
+      ) : (
+      <Tabs
+        value={selectedNode ? activeTab : 'nodes'}
+        onValueChange={(value) => {
+          if (value === 'nodes') onTabChange('nodes')
+          if (value === 'editor' && selectedNode) onTabChange('editor')
+        }}
+        className="zflow-node-panel__tabs"
+      >
+        <TabsList className="zflow-node-panel__tablist">
+          <TabsTrigger value="nodes" className="zflow-node-panel__tab">
+            {t.zflowNodeList}
+          </TabsTrigger>
+          {selectedNode ? (
+            <TabsTrigger value="editor" className="zflow-node-panel__tab">
+              {t.zflowNodeEditor}
+            </TabsTrigger>
+          ) : null}
+        </TabsList>
+        <TabsContent value="nodes" className="zflow-node-panel__content">
+          {ZFLOW_NODE_CATEGORY_DEFINITIONS.flatMap((category) => {
+            const templates = ZFLOW_NODE_TEMPLATES.filter((template) => template.category === category.id)
+            if (!templates.length) return []
+            const CategoryIcon = category.icon
+            return [(
+              <section key={category.id} className="zflow-node-section">
+                <div className="zflow-node-section__heading">
+                  <span className={`zflow-node-section__icon zflow-node-section__icon--${category.id}`}>
+                    <CategoryIcon className="h-3.5 w-3.5" />
+                  </span>
+                  <span>{localizeZflowText(category.label, locale)}</span>
+                  <Badge variant="outline">{templates.length}</Badge>
+                </div>
+                <div className="zflow-node-section__grid">
+                  {templates.map((template) => (
+                    <ZflowNodeTemplateCard key={template.id} template={template} locale={locale} />
+                  ))}
+                </div>
+              </section>
+            )]
+          })}
+        </TabsContent>
+        {selectedNode ? (
+          <TabsContent value="editor" className="zflow-node-panel__content zflow-node-panel__content--editor">
+            <ZflowNodeEditor
+              t={t}
+              locale={locale}
+              node={selectedNode}
+              nodes={nodes}
+              edges={edges}
+              promptKindByPath={promptKindByPath}
+              aiProviders={aiProviders}
+              recipeVariableCategories={recipeVariableCategories}
+              editorTabs={editorTabs}
+              promptFileCache={promptFileCache}
+              projectId={projectId}
+              onChange={onNodeDataChange}
+              onOutputDataChange={onOutputDataChange}
+              onOutputPortsChange={onOutputPortsChange}
+            />
+          </TabsContent>
+        ) : null}
+      </Tabs>
+      )}
+    </aside>
+  )
+}
+
+function ZflowRunPanel({
+  t,
+  locale,
+  tab,
+  inputValues,
+  runEvents,
+  isRunning,
+  nodes,
+  onTabChange,
+  onInputChange,
+  onRun,
+}: {
+  t: WorkbenchCopy
+  locale: Locale
+  tab: ZflowRunPanelTab
+  inputValues: ZflowRunInputValues
+  runEvents: Array<Record<string, unknown>>
+  isRunning: boolean
+  nodes: ZflowNode[]
+  onTabChange: (tab: ZflowRunPanelTab) => void
+  onInputChange: (values: ZflowRunInputValues) => void
+  onRun: () => void
+}) {
+  const startNode = nodes.find(isZflowStartNode)
+  const startInputs = startNode ? normalizeZflowNodeOutputData(startNode, locale) : []
+  const [mediaInputError, setMediaInputError] = useState('')
+  return (
+    <Tabs value={tab} onValueChange={(value) => (value === 'input' || value === 'monitor') && onTabChange(value)} className="zflow-node-panel__tabs">
+      <TabsList className="zflow-node-panel__tablist">
+        <TabsTrigger value="input" className="zflow-node-panel__tab">
+          {locale === 'en' ? 'Start input' : '起点输入'}
+        </TabsTrigger>
+        <TabsTrigger value="monitor" className="zflow-node-panel__tab">
+          {locale === 'en' ? 'Monitor' : '运行监控'}
+        </TabsTrigger>
+      </TabsList>
+      <TabsContent value="input" className="zflow-node-panel__content">
+        <section className="zflow-run-panel">
+          <div className="zflow-run-panel__heading">{locale === 'en' ? 'Start output data' : '起点内需要填写的输出数据'}</div>
+          <div className="zflow-run-panel__fields">
+            {startInputs.length ? startInputs.map((item) => {
+              const valueType = normalizeZflowPortValueType(item.valueType, 'string')
+              if (valueType === 'image' || valueType === 'file') {
+                const files = Array.isArray(inputValues[item.id]) ? inputValues[item.id] as ZpmtTestMediaFile[] : []
+                const variable: ZpmtTestVariable = {
+                  key: item.id,
+                  token: `{{${valueType === 'image' ? 'img' : 'file'}:${item.id}}}`,
+                  name: item.id,
+                  label: item.label || item.id,
+                  typeLabel: getZflowPortTypeLabel(valueType, t),
+                  variableType: valueType,
+                  mediaKind: valueType,
+                  defaultValue: '',
+                }
+                return (
+                  <div key={item.id} className="zflow-node-editor__field">
+                    <span>{item.label || item.id} · {getZflowPortTypeLabel(valueType, t)}</span>
+                    <TestMediaUploadControl
+                      t={t}
+                      variable={variable}
+                      files={files}
+                      disabled={isRunning}
+                      onChange={(nextFiles) => {
+                        setMediaInputError('')
+                        onInputChange({ ...inputValues, [item.id]: nextFiles })
+                      }}
+                      onError={setMediaInputError}
+                    />
+                  </div>
+                )
+              }
+              return (
+                <label key={item.id} className="zflow-node-editor__field">
+                  <span>{item.label || item.id} · {getZflowPortTypeLabel(valueType, t)}</span>
+                  <Textarea
+                    rows={valueType === 'object' || valueType === 'array' ? 4 : 2}
+                    value={readString(inputValues[item.id])}
+                    placeholder={getZflowRunInputPlaceholder(valueType, locale)}
+                    onChange={(event) => onInputChange({ ...inputValues, [item.id]: event.target.value })}
+                  />
+                </label>
+              )
+            }) : (
+              <div className="zflow-input-bindings__status">{locale === 'en' ? 'No start inputs configured' : '起点没有配置输入数据'}</div>
+            )}
+          </div>
+          {mediaInputError ? <div className="zflow-node-editor__error">{mediaInputError}</div> : null}
+          <Button type="button" size="sm" disabled={isRunning} onClick={onRun}>
+            <Play className="h-3.5 w-3.5" />
+            {isRunning ? (locale === 'en' ? 'Running' : '运行中') : (locale === 'en' ? 'Run' : '运行')}
+          </Button>
+        </section>
+      </TabsContent>
+      <TabsContent value="monitor" className="zflow-node-panel__content">
+        <ZflowRunMonitor locale={locale} events={runEvents} isRunning={isRunning} nodes={nodes} />
+      </TabsContent>
+    </Tabs>
+  )
+}
+
+function ZflowRunMonitor({ locale, events, isRunning, nodes }: { locale: Locale; events: Array<Record<string, unknown>>; isRunning: boolean; nodes: ZflowNode[] }) {
+  const [previewImage, setPreviewImage] = useState<{ src: string; alt?: string; index: number } | null>(null)
+  const nodeById = new Map(nodes.map((node) => [node.id, node]))
+  const visibleEvents = events.filter((event) => readString(event.type) !== 'node:end' || !('output' in event))
+  return (
+    <section className="zflow-run-panel">
+      <div className="zflow-run-panel__heading">
+        {isRunning ? (locale === 'en' ? 'Running...' : '正在运行...') : (locale === 'en' ? 'Run events' : '运行事件')}
+      </div>
+      <div className="zflow-run-monitor">
+        {visibleEvents.length ? visibleEvents.map((event, index) => {
+          const nodeId = readString(event.nodeId)
+          const node = nodeId ? nodeById.get(nodeId) || null : null
+          return (
+            <article key={`${readString(event.type)}-${index}`} className={cn('zflow-run-event', `zflow-run-event--${readString(event.type).replace(':', '-') || 'event'}`)}>
+              <div className="zflow-run-event__header">
+                <span>{formatZflowRunEventTitle(event, node, locale)}</span>
+                {typeof event.durationMs === 'number' ? <em>{Math.round(event.durationMs)}ms</em> : null}
+              </div>
+              {event.message ? <div className="zflow-run-event__message">{readString(event.message)}</div> : null}
+              {'output' in event ? <ZflowRunPayloadView value={event.output} preferRich={isZflowEndRunEvent(event, node)} onPreviewImage={setPreviewImage} /> : null}
+              {'state' in event ? <ZflowRunPayloadView value={event.state} /> : null}
+            </article>
+          )
+        }) : (
+          <div className="zflow-input-bindings__status">{locale === 'en' ? 'No run events yet' : '还没有运行事件'}</div>
+        )}
+      </div>
+      {previewImage ? createPortal(
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm" onMouseDown={() => setPreviewImage(null)}>
+          <div className="absolute right-4 top-4 flex items-center gap-2">
+            <a
+              className="grid h-9 w-9 place-items-center rounded-full bg-white/95 text-slate-700 shadow-lg transition hover:bg-white"
+              href={previewImage.src}
+              download={getZflowRunImageDownloadName(previewImage.src, previewImage.index)}
+              title={locale === 'en' ? 'Download image' : '下载图片'}
+              aria-label={locale === 'en' ? 'Download image' : '下载图片'}
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <Download className="h-4 w-4" />
+            </a>
+            <button
+              type="button"
+              className="grid h-9 w-9 place-items-center rounded-full bg-white/95 text-slate-700 shadow-lg transition hover:bg-white"
+              title={locale === 'en' ? 'Close' : '关闭'}
+              aria-label={locale === 'en' ? 'Close' : '关闭'}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={() => setPreviewImage(null)}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="grid justify-items-center" onMouseDown={(event) => event.stopPropagation()}>
+            <img className="max-h-[82vh] max-w-[92vw] rounded-lg bg-white object-contain shadow-2xl" src={previewImage.src} alt={previewImage.alt || `result-${previewImage.index + 1}`} />
+            {previewImage.alt ? (
+              <p className="mt-3 max-w-[92vw] rounded-md bg-white/95 p-3 text-xs leading-5 text-slate-700 shadow-xl">{previewImage.alt}</p>
+            ) : null}
+          </div>
+        </div>,
+        window.document.body,
+      ) : null}
+    </section>
+  )
+}
+
+function ZflowRunPayloadView({
+  value,
+  preferRich = false,
+  onPreviewImage,
+}: {
+  value: unknown
+  preferRich?: boolean
+  onPreviewImage?: (image: { src: string; alt?: string; index: number }) => void
+}) {
+  if (preferRich) {
+    const images = collectZflowRunImages(value)
+    const text = collectZflowRunText(value)
+    if (images.length || text.length) {
+      return (
+        <div className="zflow-run-event__result">
+          {text.map((item, index) => (
+            <div key={`text-${index}`} className="zflow-run-event__text">{item}</div>
+          ))}
+          {images.length ? (
+            <div className="zflow-run-event__images">
+              {images.map((image, index) => (
+                <button
+                  key={`${image.src}-${index}`}
+                  type="button"
+                  className="zflow-run-event__image-link"
+                  onClick={() => onPreviewImage?.({ ...image, index })}
+                >
+                  <img src={image.src} alt={image.alt || `result-${index + 1}`} />
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      )
+    }
+  }
+  if (typeof value === 'string') return <div className="zflow-run-event__text">{value}</div>
+  return <pre className="zflow-run-event__payload">{formatJsonForDisplay(value)}</pre>
+}
+
+function isZflowEndRunEvent(event: Record<string, unknown>, node: ZflowNode | null) {
+  const type = readString(event.type)
+  return type === 'run:end' || (type === 'node:end' && node ? readString(node.data.nodeType) === 'end' || readString(node.data.kind) === 'end' : false)
+}
+
+function collectZflowRunText(value: unknown): string[] {
+  if (typeof value === 'string') return value.trim() ? [value] : []
+  if (Array.isArray(value)) return value.flatMap(collectZflowRunText)
+  if (!isRecord(value)) return []
+  const direct = readString(value.output || value.result || value.text || value.content)
+  const nested = Object.entries(value)
+    .filter(([key]) => !isLikelyImageResultKey(key))
+    .flatMap(([, item]) => collectZflowRunText(item))
+  return Array.from(new Set([direct, ...nested].map((item) => item.trim()).filter(Boolean)))
+}
+
+function collectZflowRunImages(value: unknown): Array<{ src: string; alt?: string }> {
+  return dedupeZflowRunImages(collectZflowRunImagesDeep(value))
+}
+
+function collectZflowRunImagesDeep(value: unknown): Array<{ src: string; alt?: string }> {
+  if (typeof value === 'string') return isZflowImageSource(value) ? [{ src: value }] : []
+  if (Array.isArray(value)) return value.flatMap(collectZflowRunImagesDeep)
+  if (!isRecord(value)) return []
+  const src = readString(value.src || value.url || value.dataUrl || value.imageUrl)
+  if (isZflowImageSource(src)) {
+    return [{ src, alt: readString(value.revisedPrompt || value.alt || value.filename) || undefined }]
+  }
+  return Object.values(value).flatMap(collectZflowRunImagesDeep)
+}
+
+function dedupeZflowRunImages(images: Array<{ src: string; alt?: string }>) {
+  const seen = new Set<string>()
+  return images.filter((image) => {
+    if (seen.has(image.src)) return false
+    seen.add(image.src)
+    return true
+  })
+}
+
+function isLikelyImageResultKey(key: string) {
+  const normalized = key.toLowerCase()
+  return normalized.includes('image') || normalized.includes('images') || normalized.includes('src') || normalized.includes('url')
+}
+
+function isZflowImageSource(value: string) {
+  if (!value) return false
+  if (/^data:image\//i.test(value)) return true
+  return /^https?:\/\/\S+\.(png|jpe?g|webp|gif|bmp|svg)(?:[?#]\S*)?$/i.test(value)
+}
+
+function getZflowRunImageDownloadName(src: string, index: number) {
+  return `zflow-result-${index + 1}.${inferPromptTestImageExtension(src)}`
+}
+
+function getZflowRunInputPlaceholder(valueType: ZflowPortValueType, locale: Locale) {
+  const type = normalizeZflowPortValueType(valueType, 'string')
+  if (type === 'array') return '[...]'
+  if (type === 'object') return '{"key":"value"}'
+  if (type === 'boolean') return locale === 'en' ? 'true / false' : 'true / false'
+  if (type === 'number') return '0'
+  return locale === 'en' ? 'Enter value' : '填写内容'
+}
+
+function getZflowStartRunInput(nodes: ZflowNode[], values: ZflowRunInputValues) {
+  const startNode = nodes.find(isZflowStartNode)
+  const ports = startNode ? normalizeZflowNodeOutputData(startNode, 'zh') : []
+  return Object.fromEntries(ports.map((port) => [port.id, parseZflowRunInputValue(values[port.id] ?? '', port.valueType || 'string')]))
+}
+
+function parseZflowRunInputValue(value: string | ZpmtTestMediaFile[], valueType: ZflowPortValueType) {
+  const type = normalizeZflowPortValueType(valueType, 'string')
+  if (type === 'image' || type === 'file') return Array.isArray(value) ? value : []
+  const textValue = readString(value)
+  if (type === 'number') {
+    const numberValue = Number(textValue)
+    return Number.isFinite(numberValue) ? numberValue : textValue
+  }
+  if (type === 'boolean') return textValue === 'true' || textValue === '1' || textValue === '是'
+  if (type === 'array' || type === 'object') {
+    try {
+      return textValue.trim() ? JSON.parse(textValue) : type === 'array' ? [] : {}
+    } catch {
+      return textValue
+    }
+  }
+  return textValue
+}
+
+function formatZflowRunEventTitle(event: Record<string, unknown>, node: ZflowNode | null, locale: Locale) {
+  const type = readString(event.type)
+  const nodeLabel = node ? readString(node.data.label) || node.id : readString(event.nodeId)
+  if (type === 'run:start') return locale === 'en' ? 'Run started' : '流程开始'
+  if (type === 'run:end') return locale === 'en' ? 'Run finished' : '流程结束'
+  if (type === 'run:error') return locale === 'en' ? 'Run failed' : '流程失败'
+  if (type === 'node:start') return `${nodeLabel} · ${locale === 'en' ? 'started' : '触发'}`
+  if (type === 'node:update') return `${nodeLabel} · ${locale === 'en' ? 'state update' : '状态更新'}`
+  if (type === 'node:end') return `${nodeLabel} · ${locale === 'en' ? 'output' : '输出'}`
+  if (type === 'node:error') return `${nodeLabel} · ${locale === 'en' ? 'failed' : '失败'}`
+  if (type === 'diagnostic') return locale === 'en' ? 'Diagnostic' : '诊断'
+  return type || (locale === 'en' ? 'Event' : '事件')
+}
+
+function formatJsonForDisplay(value: unknown) {
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+function ZflowNodeEditor({
+  t,
+  locale,
+  node,
+  nodes,
+  edges,
+  promptKindByPath,
+  aiProviders,
+  recipeVariableCategories,
+  editorTabs,
+  promptFileCache,
+  projectId,
+  onChange,
+  onOutputDataChange,
+  onOutputPortsChange,
+}: {
+  t: WorkbenchCopy
+  locale: Locale
+  node: ZflowNode
+  nodes: ZflowNode[]
+  edges: ZflowEdge[]
+  promptKindByPath: ZflowPromptKindByPath
+  aiProviders: AiProviderSummary[]
+  recipeVariableCategories: RecipeVariableCategory[]
+  editorTabs: EditorFileTab[]
+  promptFileCache: Record<string, ZflowPromptFileCacheEntry>
+  projectId: string
+  onChange: (nodeId: string, data: Partial<ZflowNodeData>) => void
+  onOutputDataChange: (nodeId: string, outputData: ZflowNodePort[]) => void
+  onOutputPortsChange: (nodeId: string, outputPorts: ZflowNodePort[], removedOutputPortIds?: string[]) => void
+}) {
+  const inputPorts = normalizeZflowNodePortsForDirection(node.data, 'target')
+  const outputPorts = normalizeZflowNodePortsForDirection(node.data, 'source')
+  const outputData = normalizeZflowNodeOutputData(node, locale, promptKindByPath)
+  const canEditOutputData = isZflowOutputDataEditable(node)
+  const canEditOutputPorts = isZflowOutputPortsEditable(node)
+  const isEndNode = readString(node.data.nodeType) === 'end' || readString(node.data.kind) === 'end'
+  const bindingView = useMemo(
+    () => getZflowInputBindingView({
+      node,
+      inputPorts,
+      t,
+      locale,
+      projectId,
+      aiProviders,
+      recipeVariableCategories,
+      editorTabs,
+      promptFileCache,
+    }),
+    [aiProviders, editorTabs, inputPorts, locale, node, projectId, promptFileCache, recipeVariableCategories, t],
+  )
+  const upstreamOptions = useMemo(
+    () => getZflowUpstreamOutputOptions(node.id, nodes, edges, promptKindByPath),
+    [edges, node.id, nodes, promptKindByPath],
+  )
+  const inputBindings = isEndNode ? readZflowEndInputBindings(node.data.config) : readZflowInputBindings(node.data.config)
+
+  function updateInputBinding(key: string, binding: ZflowInputBinding) {
+    const config = cloneZflowConfig(isRecord(node.data.config) ? node.data.config : {})
+    const currentBindings = readZflowInputBindings(config)
+    if (isEndNode && !Array.isArray(config.returnValues)) {
+      config.returnValues = bindingView.items.map((item) => ({
+        id: item.key,
+        label: item.label,
+        valueType: item.valueType,
+      }))
+      delete config.returnPaths
+    }
+    config.bindings = {
+      ...currentBindings,
+      [key]: normalizeZflowInputBinding(binding),
+    }
+    delete config.inputBindings
+    onChange(node.id, { config })
+  }
+
+  function updateReturnValues(returnValues: ZflowNodePort[]) {
+    const config = cloneZflowConfig(isRecord(node.data.config) ? node.data.config : {})
+    const currentBindings = readZflowEndInputBindings(config)
+    const nextIds = new Set(returnValues.map((item) => item.id))
+    config.returnValues = returnValues
+    config.bindings = Object.fromEntries(Object.entries(currentBindings).filter(([key]) => nextIds.has(key)))
+    delete config.returnPaths
+    delete config.inputBindings
+    onChange(node.id, { config })
+  }
+
+  return (
+    <div className="zflow-node-editor">
+      <label className="zflow-node-editor__field">
+        <span>{t.zflowNodeName}</span>
+        <Input value={readString(node.data.label)} onChange={(event) => onChange(node.id, { label: event.target.value })} />
+      </label>
+      <label className="zflow-node-editor__field">
+        <span>{t.zflowNodeDescription}</span>
+        <Textarea value={readString(node.data.description)} rows={3} onChange={(event) => onChange(node.id, { description: event.target.value })} />
+      </label>
+      {!isZflowStartNode(node) ? (
+        <ZflowNodeRuntimeFields locale={locale} node={node} onChange={onChange} />
+      ) : null}
+      {canEditOutputPorts ? (
+        <div className="zflow-node-editor__meta zflow-node-editor__meta--start">
+          <div>
+            <span>{t.zflowNodeOutputPorts}</span>
+            <ZflowOutputPortEditor t={t} locale={locale} node={node} ports={outputPorts} onChange={onOutputPortsChange} />
+          </div>
+        </div>
+      ) : null}
+      {canEditOutputData ? (
+        <section className="zflow-node-editor__meta zflow-node-editor__meta--start">
+          <ZflowOutputDataEditor t={t} locale={locale} node={node} outputData={outputData} readonly={!isZflowOutputDataEditable(node)} onChange={onOutputDataChange} />
+        </section>
+      ) : outputData.length ? (
+        <section className="zflow-node-editor__meta zflow-node-editor__meta--start">
+          <div>
+            <span>{t.zflowNodeOutputData}</span>
+            <div className="zflow-node-editor__port-list">
+              {outputData.map((port) => (
+                <span key={port.id} className="zflow-node-editor__port-chip">
+                  <strong>{port.label || port.id}</strong>
+                  <em style={getZflowPortBadgeStyle(port.valueType || 'any')}>{getZflowPortTypeLabel(port.valueType || 'any', t)}</em>
+                </span>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : null}
+      {bindingView.items.length || isEndNode ? (
+        <ZflowInputBindingEditor
+          t={t}
+          locale={locale}
+          items={bindingView.items}
+          bindings={inputBindings}
+          upstreamOptions={upstreamOptions}
+          onChange={updateInputBinding}
+          editableItems={isEndNode}
+          onItemsChange={isEndNode ? updateReturnValues : undefined}
+        />
+      ) : bindingView.status ? (
+        <ZflowInputBindingStatus locale={locale} status={bindingView.status} />
+      ) : null}
+    </div>
+  )
+}
+
+function ZflowOutputDataEditor({
+  t,
+  locale,
+  node,
+  outputData,
+  readonly = false,
+  onChange,
+}: {
+  t: WorkbenchCopy
+  locale: Locale
+  node: ZflowNode
+  outputData: ZflowNodePort[]
+  readonly?: boolean
+  onChange: (nodeId: string, outputData: ZflowNodePort[]) => void
+}) {
+  const normalizedOutputs = outputData.length ? outputData : getDefaultZflowOutputDataForNode(node, locale)
+  const allowedTypes = isZflowStartNode(node) ? ZFLOW_START_OUTPUT_TYPES : ['any', 'string', 'number', 'text', 'object', 'array', 'color', 'boolean', 'image', 'file'] as ZflowPortValueType[]
+
+  function commit(nextOutputs: ZflowNodePort[]) {
+    onChange(node.id, nextOutputs.map((port) => ({
+      id: normalizeZflowHandleId(port.id) || createZflowStartOutputId(port.label, nextOutputs),
+      label: readString(port.label) || (locale === 'en' ? 'Output' : '输出'),
+      valueType: isZflowStartNode(node) ? normalizeZflowStartOutputType(port.valueType) : normalizeZflowPortValueType(port.valueType, 'any'),
+    })))
+  }
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span>{t.zflowNodeOutputData}</span>
+        {!readonly ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="zflow-node-editor__port-add"
+            onClick={() => {
+              const label = locale === 'en' ? `Output ${normalizedOutputs.length + 1}` : `输出 ${normalizedOutputs.length + 1}`
+              commit(normalizedOutputs.concat({ id: createZflowStartOutputId(label, normalizedOutputs), label, valueType: 'string' }))
+            }}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {t.zflowStartAddOutput}
+          </Button>
+        ) : null}
+      </div>
+      <div className="zflow-node-editor__port-list zflow-node-editor__port-list--editable">
+        {normalizedOutputs.map((port, index) => (
+          <div key={port.id} className="zflow-node-editor__port-chip zflow-node-editor__port-chip--editable">
+            <Input
+              className="zflow-node-editor__port-input"
+              aria-label={t.zflowOutputName}
+              value={port.label}
+              readOnly={readonly}
+              onChange={(event) => {
+                const nextOutputs = normalizedOutputs.map((item, itemIndex) => (itemIndex === index ? { ...item, label: event.target.value } : item))
+                commit(nextOutputs)
+              }}
+            />
+            <select
+              className="zflow-node-editor__port-select"
+              style={getZflowPortBadgeStyle(normalizeZflowStartOutputType(port.valueType))}
+              aria-label={t.zflowOutputType}
+              disabled={readonly}
+              value={isZflowStartNode(node) ? normalizeZflowStartOutputType(port.valueType) : normalizeZflowPortValueType(port.valueType, 'any')}
+              onChange={(event) => {
+                const nextValueType = isZflowStartNode(node) ? normalizeZflowStartOutputType(event.target.value) : normalizeZflowPortValueType(event.target.value, 'any')
+                const nextOutputs = normalizedOutputs.map((item, itemIndex) => (itemIndex === index ? { ...item, valueType: nextValueType } : item))
+                commit(nextOutputs)
+              }}
+            >
+              {allowedTypes.map((type) => (
+                <option key={type} value={type}>
+                  {getZflowPortTypeLabel(type, t)}
+                </option>
+              ))}
+            </select>
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="zflow-node-editor__port-delete"
+              disabled={readonly || normalizedOutputs.length <= 1}
+              aria-label={locale === 'en' ? 'Delete output' : '删除输出'}
+              onClick={() => commit(normalizedOutputs.filter((_, itemIndex) => itemIndex !== index))}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ZflowNodeRuntimeFields({
+  locale,
+  node,
+  onChange,
+}: {
+  locale: Locale
+  node: ZflowNode
+  onChange: (nodeId: string, data: Partial<ZflowNodeData>) => void
+}) {
+  const nodeType = readString(node.data.nodeType) || readString(node.data.kind)
+  const config = isRecord(node.data.config) ? node.data.config : {}
+
+  function commit(patch: Record<string, unknown>) {
+    onChange(node.id, { config: { ...config, ...patch } })
+  }
+
+  function fieldLabel(zh: string, en: string) {
+    return locale === 'en' ? en : zh
+  }
+
+  if (nodeType === 'prompt') {
+    return (
+      <section className="zflow-node-editor__runtime">
+        <label className="zflow-node-editor__field">
+          <span>{fieldLabel('提示词文件', 'Prompt file')}</span>
+          <Input value={readString(config.filePath)} onChange={(event) => commit({ filePath: event.target.value })} />
+        </label>
+        <label className="zflow-node-editor__field">
+          <span>{fieldLabel('输出变量', 'Output variable')}</span>
+          <Input value={readString(config.outputPath) || (readString(config.promptKind) === 'image' ? 'image' : 'result')} onChange={(event) => commit({ outputPath: event.target.value })} />
+        </label>
+      </section>
+    )
+  }
+
+  if (nodeType === 'state') {
+    return (
+      <section className="zflow-node-editor__runtime">
+        <label className="zflow-node-editor__field">
+          <span>{fieldLabel('输出变量', 'Output variable')}</span>
+          <Input value={readString(config.outputPath) || readString(config.name)} onChange={(event) => commit({ outputPath: event.target.value })} />
+        </label>
+        <label className="zflow-node-editor__field">
+          <span>{fieldLabel('写入值', 'Value')}</span>
+          <Textarea rows={3} value={readString(config.value)} onChange={(event) => commit({ value: event.target.value })} />
+        </label>
+      </section>
+    )
+  }
+
+  if (nodeType === 'tool') {
+    return (
+      <section className="zflow-node-editor__runtime">
+        <label className="zflow-node-editor__field">
+          <span>toolId</span>
+          <Input value={readString(config.toolId)} onChange={(event) => commit({ toolId: event.target.value })} />
+        </label>
+        <label className="zflow-node-editor__field">
+          <span>{fieldLabel('输出变量', 'Output variable')}</span>
+          <Input value={readString(config.outputPath) || 'toolResult'} onChange={(event) => commit({ outputPath: event.target.value })} />
+        </label>
+      </section>
+    )
+  }
+
+  if (nodeType === 'http') {
+    return (
+      <section className="zflow-node-editor__runtime">
+        <label className="zflow-node-editor__field">
+          <span>{fieldLabel('请求方式', 'Method')}</span>
+          <select className="zflow-input-binding__select" value={readString(config.method) || 'GET'} onChange={(event) => commit({ method: event.target.value })}>
+            <option value="GET">GET</option>
+            <option value="POST">POST</option>
+          </select>
+        </label>
+        <label className="zflow-node-editor__field">
+          <span>URL</span>
+          <Input value={readString(config.url)} placeholder="https://api.example.com/items?query={{input}}" onChange={(event) => commit({ url: event.target.value })} />
+        </label>
+        <label className="zflow-node-editor__field">
+          <span>{fieldLabel('Headers（JSON，可选）', 'Headers (JSON, optional)')}</span>
+          <Textarea rows={3} value={readString(config.headers)} placeholder={'{"Authorization":"Bearer {{token}}"}'} onChange={(event) => commit({ headers: event.target.value })} />
+        </label>
+        <label className="zflow-node-editor__field">
+          <span>{fieldLabel('Body（POST，可选）', 'Body (POST, optional)')}</span>
+          <Textarea rows={4} value={readString(config.body)} placeholder={'{"prompt":"{{result}}"}'} onChange={(event) => commit({ body: event.target.value })} />
+        </label>
+        <label className="zflow-node-editor__field">
+          <span>{fieldLabel('输出变量', 'Output variable')}</span>
+          <Input value={readString(config.outputPath) || 'response'} onChange={(event) => commit({ outputPath: event.target.value })} />
+        </label>
+      </section>
+    )
+  }
+
+  if (nodeType === 'router') {
+    return (
+      <section className="zflow-node-editor__runtime">
+        <label className="zflow-node-editor__field">
+          <span>{fieldLabel('左值', 'Left value')}</span>
+          <Input value={readString(config.left || config.source)} onChange={(event) => commit({ left: event.target.value })} />
+        </label>
+        <label className="zflow-node-editor__field">
+          <span>{fieldLabel('判断方式', 'Operator')}</span>
+          <select className="zflow-input-binding__select" value={readString(config.operator) || 'notEmpty'} onChange={(event) => commit({ operator: event.target.value })}>
+            {ZFLOW_CONDITION_OPERATORS.map((operator) => (
+              <option key={operator} value={operator}>{operator}</option>
+            ))}
+          </select>
+        </label>
+        <label className="zflow-node-editor__field">
+          <span>{fieldLabel('右值', 'Right value')}</span>
+          <Input value={readString(config.right || config.value)} onChange={(event) => commit({ right: event.target.value })} />
+        </label>
+      </section>
+    )
+  }
+
+  if (nodeType === 'array-merge') {
+    return (
+      <section className="zflow-node-editor__runtime">
+        <label className="zflow-node-editor__field">
+          <span>{fieldLabel('输入变量路径', 'Input paths')}</span>
+          <Textarea rows={4} value={readStringArray(config.sourcePaths).join('\n')} placeholder="images&#10;items" onChange={(event) => commit({ sourcePaths: event.target.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean) })} />
+        </label>
+        <label className="zflow-node-editor__field">
+          <span>{fieldLabel('输出变量', 'Output variable')}</span>
+          <Input value={readString(config.outputPath) || 'mergedItems'} onChange={(event) => commit({ outputPath: event.target.value })} />
+        </label>
+      </section>
+    )
+  }
+
+  if (nodeType === 'parallel-merge') {
+    return (
+      <section className="zflow-node-editor__runtime">
+        <label className="zflow-node-editor__field">
+          <span>{fieldLabel('输出变量（可选）', 'Output variable (optional)')}</span>
+          <Input value={readString(config.outputPath)} onChange={(event) => commit({ outputPath: event.target.value })} />
+        </label>
+      </section>
+    )
+  }
+
+  if (nodeType === 'end') return null
+
+  return (
+    <section className="zflow-node-editor__runtime">
+      <div className="zflow-input-bindings__status">{locale === 'en' ? 'No editable runtime fields' : '没有可编辑运行字段'}</div>
+    </section>
+  )
+}
+
+function ZflowOutputPortEditor({
+  t,
+  locale,
+  node,
+  ports,
+  onChange,
+}: {
+  t: WorkbenchCopy
+  locale: Locale
+  node: ZflowNode
+  ports: ZflowNodePort[]
+  onChange: (nodeId: string, outputPorts: ZflowNodePort[], removedOutputPortIds?: string[]) => void
+}) {
+  const normalizedPorts = ports.length ? ports : [{ id: 'out', label: locale === 'en' ? 'Output' : '输出', valueType: 'any' as ZflowPortValueType }]
+
+  function commit(nextPorts: ZflowNodePort[], removedOutputPortIds: string[] = []) {
+    onChange(node.id, nextPorts.map((port) => ({
+      id: normalizeZflowHandleId(port.id) || createZflowStartOutputId(port.label, nextPorts),
+      label: readString(port.label) || (locale === 'en' ? 'Output' : '输出'),
+      valueType: normalizeZflowPortValueType(port.valueType, 'any'),
+    })), removedOutputPortIds)
+  }
+
+  return (
+    <div className="zflow-node-editor__port-list zflow-node-editor__port-list--editable">
+      {normalizedPorts.map((port, index) => (
+        <div key={port.id} className="zflow-node-editor__port-chip zflow-node-editor__port-chip--editable">
+          <Input
+            className="zflow-node-editor__port-input"
+            aria-label={t.zflowOutputName}
+            value={port.label}
+            onChange={(event) => commit(normalizedPorts.map((item, itemIndex) => (itemIndex === index ? { ...item, label: event.target.value } : item)))}
+          />
+          <select
+            className="zflow-node-editor__port-select"
+            style={getZflowPortBadgeStyle(normalizeZflowPortValueType(port.valueType, 'any'))}
+            aria-label={t.zflowOutputType}
+            value={normalizeZflowPortValueType(port.valueType, 'any')}
+            onChange={(event) => commit(normalizedPorts.map((item, itemIndex) => (itemIndex === index ? { ...item, valueType: normalizeZflowPortValueType(event.target.value, 'any') } : item)))}
+          >
+            {(['any', 'string', 'number', 'text', 'object', 'array', 'color', 'boolean', 'image', 'file', 'error'] as ZflowPortValueType[]).map((type) => (
+              <option key={type} value={type}>
+                {getZflowPortTypeLabel(type, t)}
+              </option>
+            ))}
+          </select>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="zflow-node-editor__port-delete"
+            disabled={normalizedPorts.length <= 1}
+            aria-label={locale === 'en' ? 'Delete output port' : '删除输出端点'}
+            onClick={() => commit(normalizedPorts.filter((_, itemIndex) => itemIndex !== index), [port.id])}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      ))}
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="zflow-node-editor__port-add"
+        onClick={() => {
+          const label = locale === 'en' ? `Port ${normalizedPorts.length + 1}` : `端点 ${normalizedPorts.length + 1}`
+          commit(normalizedPorts.concat({ id: createZflowStartOutputId(label, normalizedPorts), label, valueType: 'any' }))
+        }}
+      >
+        <Plus className="h-3.5 w-3.5" />
+        {t.zflowBranchAddPort}
+      </Button>
+    </div>
+  )
+}
+
+function ZflowConditionEditor({
+  t,
+  locale,
+  node,
+  upstreamOptions,
+  onChange,
+}: {
+  t: WorkbenchCopy
+  locale: Locale
+  node: ZflowNode
+  upstreamOptions: ZflowUpstreamOutputOption[]
+  onChange: (config: Record<string, unknown>) => void
+}) {
+  const conditionConfig = readZflowConditionConfig(node.data.config)
+  const sourceNodes = getZflowSourceNodeOptions(upstreamOptions)
+
+  function commit(nextConfig: ZflowConditionConfig) {
+    onChange(writeZflowConditionConfig(node.data.config, nextConfig))
+  }
+
+  function updateRule(ruleId: string, patch: Partial<ZflowConditionRule>) {
+    commit({
+      ...conditionConfig,
+      conditions: conditionConfig.conditions.map((condition) => {
+        if (condition.id !== ruleId) return condition
+        const nextCondition = { ...condition, ...patch }
+        if (!conditionOperatorNeedsValue(nextCondition.operator)) nextCondition.value = ''
+        return nextCondition
+      }),
+    })
+  }
+
+  return (
+    <section className="zflow-condition-editor">
+      <div className="zflow-condition-editor__heading">
+        <span>{t.zflowConditionRules}</span>
+        <ToggleGroup
+          type="single"
+          value={conditionConfig.conditionMode}
+          onValueChange={(value) => {
+            if (value === 'all' || value === 'any') commit({ ...conditionConfig, conditionMode: value })
+          }}
+        >
+          <ToggleGroupItem value="all" className="h-6 px-2 text-[10px]">{t.zflowConditionModeAll}</ToggleGroupItem>
+          <ToggleGroupItem value="any" className="h-6 px-2 text-[10px]">{t.zflowConditionModeAny}</ToggleGroupItem>
+        </ToggleGroup>
+      </div>
+      <div className="zflow-condition-editor__list">
+        {conditionConfig.conditions.map((condition) => {
+          const selectedNodeId = sourceNodes.some((sourceNode) => sourceNode.nodeId === condition.sourceNodeId)
+            ? condition.sourceNodeId
+            : sourceNodes[0]?.nodeId || ''
+          const nodeOutputOptions = selectedNodeId ? upstreamOptions.filter((option) => option.nodeId === selectedNodeId) : []
+          const selectedOutputId = nodeOutputOptions.some((option) => option.outputId === condition.sourceOutputId)
+            ? condition.sourceOutputId
+            : nodeOutputOptions[0]?.outputId || ''
+          return (
+            <div key={condition.id} className="zflow-condition-rule">
+              <select
+                className="zflow-input-binding__select"
+                aria-label={t.zflowConditionSourceNode}
+                value={selectedNodeId}
+                onChange={(event) => {
+                  const nextNodeId = event.target.value
+                  const firstOutput = upstreamOptions.find((option) => option.nodeId === nextNodeId)
+                  updateRule(condition.id, { sourceNodeId: nextNodeId, sourceOutputId: firstOutput?.outputId || '' })
+                }}
+              >
+                <option value="">{upstreamOptions.length ? t.zflowConditionSourceNode : (locale === 'en' ? 'No upstream node' : '无前置节点')}</option>
+                {sourceNodes.map((sourceNode) => (
+                  <option key={sourceNode.nodeId} value={sourceNode.nodeId}>{sourceNode.nodeLabel}</option>
+                ))}
+              </select>
+              <select
+                className="zflow-input-binding__select"
+                aria-label={t.zflowConditionSourceVariable}
+                value={selectedOutputId}
+                disabled={!selectedNodeId}
+                onChange={(event) => updateRule(condition.id, { sourceNodeId: selectedNodeId, sourceOutputId: event.target.value })}
+              >
+                <option value="">{nodeOutputOptions.length ? t.zflowConditionSourceVariable : (locale === 'en' ? 'No variable' : '无变量')}</option>
+                {nodeOutputOptions.map((option) => (
+                  <option key={option.id} value={option.outputId}>
+                    {option.label} · {getZflowPortTypeLabel(option.valueType, t)}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="zflow-input-binding__select"
+                value={condition.operator}
+                onChange={(event) => updateRule(condition.id, { operator: normalizeZflowConditionOperator(event.target.value) })}
+              >
+                {ZFLOW_CONDITION_OPERATORS.map((operator) => (
+                  <option key={operator} value={operator}>{t.zflowConditionOperators[operator]}</option>
+                ))}
+              </select>
+              {conditionOperatorNeedsValue(condition.operator) ? (
+                <Input
+                  className="zflow-condition-rule__value"
+                  aria-label={t.zflowConditionValue}
+                  value={condition.value}
+                  placeholder={t.zflowConditionValue}
+                  onChange={(event) => updateRule(condition.id, { value: event.target.value })}
+                />
+              ) : null}
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="zflow-node-editor__port-delete"
+                aria-label={locale === 'en' ? 'Delete condition' : '删除条件'}
+                onClick={() => commit({ ...conditionConfig, conditions: conditionConfig.conditions.filter((item) => item.id !== condition.id) })}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          )
+        })}
+      </div>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="zflow-node-editor__port-add"
+        onClick={() => commit({ ...conditionConfig, conditions: conditionConfig.conditions.concat(createZflowConditionRule(conditionConfig.conditions, upstreamOptions)) })}
+      >
+        <Plus className="h-3.5 w-3.5" />
+        {t.zflowConditionAddRule}
+      </Button>
+    </section>
+  )
+}
+
+function ZflowInputBindingEditor({
+  t,
+  locale,
+  items,
+  bindings,
+  upstreamOptions,
+  onChange,
+  editableItems = false,
+  onItemsChange,
+}: {
+  t: WorkbenchCopy
+  locale: Locale
+  items: ZflowInputBindingItem[]
+  bindings: Record<string, ZflowInputBinding>
+  upstreamOptions: ZflowUpstreamOutputOption[]
+  onChange: (key: string, binding: ZflowInputBinding) => void
+  editableItems?: boolean
+  onItemsChange?: (items: ZflowNodePort[]) => void
+}) {
+  const [draftItemLabels, setDraftItemLabels] = useState<Record<string, string>>({})
+
+  function commitItems(nextItems: ZflowInputBindingItem[]) {
+    onItemsChange?.(nextItems.map((item) => ({
+      id: normalizeZflowHandleId(item.key) || createZflowStartOutputId(item.label, nextItems.map((candidate) => ({ id: candidate.key, label: candidate.label, valueType: candidate.valueType }))),
+      label: typeof item.label === 'string' ? item.label : item.key,
+      valueType: normalizeZflowPortValueType(item.valueType, 'any'),
+    })))
+  }
+
+  return (
+    <section className="zflow-input-bindings">
+      <div className="zflow-input-bindings__heading">
+        <span>{locale === 'en' ? 'Input content' : '输入内容'}</span>
+        {editableItems ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="zflow-node-editor__port-add"
+            onClick={() => {
+              const label = locale === 'en' ? `Return ${items.length + 1}` : `返回值 ${items.length + 1}`
+              commitItems(items.concat({ key: createZflowStartOutputId(label, items.map((item) => ({ id: item.key, label: item.label, valueType: item.valueType }))), label, typeLabel: getZflowPortTypeLabel('any', t), valueType: 'any', defaultValue: '' }))
+            }}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {locale === 'en' ? 'Add return' : '新增返回值'}
+          </Button>
+        ) : null}
+      </div>
+      <div className="zflow-input-bindings__list">
+        {!items.length && editableItems ? (
+          <div className="zflow-input-bindings__status">{locale === 'en' ? 'No return values yet' : '还没有返回值'}</div>
+        ) : null}
+        {items.map((item) => {
+          const binding = bindings[item.key] || createDefaultZflowInputBinding(item)
+          const mode = binding.mode === 'source' ? 'source' : 'value'
+          const compatibleOptions = upstreamOptions.filter((option) => isZflowUpstreamOutputCompatible(option, item.valueType))
+          const selectedOutputId = readString(binding.sourceOutputId) || readString(binding.sourceHandle)
+          const selectedSourceId = binding.sourceNodeId && selectedOutputId ? `${binding.sourceNodeId}:${selectedOutputId}` : ''
+          const sourceNodes = getZflowSourceNodeOptions(compatibleOptions)
+          const selectedNodeId = sourceNodes.some((sourceNode) => sourceNode.nodeId === binding.sourceNodeId)
+            ? readString(binding.sourceNodeId)
+            : ''
+          const nodeOutputOptions = selectedNodeId ? compatibleOptions.filter((option) => option.nodeId === selectedNodeId) : []
+          const selectedNodeOutputId = nodeOutputOptions.some((option) => option.id === selectedSourceId)
+            ? selectedSourceId
+            : ''
+          return (
+            <div key={item.key} className="zflow-input-binding">
+              <div className={cn('zflow-input-binding__header', editableItems && 'zflow-input-binding__header--return')}>
+                {editableItems ? (
+                  <div className="zflow-return-binding-editor">
+                    <Input
+                      className="zflow-return-binding-editor__name"
+                      value={draftItemLabels[item.key] ?? item.label}
+                      aria-label={locale === 'en' ? 'Return name' : '返回值名称'}
+                      onChange={(event) => {
+                        const nextLabel = event.target.value
+                        setDraftItemLabels((current) => ({ ...current, [item.key]: nextLabel }))
+                        commitItems(items.map((candidate) => (candidate.key === item.key ? { ...candidate, label: nextLabel } : candidate)))
+                      }}
+                      onBlur={() => {
+                        setDraftItemLabels((current) => {
+                          const next = { ...current }
+                          delete next[item.key]
+                          return next
+                        })
+                      }}
+                    />
+                    <div className="zflow-return-binding-editor__controls">
+                      <select
+                        className="zflow-input-binding__select"
+                        value={item.valueType}
+                        onChange={(event) => {
+                          const nextType = normalizeZflowPortValueType(event.target.value, 'any')
+                          commitItems(items.map((candidate) => (candidate.key === item.key ? { ...candidate, valueType: nextType, typeLabel: getZflowPortTypeLabel(nextType, t) } : candidate)))
+                        }}
+                      >
+                        {(['any', 'string', 'number', 'text', 'object', 'array', 'color', 'boolean', 'image', 'file'] as ZflowPortValueType[]).map((type) => (
+                          <option key={type} value={type}>{getZflowPortTypeLabel(type, t)}</option>
+                        ))}
+                      </select>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="zflow-node-editor__port-delete"
+                        aria-label={locale === 'en' ? 'Delete return' : '删除返回值'}
+                        onClick={() => commitItems(items.filter((candidate) => candidate.key !== item.key))}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="min-w-0">
+                    <div className="zflow-input-binding__label">{item.label}</div>
+                    <div className="zflow-input-binding__type">{item.typeLabel}</div>
+                  </div>
+                )}
+                <ToggleGroup
+                  type="single"
+                  value={mode}
+                  onValueChange={(value) => {
+                    if (value === 'value') onChange(item.key, { ...binding, mode: 'value', value: readZflowBindingValue(binding, item) })
+                    if (value === 'source') {
+                      const firstOption = compatibleOptions[0]
+                      onChange(item.key, firstOption ? createZflowSourceBinding(firstOption) : { ...binding, mode: 'source' })
+                    }
+                  }}
+                >
+                  <ToggleGroupItem value="value" className="h-6 px-2 text-[10px]">{locale === 'en' ? 'Value' : '值'}</ToggleGroupItem>
+                  <ToggleGroupItem value="source" className="h-6 px-2 text-[10px]">{locale === 'en' ? 'Source' : '来源'}</ToggleGroupItem>
+                </ToggleGroup>
+              </div>
+              {mode === 'source' ? (
+                <div className="zflow-input-binding__source-grid">
+                  <select
+                    className="zflow-input-binding__select"
+                    value={selectedNodeId}
+                    onChange={(event) => {
+                      const nextNodeId = event.target.value
+                      const option = compatibleOptions.find((candidate) => candidate.nodeId === nextNodeId)
+                      onChange(item.key, option ? createZflowSourceBinding(option) : { mode: 'source' })
+                    }}
+                  >
+                    <option value="">{compatibleOptions.length ? (locale === 'en' ? 'Select upstream node' : '选择前置节点') : (locale === 'en' ? 'No compatible upstream node' : '无可用前置节点')}</option>
+                    {sourceNodes.map((sourceNode) => (
+                      <option key={sourceNode.nodeId} value={sourceNode.nodeId}>
+                        {sourceNode.nodeLabel}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="zflow-input-binding__select"
+                    value={selectedNodeOutputId}
+                    disabled={!selectedNodeId}
+                    onChange={(event) => {
+                      const option = nodeOutputOptions.find((candidate) => candidate.id === event.target.value)
+                      onChange(item.key, option ? createZflowSourceBinding(option) : { mode: 'source', sourceNodeId: selectedNodeId })
+                    }}
+                  >
+                    <option value="">{nodeOutputOptions.length ? (locale === 'en' ? 'Select variable' : '选择变量') : (locale === 'en' ? 'No variable' : '无变量')}</option>
+                    {nodeOutputOptions.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label} · {getZflowPortTypeLabel(option.valueType, t)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : item.recipe ? (
+                <ZflowRecipeValueInput locale={locale} item={item} binding={binding} onChange={(nextBinding) => onChange(item.key, nextBinding)} />
+              ) : (
+                <Textarea
+                  className="zflow-input-binding__textarea"
+                  rows={2}
+                  value={readZflowBindingValue(binding, item)}
+                  placeholder={item.defaultValue || item.label}
+                  onChange={(event) => onChange(item.key, { ...binding, mode: 'value', value: event.target.value, valueType: item.valueType })}
+                />
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+function ZflowInputBindingStatus({ locale, status }: { locale: Locale; status: ZflowInputBindingStatusKind }) {
+  const text = status === 'error'
+    ? locale === 'en' ? 'Failed to read prompt variables' : '提示词变量读取失败'
+    : status === 'empty'
+      ? locale === 'en' ? 'No variables found in this prompt' : '该提示词没有可绑定变量'
+      : locale === 'en' ? 'Reading prompt variables...' : '正在读取提示词变量...'
+
+  return (
+    <section className="zflow-input-bindings">
+      <div className="zflow-input-bindings__heading">{locale === 'en' ? 'Input content' : '输入内容'}</div>
+      <div className="zflow-input-bindings__status">{text}</div>
+    </section>
+  )
+}
+
+function ZflowRecipeValueInput({
+  locale,
+  item,
+  binding,
+  onChange,
+}: {
+  locale: Locale
+  item: ZflowInputBindingItem
+  binding: ZflowInputBinding
+  onChange: (binding: ZflowInputBinding) => void
+}) {
+  const recipe = item.recipe
+  if (!recipe) return null
+  const candidates = Array.from(new Set([...recipe.candidates, ...recipe.defaultValues, item.defaultValue].flatMap((value) => splitZflowBindingValues(value)).filter(Boolean)))
+  if (recipe.multiple) {
+    const selectedValues = new Set(readZflowBindingValues(binding, item))
+    return (
+      <div className="zflow-input-binding__choices">
+        {candidates.length ? candidates.map((candidate) => (
+          <label key={candidate} className="zflow-input-binding__choice">
+            <input
+              type="checkbox"
+              checked={selectedValues.has(candidate)}
+              onChange={(event) => {
+                const nextValues = new Set(selectedValues)
+                if (event.target.checked) nextValues.add(candidate)
+                else nextValues.delete(candidate)
+                onChange({ ...binding, mode: 'value', values: Array.from(nextValues), value: Array.from(nextValues).join(', '), valueType: 'string' })
+              }}
+            />
+            <span>{candidate}</span>
+          </label>
+        )) : (
+          <Textarea
+            className="zflow-input-binding__textarea"
+            rows={2}
+            value={readZflowBindingValue(binding, item)}
+            placeholder={locale === 'en' ? 'No recipe candidates' : '无配方候选项'}
+            onChange={(event) => onChange({ ...binding, mode: 'value', value: event.target.value, valueType: 'string' })}
+          />
+        )}
+      </div>
+    )
+  }
+  return (
+    <select
+      className="zflow-input-binding__select"
+      value={readZflowBindingValue(binding, item)}
+      onChange={(event) => onChange({ ...binding, mode: 'value', value: event.target.value, valueType: 'string' })}
+    >
+      <option value="">{locale === 'en' ? 'Select recipe value' : '选择配方项'}</option>
+      {candidates.map((candidate) => (
+        <option key={candidate} value={candidate}>{candidate}</option>
+      ))}
+    </select>
+  )
+}
+
+function getZflowInputBindingView(input: {
+  node: ZflowNode
+  inputPorts: ZflowNodePort[]
+  t: WorkbenchCopy
+  locale: Locale
+  projectId: string
+  aiProviders: AiProviderSummary[]
+  recipeVariableCategories: RecipeVariableCategory[]
+  editorTabs: EditorFileTab[]
+  promptFileCache: Record<string, ZflowPromptFileCacheEntry>
+}): ZflowInputBindingView {
+  const nodeType = readString(input.node.data.nodeType) || readString(input.node.data.kind)
+  if (nodeType === 'end') {
+    return { items: getZflowEndReturnBindingItems(input.node, input.t, input.locale) }
+  }
+
+  const promptFilePath = getZflowPromptRunFilePath(input.node)
+  if (!promptFilePath) {
+    return { items: getZflowInputBindingItemsFromPorts(input.inputPorts, input.t) }
+  }
+
+  const reference = resolveZflowPromptRunReference(input.projectId, promptFilePath, input.editorTabs, input.promptFileCache, input.aiProviders)
+  const snapshot = getZflowPromptRunVariableSnapshot(reference, input.aiProviders, input.t, input.locale, input.recipeVariableCategories)
+  if (snapshot.status === 'ready') {
+    if (snapshot.items.length) return { items: snapshot.items }
+    const persistedItems = getZflowInputBindingItemsFromPorts(getPersistedZflowPromptRunInputPorts(input.node.data), input.t)
+    return persistedItems.length ? { items: persistedItems } : { items: [], status: 'empty' }
+  }
+
+  const persistedItems = getZflowInputBindingItemsFromPorts(getPersistedZflowPromptRunInputPorts(input.node.data), input.t)
+  if (persistedItems.length) return { items: persistedItems }
+  return { items: [], status: snapshot.status }
+}
+
+function getZflowInputBindingItemsFromPorts(ports: ZflowNodePort[], t: WorkbenchCopy): ZflowInputBindingItem[] {
+  return ports.map((port) => ({
+    key: port.id,
+    label: port.label || port.id,
+    typeLabel: getZflowPortTypeLabel(port.valueType || 'any', t),
+    valueType: normalizeZflowPortValueType(port.valueType, 'any'),
+    defaultValue: '',
+  }))
+}
+
+function getZflowEndReturnBindingItems(node: ZflowNode, t: WorkbenchCopy, locale: Locale): ZflowInputBindingItem[] {
+  const config = isRecord(node.data.config) ? node.data.config : {}
+  const returnValues = normalizeZflowReturnValues(config.returnValues)
+  const ports = returnValues.length
+    ? returnValues
+    : readStringArray(config.returnPaths).map((path) => ({ id: normalizeZflowHandleId(path) || createZflowStartOutputId(path, []), label: path, valueType: 'any' as ZflowPortValueType }))
+  return getZflowInputBindingItemsFromPorts(ports, t).map((item) => ({
+    ...item,
+    label: typeof item.label === 'string' ? item.label : (locale === 'en' ? 'Return value' : '返回值'),
+  }))
+}
+
+function normalizeZflowReturnValues(value: unknown): ZflowNodePort[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item, index): ZflowNodePort[] => {
+    if (!isRecord(item)) return []
+    const id = normalizeZflowHandleId(item.id) || `return-${index + 1}`
+    return [{
+      id,
+      label: typeof item.label === 'string' ? item.label : id,
+      valueType: normalizeZflowPortValueType(item.valueType, 'any'),
+    }]
+  })
+}
+
+function getPersistedZflowPromptRunInputPorts(data: ZflowNodeData) {
+  const ports = normalizeZflowPortsPreservingEmpty(Array.isArray(data.inputPorts) ? data.inputPorts : data.inputs, [])
+  return ports.filter((port) => !isDefaultZflowPromptRunInputPort(port, ports.length))
+}
+
+function isDefaultZflowPromptRunInputPort(port: ZflowNodePort, total: number) {
+  return total === 1 && port.id === 'in' && normalizeZflowPortValueType(port.valueType, 'any') === 'any'
+}
+
+function getZflowPromptRunInputBindingItemsFromDocument(
+  document: ZpmtDocument,
+  aiProviders: AiProviderSummary[],
+  t: WorkbenchCopy,
+  locale: Locale,
+  recipeVariableCategories: RecipeVariableCategory[],
+): ZflowInputBindingItem[] {
+  const modelContext = getSelectedAiModelContext(aiProviders, document.config.providerId, document.config.model, document.config.providerFile)
+  const promptSurface = resolveAiModelPromptSurface(document.config.outputType, modelContext?.provider.providerType, document.config.model, modelContext?.model)
+  return collectZpmtTestVariables(document, t, locale, promptSurface, recipeVariableCategories).map((variable) => ({
+    key: variable.key,
+    label: variable.label,
+    typeLabel: variable.typeLabel,
+    valueType: normalizeZflowVariableTypeForBinding(variable.variableType, variable.recipe),
+    defaultValue: variable.defaultValue,
+    recipe: variable.recipe,
+  }))
+}
+
+function getZflowPromptRunVariableSnapshot(
+  reference: { status: 'ready'; document: ZpmtDocument } | { status: ZflowInputBindingStatusKind },
+  aiProviders: AiProviderSummary[],
+  t: WorkbenchCopy,
+  locale: Locale,
+  recipeVariableCategories: RecipeVariableCategory[],
+): ZflowPromptRunVariableSnapshot {
+  if (reference.status !== 'ready') return { status: reference.status, items: [] }
+  const items = getZflowPromptRunInputBindingItemsFromDocument(reference.document, aiProviders, t, locale, recipeVariableCategories)
+  return {
+    status: 'ready',
+    items,
+  }
+}
+
+function resolveZflowPromptRunReference(
+  projectId: string,
+  filePath: string,
+  editorTabs: EditorFileTab[],
+  cache: Record<string, ZflowPromptFileCacheEntry>,
+  aiProviders: AiProviderSummary[],
+): { status: 'ready'; document: ZpmtDocument } | { status: ZflowInputBindingStatusKind } {
+  const content = resolveZflowPromptFileContent(projectId, filePath, editorTabs, cache)
+  if (content) {
+    const document = parseZpmtContent(content, aiProviders)
+    return document ? { status: 'ready', document } : { status: 'error' }
+  }
+  const cached = cache[createZflowPromptFileCacheKey(projectId, filePath)]
+  if (cached?.error) return { status: 'error' }
+  return { status: 'loading' }
+}
+
+function resolveZflowPromptFileContent(projectId: string, filePath: string, editorTabs: EditorFileTab[], cache: Record<string, ZflowPromptFileCacheEntry>) {
+  const tab = editorTabs.find((item) => item.projectId === projectId && item.path === filePath)
+  if (tab) return tab.content
+  return cache[createZflowPromptFileCacheKey(projectId, filePath)]?.content || ''
+}
+
+function createZflowPromptFileCacheKey(projectId: string, filePath: string) {
+  return `${projectId}:${filePath}`
+}
+
+function getZflowPromptRunFilePath(node: ZflowNode) {
+  const nodeType = readString(node.data.nodeType) || readString(node.data.kind)
+  if (nodeType !== 'prompt') return ''
+  const config = isRecord(node.data.config) ? node.data.config : {}
+  return readString(config.filePath)
+}
+
+function normalizeZflowVariableTypeForBinding(variableType: VariableType | undefined, recipe?: ZpmtTestVariable['recipe']): ZflowPortValueType {
+  if (recipe) return 'string'
+  if (variableType === 'string') return 'string'
+  if (variableType === 'number') return 'number'
+  if (variableType === 'array') return 'array'
+  if (variableType === 'color') return 'color'
+  if (variableType === 'boolean') return 'boolean'
+  if (variableType === 'image') return 'image'
+  if (variableType === 'file') return 'file'
+  return 'string'
+}
+
+function readZflowInputBindings(value: unknown): Record<string, ZflowInputBinding> {
+  const config = isRecord(value) ? value : {}
+  const bindings = isRecord(config.bindings) ? config.bindings : isRecord(config.inputBindings) ? config.inputBindings : {}
+  return Object.fromEntries(
+    Object.entries(bindings).flatMap(([key, binding]) => {
+      if (!isRecord(binding)) return []
+      return [[key, normalizeZflowInputBinding(binding)]]
+    }),
+  )
+}
+
+function readZflowEndInputBindings(value: unknown): Record<string, ZflowInputBinding> {
+  const config = isRecord(value) ? value : {}
+  const bindings = readZflowInputBindings(config)
+  if (Object.keys(bindings).length || Array.isArray(config.returnValues)) return bindings
+  return Object.fromEntries(readStringArray(config.returnPaths).map((path) => {
+    const key = normalizeZflowHandleId(path) || createZflowStartOutputId(path, [])
+    return [key, { mode: 'value', value: `{{${path}}}`, valueType: 'any' as ZflowPortValueType }]
+  }))
+}
+
+function normalizeZflowInputBinding(binding: ZflowInputBinding | Record<string, unknown>): ZflowInputBinding {
+  const source = isRecord(binding) ? binding : {}
+  const mode = source.mode === 'source' ? 'source' : 'value'
+  const values = Array.isArray(source.values) ? source.values.map(readString).filter(Boolean) : undefined
+  return {
+    mode,
+    value: readString(source.value),
+    ...(values?.length ? { values } : {}),
+    sourceNodeId: readString(source.sourceNodeId),
+    sourceHandle: readString(source.sourceHandle),
+    sourceOutputId: readString(source.sourceOutputId) || readString(source.sourceHandle),
+    sourcePath: readString(source.sourcePath),
+    valueType: normalizeZflowPortValueType(source.valueType, 'string'),
+  }
+}
+
+function createDefaultZflowInputBinding(item: ZflowInputBindingItem): ZflowInputBinding {
+  return {
+    mode: 'value',
+    value: item.defaultValue,
+    values: item.recipe?.multiple ? splitZflowBindingValues(item.defaultValue) : undefined,
+    valueType: item.valueType,
+  }
+}
+
+function readZflowBindingValue(binding: ZflowInputBinding, item: ZflowInputBindingItem) {
+  return readString(binding.value) || item.defaultValue
+}
+
+function readZflowBindingValues(binding: ZflowInputBinding, item: ZflowInputBindingItem) {
+  if (Array.isArray(binding.values) && binding.values.length) return binding.values
+  return splitZflowBindingValues(readZflowBindingValue(binding, item))
+}
+
+function splitZflowBindingValues(value: unknown) {
+  return readString(value).split(',').map((item) => item.trim()).filter(Boolean)
+}
+
+function createZflowSourceBinding(option: ZflowUpstreamOutputOption): ZflowInputBinding {
+  return {
+    mode: 'source',
+    sourceNodeId: option.nodeId,
+    sourceOutputId: option.outputId,
+    sourcePath: option.sourcePath || option.outputId,
+    valueType: option.valueType,
+  }
+}
+
+function getZflowSourceNodeOptions(options: ZflowUpstreamOutputOption[]) {
+  const seen = new Set<string>()
+  return options.flatMap((option) => {
+    if (seen.has(option.nodeId)) return []
+    seen.add(option.nodeId)
+    return [{ nodeId: option.nodeId, nodeLabel: option.nodeLabel }]
+  })
+}
+
+function getZflowUpstreamOutputOptions(nodeId: string, nodes: ZflowNode[], edges: ZflowEdge[], promptKindByPath: ZflowPromptKindByPath): ZflowUpstreamOutputOption[] {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]))
+  const visited = new Set<string>()
+  const queue = edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source)
+  const upstreamIds: string[] = []
+  while (queue.length) {
+    const currentId = queue.shift() || ''
+    if (!currentId || visited.has(currentId)) continue
+    visited.add(currentId)
+    upstreamIds.push(currentId)
+    edges.filter((edge) => edge.target === currentId).forEach((edge) => queue.push(edge.source))
+  }
+  return upstreamIds.flatMap((sourceId): ZflowUpstreamOutputOption[] => {
+    const sourceNode = nodeById.get(sourceId)
+    if (!sourceNode) return []
+    const ports = normalizeZflowNodeOutputData(sourceNode, 'zh', promptKindByPath)
+    const isImagePromptOutput = (readString(sourceNode.data.nodeType) || readString(sourceNode.data.kind)) === 'prompt'
+      && resolveZflowPromptRunKind(sourceNode, promptKindByPath) === 'image'
+    return ports.map((port) => ({
+      id: `${sourceNode.id}:${port.id}`,
+      nodeId: sourceNode.id,
+      outputId: port.id,
+      sourcePath: resolveZflowNodeOutputStatePath(sourceNode, port.id),
+      nodeLabel: readString(sourceNode.data.label) || sourceNode.id,
+      label: port.label || port.id,
+      valueType: normalizeZflowPortValueType(port.valueType, 'any'),
+      imageCollection: isImagePromptOutput && (port.id === 'image' || port.id === 'images' || normalizeZflowPortValueType(port.valueType, 'any') === 'image'),
+    }))
+  })
+}
+
+function resolveZflowNodeOutputStatePath(node: ZflowNode, outputId: string) {
+  const nodeType = readString(node.data.nodeType) || readString(node.data.kind)
+  const config = isRecord(node.data.config) ? node.data.config : {}
+  const configured = readString(config.outputPath)
+  if (configured) return configured
+  if (nodeType === 'prompt') return readString(config.promptKind) === 'image' ? 'image' : 'result'
+  if (nodeType === 'http') return 'response'
+  if (nodeType === 'tool') return 'toolResult'
+  if (nodeType === 'array-merge') return 'merged'
+  if (nodeType === 'state') return readString(config.name) || 'value'
+  return outputId
+}
+
+function ZflowNodeTemplateCard({ template, locale }: { template: ZflowNodeTemplate; locale: Locale }) {
+  const Icon = template.icon
+  const label = localizeZflowText(template.label, locale)
+
+  function handleDragStart(event: React.DragEvent<HTMLButtonElement>) {
+    event.dataTransfer.effectAllowed = 'copy'
+    event.dataTransfer.setData(ZFLOW_NODE_DRAG_MIME, template.id)
+    event.dataTransfer.setData('text/plain', label)
+  }
+
+  return (
+    <button
+      type="button"
+      draggable
+      className={`zflow-node-template zflow-node-template--${template.category}`}
+      onDragStart={handleDragStart}
+      aria-label={label}
+    >
+      <span className="zflow-node-template__icon">
+        <Icon className="h-3.5 w-3.5" />
+      </span>
+      <span className="zflow-node-template__body">
+        <span className="zflow-node-template__label">{label}</span>
+        <span className="zflow-node-template__description">{localizeZflowText(template.description, locale)}</span>
+      </span>
+    </button>
+  )
+}
+
+function ZflowWorkflowNode({ id, data, selected }: NodeProps<ZflowNode>) {
+  const category = normalizeZflowNodeCategory(data.category)
+  const inputPorts = normalizeZflowNodePortsForDirection(data, 'target')
+  const outputPorts = normalizeZflowNodePortsForDirection(data, 'source')
+  const Icon = getZflowNodeIcon(readString(data.icon) || getDefaultZflowIconNameForCategory(category))
+  const runtime = readString(data.runtime)
+  const runStatus = readString(data.runStatus)
+  const connections = useNodeConnections()
+  const isConnected = connections.length > 0
+  const isCondition = readString(data.nodeType) === 'condition' || readString(data.kind) === 'condition'
+
+  return (
+    <div className={cn('zflow-node-card', `zflow-node-card--${category}`, isCondition && 'zflow-node-card--condition', isConnected ? 'is-connected' : 'is-disconnected', (selected || runStatus === 'running') && 'is-selected', runStatus && `is-run-${runStatus}`)}>
+      {inputPorts.map((port, index) => (
+        <Handle
+          key={port.id}
+          id={port.id}
+          type="target"
+          position={isCondition ? Position.Top : Position.Left}
+          isConnectableEnd
+          className={cn('zflow-node-card__handle zflow-node-card__handle--target', isCondition && 'zflow-node-card__handle--condition-input')}
+          style={getZflowPortHandleStyle('target', port.valueType || 'any', index, inputPorts.length, isCondition ? 'top' : undefined)}
+        />
+      ))}
+      <div className="zflow-node-card__header">
+        <span className="zflow-node-card__icon">
+          <Icon className="h-4 w-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="zflow-node-card__label">{readString(data.label) || '节点'}</div>
+          <div className="zflow-node-card__meta">{getZflowRuntimeLabel(runtime)}</div>
+        </div>
+      </div>
+      <div className="zflow-node-card__body">
+        <div className="zflow-node-card__description">{readString(data.description)}</div>
+        <div className="zflow-node-card__ports">
+          {inputPorts.length ? <span>{getZflowNodeCardPortSummary(inputPorts, 'target')}</span> : <span>start</span>}
+          <span>{getZflowNodeCardPortSummary(outputPorts, 'source')}</span>
+        </div>
+      </div>
+      {outputPorts.map((port, index) => (
+        isCondition ? (
+          <div key={port.id} className={cn('zflow-node-card__branch', `zflow-node-card__branch--${port.id}`)}>
+            <span className="zflow-node-card__branch-label">{port.id === 'true' ? 'true' : port.id === 'false' ? 'false' : port.label}</span>
+            <Handle
+              id={port.id}
+              type="source"
+              position={port.id === 'false' ? Position.Left : Position.Right}
+              isConnectableStart
+              className="zflow-node-card__handle zflow-node-card__handle--source zflow-node-card__handle--condition-output"
+              style={getZflowPortHandleStyle('source', port.valueType || 'any', index, outputPorts.length, port.id === 'false' ? 'left' : 'right')}
+            />
+          </div>
+        ) : (
+          <Handle
+            key={port.id}
+            id={port.id}
+            type="source"
+            position={Position.Right}
+            isConnectableStart
+            className="zflow-node-card__handle zflow-node-card__handle--source"
+            style={getZflowPortHandleStyle('source', port.valueType || 'any', index, outputPorts.length)}
+          />
+        )
+      ))}
+    </div>
+  )
+}
+
+function getZflowPortHandleStyle(direction: 'source' | 'target', valueType: ZflowPortValueType, index = 0, total = 1, position?: 'left' | 'right' | 'top') {
+  const top = total <= 1 ? '50%' : `${Math.round(((index + 1) / (total + 1)) * 10000) / 100}%`
+  const placement: CSSProperties = position === 'top'
+    ? { top: 0, left: '50%', right: 'auto', transform: 'translate(-50%, -50%)' }
+    : position === 'left'
+      ? { top: '50%', left: 0, right: 'auto', transform: 'translate(-50%, -50%)' }
+      : position === 'right'
+        ? { top: '50%', left: 'auto', right: 0, transform: 'translate(50%, -50%)' }
+        : direction === 'target'
+          ? { top, left: 0, right: 'auto', transform: 'translate(-50%, -50%)' }
+          : { top, left: 'auto', right: 0, transform: 'translate(50%, -50%)' }
+  const style: CSSProperties = {
+    position: 'absolute',
+    ...placement,
+    background: getZflowValueTypeColor(valueType),
+    borderColor: '#ffffff',
+    boxShadow: `0 0 0 2px ${getZflowValueTypeColor(valueType)}22`,
+  }
+  return style
+}
+
+function localizeZflowText(text: LocalizedText, locale: Locale) {
+  return locale === 'en' ? text.en : text.zh
+}
+
+function isZflowStartNode(node: ZflowNode) {
+  return node.id === ZFLOW_START_NODE_ID || readString(node.data.nodeType) === ZFLOW_START_NODE_TYPE || normalizeZflowNodeCategory(node.data.category || node.data.kind) === 'start'
+}
+
+function getDefaultZflowStartOutputs(locale: Locale): ZflowNodePort[] {
+  return [{ id: 'input', label: locale === 'en' ? 'Input' : '输入', valueType: 'string' }]
+}
+
+function isZflowOutputPortsEditable(node: ZflowNode) {
+  const nodeType = readString(node.data.nodeType) || readString(node.data.kind)
+  return nodeType === 'router'
+}
+
+function isZflowOutputDataEditable(node: ZflowNode) {
+  if (isZflowStartNode(node)) return true
+  const nodeType = readString(node.data.nodeType) || readString(node.data.kind)
+  return nodeType === 'state'
+}
+
+function isZflowConditionNode(node: ZflowNode | Pick<ZflowNode, 'data'>) {
+  return readString(node.data.nodeType) === 'router' || readString(node.data.kind) === 'router'
+}
+
+function normalizeZflowConditionMode(value: unknown): ZflowConditionMode {
+  return value === 'any' ? 'any' : 'all'
+}
+
+function normalizeZflowConditionOperator(value: unknown): ZflowConditionOperator {
+  return typeof value === 'string' && ZFLOW_CONDITION_OPERATORS.includes(value as ZflowConditionOperator)
+    ? value as ZflowConditionOperator
+    : 'eq'
+}
+
+function readZflowConditionConfig(value: unknown): ZflowConditionConfig {
+  const config = isRecord(value) ? value : {}
+  const conditions = Array.isArray(config.conditions) ? config.conditions : []
+  return {
+    conditionMode: normalizeZflowConditionMode(config.conditionMode),
+    conditions: conditions.flatMap((item, index): ZflowConditionRule[] => {
+      if (!isRecord(item)) return []
+      const id = readString(item.id) || `condition-${index + 1}`
+      return [{
+        id,
+        sourceNodeId: readString(item.sourceNodeId),
+        sourceOutputId: readString(item.sourceOutputId) || readString(item.sourceHandle),
+        operator: normalizeZflowConditionOperator(item.operator),
+        value: readString(item.value),
+      }]
+    }),
+  }
+}
+
+function writeZflowConditionConfig(currentConfig: unknown, conditionConfig: ZflowConditionConfig) {
+  const config = cloneZflowConfig(isRecord(currentConfig) ? currentConfig : {})
+  config.conditionMode = conditionConfig.conditionMode
+  config.conditions = conditionConfig.conditions.map((condition) => ({
+    id: condition.id,
+    sourceNodeId: condition.sourceNodeId,
+    sourceOutputId: condition.sourceOutputId,
+    operator: condition.operator,
+    value: condition.value,
+  }))
+  delete config.expression
+  delete config.defaultPath
+  return config
+}
+
+function createZflowConditionRule(existing: ZflowConditionRule[], options: ZflowUpstreamOutputOption[]): ZflowConditionRule {
+  const firstOption = options[0]
+  return {
+    id: createZflowConditionRuleId(existing),
+    sourceNodeId: firstOption?.nodeId || '',
+    sourceOutputId: firstOption?.outputId || '',
+    operator: 'eq',
+    value: '',
+  }
+}
+
+function createZflowConditionRuleId(existing: ZflowConditionRule[]) {
+  const used = new Set(existing.map((condition) => condition.id))
+  let index = existing.length + 1
+  let id = `condition-${index}`
+  while (used.has(id)) {
+    index += 1
+    id = `condition-${index}`
+  }
+  return id
+}
+
+function conditionOperatorNeedsValue(operator: ZflowConditionOperator) {
+  return operator !== 'empty' && operator !== 'notEmpty'
+}
+
+function normalizeZflowStartOutputPorts(value: unknown, locale: Locale): ZflowNodePort[] {
+  return normalizeZflowPorts(value, getDefaultZflowStartOutputs(locale)).map((port) => ({
+    ...port,
+    valueType: normalizeZflowStartOutputType(port.valueType),
+  }))
+}
+
+function normalizeZflowOutputData(value: unknown, fallback: ZflowNodePort[], locale: Locale): ZflowNodePort[] {
+  return normalizeZflowPorts(value, fallback).map((port) => ({
+    ...port,
+    valueType: normalizeZflowPortValueType(port.valueType, 'string'),
+  }))
+}
+
+function getDefaultZflowOutputDataForNode(node: ZflowNode, locale: Locale, promptKindByPath?: ZflowPromptKindByPath): ZflowNodePort[] {
+  if (isZflowStartNode(node)) return getDefaultZflowStartOutputs(locale)
+  const nodeType = readString(node.data.nodeType) || readString(node.data.kind)
+  if (nodeType === 'prompt') {
+    const valueType = promptKindByPath ? resolveZflowPromptRunOutputType(node, promptKindByPath) : 'text'
+    const promptKind = promptKindByPath ? resolveZflowPromptRunKind(node, promptKindByPath) : normalizeZpmtPromptKind(isRecord(node.data.config) ? node.data.config.promptKind : undefined)
+    return [{ id: promptKind === 'image' ? 'image' : 'result', label: promptKind === 'image' ? (locale === 'en' ? 'Image' : '图片结果') : (locale === 'en' ? 'Result' : '结果'), valueType }]
+  }
+  if (nodeType === 'state') {
+    const config = isRecord(node.data.config) ? node.data.config : {}
+    const label = readString(config.outputPath) || readString(config.name) || (locale === 'en' ? 'Value' : '变量值')
+    return [{ id: 'value', label, valueType: 'any' }]
+  }
+  if (nodeType === 'array-merge') return [{ id: 'merged', label: locale === 'en' ? 'Merged array' : '合并数组', valueType: 'array' }]
+  if (nodeType === 'http') return [{ id: 'response', label: locale === 'en' ? 'Response' : '接口响应', valueType: 'object' }]
+  return []
+}
+
+function normalizeZflowNodeOutputData(node: ZflowNode, locale: Locale, promptKindByPath?: ZflowPromptKindByPath): ZflowNodePort[] {
+  const fallback = getDefaultZflowOutputDataForNode(node, locale, promptKindByPath)
+  const rawOutputData = Array.isArray(node.data.outputData) ? node.data.outputData : isZflowStartNode(node) ? node.data.outputs : undefined
+  if (Array.isArray(rawOutputData)) {
+    const outputData = normalizeZflowOutputData(rawOutputData, fallback, locale)
+    return isZflowStartNode(node) ? outputData.map((port) => ({ ...port, valueType: normalizeZflowStartOutputType(port.valueType) })) : outputData
+  }
+  return fallback
+}
+
+function normalizeZflowStartOutputType(value: unknown): ZflowPortValueType {
+  const normalized = normalizeZflowPortValueType(value, 'string')
+  if (normalized === 'text') return 'string'
+  return ZFLOW_START_OUTPUT_TYPES.includes(normalized) ? normalized : 'string'
+}
+
+function createZflowStartOutputId(label: string, currentOutputs: ZflowNodePort[]) {
+  const normalizedLabel = label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5_-]+/giu, '-')
+    .replace(/^-+|-+$/g, '')
+  const baseId = normalizedLabel || 'output'
+  let id = baseId
+  let index = 2
+  const usedIds = new Set(currentOutputs.map((port) => port.id))
+  while (usedIds.has(id)) {
+    id = `${baseId}-${index}`
+    index += 1
+  }
+  return id
+}
+
+function getZflowNodeTemplateById(id: string) {
+  return ZFLOW_NODE_TEMPLATES.find((template) => template.id === id) || null
+}
+
+function createZflowNodeFromTemplate(template: ZflowNodeTemplate, position: { x: number; y: number }, locale: Locale, currentNodes: ZflowNode[]): ZflowNode {
+  const baseId = template.id
+  const sameTypeCount = currentNodes.filter((node) => readString(node.data.nodeType) === template.id || node.id.startsWith(baseId)).length
+  let suffix = sameTypeCount + 1
+  let id = `${baseId}-${suffix}`
+  while (currentNodes.some((node) => node.id === id)) {
+    suffix += 1
+    id = `${baseId}-${suffix}`
+  }
+
+  const outputData = getDefaultZflowOutputDataForNode({
+    id,
+    type: 'zflow',
+    position,
+    data: {
+      label: localizeZflowText(template.label, locale),
+      category: template.category,
+      nodeType: template.id,
+      kind: template.id,
+      config: cloneZflowConfig(template.config),
+    },
+  } as ZflowNode, locale)
+  return {
+    id,
+    type: 'zflow',
+    position: {
+      x: Math.round((position.x - ZFLOW_NODE_WIDTH / 2) * 100) / 100,
+      y: Math.round((position.y - ZFLOW_NODE_HEIGHT / 2) * 100) / 100,
+    },
+    data: {
+      label: localizeZflowText(template.label, locale),
+      description: localizeZflowText(template.description, locale),
+      category: template.category,
+      nodeType: template.id,
+      kind: template.id,
+      icon: template.iconName,
+      runtime: template.runtime,
+      inputPorts: localizeZflowTemplatePorts(template.inputs, locale),
+      outputPorts: localizeZflowTemplatePorts(template.outputs, locale),
+      ...(outputData.length ? { outputData } : {}),
+      config: cloneZflowConfig(template.config),
+    },
+  }
+}
+
+function createZflowNodeFromZpmtFile(file: ZpmtFileDragEntry, position: { x: number; y: number }, locale: Locale, currentNodes: ZflowNode[]): ZflowNode {
+  const template = getZflowNodeTemplateById('prompt') || ZFLOW_NODE_TEMPLATES[0]
+  const filePath = file.path
+  const promptKind = normalizeZpmtPromptKind(file.promptKind)
+  const fileName = filePath.split('/').pop() || filePath
+  const label = fileName.replace(/\.zpmt$/i, '') || localizeZflowText(template.label, locale)
+  const node = createZflowNodeFromTemplate(template, position, locale, currentNodes)
+  const icon = promptKind === 'image' ? 'wand-sparkles' : promptKind === 'agent' ? 'workflow' : 'message-square'
+  return {
+    ...node,
+    data: {
+      ...node.data,
+      label,
+      description: locale === 'en' ? `Prompt file: ${filePath}` : `提示词文件：${filePath}`,
+      icon,
+      outputPorts: normalizeZflowNodePortsForDirection(node.data, 'source').map((port) => ({
+        ...port,
+        valueType: promptKind === 'image' ? 'image' : 'text',
+      })),
+      outputData: [{ id: promptKind === 'image' ? 'image' : 'result', label: promptKind === 'image' ? (locale === 'en' ? 'Image' : '图片结果') : (locale === 'en' ? 'Result' : '结果'), valueType: promptKind === 'image' ? 'image' : 'text' }],
+      config: { filePath, promptKind, outputPath: promptKind === 'image' ? 'image' : 'result', bindings: {} },
+    },
+  }
+}
+
+function cloneZflowNodeForClipboard(node: ZflowNode): ZflowNode {
+  return {
+    ...node,
+    selected: false,
+    dragging: false,
+    data: cloneZflowNodeData(node.data),
+    position: { ...node.position },
+  }
+}
+
+function cloneZflowNodeForPaste(node: ZflowNode, id: string, offset: number): ZflowNode {
+  return {
+    ...cloneZflowNodeForClipboard(node),
+    id,
+    selected: true,
+    position: {
+      x: Math.round((node.position.x + offset) * 100) / 100,
+      y: Math.round((node.position.y + offset) * 100) / 100,
+    },
+  }
+}
+
+function cloneZflowNodeData(data: ZflowNodeData): ZflowNodeData {
+  return {
+    ...data,
+    inputPorts: normalizeZflowPorts(data.inputPorts || data.inputs, []).map((port) => ({ ...port })),
+    outputPorts: normalizeZflowPorts(data.outputPorts || data.outputs, []).map((port) => ({ ...port })),
+    outputData: normalizeZflowPorts(data.outputData, []).map((port) => ({ ...port })),
+    config: cloneZflowConfig(isRecord(data.config) ? data.config : {}),
+  }
+}
+
+function cloneZflowEdgeForClipboard(edge: ZflowEdge): ZflowEdge {
+  const data = isRecord(edge.data) ? stripDerivedZflowEdgeData(edge.data) : {}
+  return {
+    ...edge,
+    selected: false,
+    data: Object.keys(data).length ? cloneZflowConfig(data) : undefined,
+  }
+}
+
+function createUniqueZflowNodeId(baseId: string, nodes: ZflowNode[]) {
+  const normalizedBase = normalizeZflowHandleId(baseId) || 'node'
+  const usedIds = new Set(nodes.map((node) => node.id))
+  let index = 2
+  let id = `${normalizedBase}-copy`
+  while (usedIds.has(id)) {
+    id = `${normalizedBase}-copy-${index}`
+    index += 1
+  }
+  return id
+}
+
+function isZflowClipboardShortcutEvent(event: KeyboardEvent) {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey) return false
+  const key = event.key.toLowerCase()
+  return key === 'c' || key === 'v' || key === 'x'
+}
+
+function isEditableZflowShortcutTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  const tagName = target.tagName.toLowerCase()
+  return tagName === 'input' || tagName === 'textarea' || tagName === 'select'
+}
+
+type ZflowConnectionLike = {
+  source?: string | null
+  target?: string | null
+  sourceHandle?: string | null
+  targetHandle?: string | null
+}
+type ZflowResolvedConnection = {
+  source: string
+  target: string
+  sourceHandle: string
+  targetHandle: string
+}
+
+function createZflowEdgeFromConnection(
+  connection: Connection,
+  nodes: ZflowNode[],
+  edges: ZflowEdge[],
+  promptKindByPath: ZflowPromptKindByPath,
+): ZflowEdge | null {
+  const validation = getZflowConnectionValidation(connection, nodes, promptKindByPath)
+  if (!validation.valid || !validation.resolvedConnection) return null
+  const edge: ZflowEdge = {
+    id: createZflowEdgeId(validation.resolvedConnection, edges),
+    source: validation.resolvedConnection.source,
+    target: validation.resolvedConnection.target,
+    sourceHandle: validation.resolvedConnection.sourceHandle,
+    targetHandle: validation.resolvedConnection.targetHandle,
+    type: 'smoothstep',
+  }
+  const label = resolveZflowConnectionLabel(validation.resolvedConnection, nodes)
+  return label ? { ...edge, label } : edge
+}
+
+function canCreateZflowConnection(
+  connection: ZflowConnectionLike,
+  nodes: ZflowNode[],
+  edges: ZflowEdge[],
+  promptKindByPath: ZflowPromptKindByPath,
+) {
+  const validation = getZflowConnectionValidation(connection, nodes, promptKindByPath)
+  return Boolean(validation.valid && validation.resolvedConnection && isZflowResolvedConnectionAvailable(validation.resolvedConnection, edges))
+}
+
+function getZflowConnectionValidation(
+  connection: ZflowConnectionLike,
+  nodes: ZflowNode[],
+  promptKindByPath: ZflowPromptKindByPath,
+): {
+  valid: boolean
+  resolvedConnection: ZflowResolvedConnection | null
+  sourceType: ZflowPortValueType
+  targetType: ZflowPortValueType
+  invalidReason: string
+} {
+  const resolvedConnection = resolveZflowConnectionHandles(connection, nodes)
+  if (!resolvedConnection) {
+    return {
+      valid: false,
+      resolvedConnection: null,
+      sourceType: 'any',
+      targetType: 'any',
+      invalidReason: 'unresolved',
+    }
+  }
+  const sourceNode = nodes.find((node) => node.id === resolvedConnection.source)
+  const targetNode = nodes.find((node) => node.id === resolvedConnection.target)
+  if (!sourceNode || !targetNode) {
+    return {
+      valid: false,
+      resolvedConnection,
+      sourceType: 'any',
+      targetType: 'any',
+      invalidReason: 'missing-node',
+    }
+  }
+  const sourceType = resolveZflowNodePortValueType(sourceNode, 'source', resolvedConnection.sourceHandle, promptKindByPath)
+  const targetType = resolveZflowNodePortValueType(targetNode, 'target', resolvedConnection.targetHandle, promptKindByPath)
+  const valid = isZflowPortTypeCompatible(sourceType, targetType)
+  return {
+    valid,
+    resolvedConnection,
+    sourceType,
+    targetType,
+    invalidReason: valid ? '' : 'type-mismatch',
+  }
+}
+
+function isZflowResolvedConnectionAvailable(connection: ZflowResolvedConnection, edges: ZflowEdge[]) {
+  return !edges.some((edge) => {
+    if (edge.hidden) return false
+    return (
+      edge.source === connection.source &&
+      normalizeZflowHandleId(edge.sourceHandle) === connection.sourceHandle &&
+      edge.target === connection.target &&
+      normalizeZflowHandleId(edge.targetHandle) === connection.targetHandle
+    )
+  })
+}
+
+function resolveZflowConnectionHandles(connection: ZflowConnectionLike, nodes: ZflowNode[]): ZflowResolvedConnection | null {
+  const source = readString(connection.source)
+  const target = readString(connection.target)
+  if (!source || !target || source === target) return null
+  const sourceNode = nodes.find((node) => node.id === source)
+  const targetNode = nodes.find((node) => node.id === target)
+  if (!sourceNode || !targetNode) return null
+  const sourceHandle = resolveZflowNodePortHandle(sourceNode, 'source', connection.sourceHandle)
+  const targetHandle = resolveZflowNodePortHandle(targetNode, 'target', connection.targetHandle)
+  if (!sourceHandle || !targetHandle) return null
+  return { source, target, sourceHandle, targetHandle }
+}
+
+function resolveZflowNodePortHandle(node: ZflowNode, direction: 'source' | 'target', preferredHandle: unknown) {
+  const normalizedPreferred = normalizeZflowHandleId(preferredHandle)
+  const ports = normalizeZflowNodePortsForDirection(node.data, direction)
+  if (!ports.length) return undefined
+  if (normalizedPreferred && ports.some((port) => port.id === normalizedPreferred)) return normalizedPreferred
+  return ports[0]?.id
+}
+
+function createZflowEdgeId(connection: ZflowResolvedConnection, edges: ZflowEdge[]) {
+  const baseId = `${connection.source}-${connection.sourceHandle}-${connection.target}-${connection.targetHandle}`
+  let id = baseId
+  let index = 2
+  while (edges.some((edge) => edge.id === id)) {
+    id = `${baseId}-${index}`
+    index += 1
+  }
+  return id
+}
+
+function resolveZflowConnectionLabel(connection: ZflowResolvedConnection, nodes: ZflowNode[]) {
+  const sourceNode = nodes.find((node) => node.id === connection.source)
+  const outputs = sourceNode ? normalizeZflowNodePortsForDirection(sourceNode.data, 'source') : []
+  const output = outputs.find((port) => port.id === connection.sourceHandle)
+  const label = output?.label.trim()
+  if (!label || label === '输出' || label.toLowerCase() === 'output') return ''
+  return label
+}
+
+function localizeZflowTemplatePorts(ports: ZflowNodeTemplatePort[], locale: Locale): ZflowNodePort[] {
+  return ports.map((port) => ({
+    id: port.id,
+    label: localizeZflowText(port.label, locale),
+    valueType: normalizeZflowPortValueType(port.valueType, 'any'),
+  }))
+}
+
+function normalizeZflowHandleId(value: unknown) {
+  const id = readString(value)
+  if (!id) return undefined
+  const normalized = id.toLowerCase()
+  if (normalized === 'null' || normalized === 'undefined') return undefined
+  return id
+}
+
+function normalizeZflowPortValueType(value: unknown, fallback: ZflowPortValueType = 'any'): ZflowPortValueType {
+  if (
+    value === 'any' ||
+    value === 'string' ||
+    value === 'number' ||
+    value === 'text' ||
+    value === 'object' ||
+    value === 'array' ||
+    value === 'color' ||
+    value === 'boolean' ||
+    value === 'image' ||
+    value === 'file' ||
+    value === 'error'
+  ) return value
+  return fallback
+}
+
+function normalizeZflowPorts(value: unknown, fallback: ZflowNodePort[]): ZflowNodePort[] {
+  if (!Array.isArray(value)) return fallback
+  const ports = value
+    .map((item, index) => {
+      if (!isRecord(item)) return null
+      const id = normalizeZflowHandleId(item.id) || `port-${index + 1}`
+      const fallbackPort = fallback[index]
+      return {
+        id,
+        label: readString(item.label) || fallbackPort?.label || id,
+        valueType: normalizeZflowPortValueType(item.valueType, fallbackPort?.valueType || 'any'),
+      }
+    })
+    .filter(Boolean) as ZflowNodePort[]
+  return ports.length ? ports : fallback
+}
+
+function normalizeZflowPortsPreservingEmpty(value: unknown, fallback: ZflowNodePort[]): ZflowNodePort[] {
+  if (Array.isArray(value) && value.length === 0) return []
+  return normalizeZflowPorts(value, fallback)
+}
+
+function normalizeZflowNodePortsForDirection(data: ZflowNodeData, direction: 'source' | 'target'): ZflowNodePort[] {
+  const category = normalizeZflowNodeCategory(data.category || data.kind)
+  const nodeType = readString(data.nodeType) || readString(data.kind)
+  if (direction === 'target' && nodeType === 'prompt') return [{ id: 'in', label: '输入', valueType: 'any' }]
+  if (direction === 'source' && (readString(data.nodeType) === 'router' || readString(data.kind) === 'router')) return ZFLOW_CONDITION_OUTPUT_PORTS
+  const fallback = direction === 'source'
+    ? category === 'start'
+      ? [ZFLOW_START_FLOW_PORT]
+      : [{ id: 'out', label: '输出', valueType: 'any' as ZflowPortValueType }]
+    : category === 'start'
+      ? []
+      : [{ id: 'in', label: '输入', valueType: 'any' as ZflowPortValueType }]
+  const rawPorts = direction === 'source'
+    ? Array.isArray(data.outputPorts) ? data.outputPorts : category === 'start' ? undefined : data.outputs
+    : Array.isArray(data.inputPorts) ? data.inputPorts : data.inputs
+  if (category === 'start' && direction === 'source') return fallback
+  return normalizeZflowPortsPreservingEmpty(rawPorts, fallback)
+}
+
+function resolveZflowNodePortValueType(
+  node: ZflowNode,
+  direction: 'source' | 'target',
+  handleId: unknown,
+  promptKindByPath: ZflowPromptKindByPath,
+): ZflowPortValueType {
+  const preferredHandle = normalizeZflowHandleId(handleId)
+  const ports = normalizeZflowNodePortsForDirection(node.data, direction)
+  const port = (preferredHandle ? ports.find((item) => item.id === preferredHandle) : undefined) || ports[0]
+  const nodeType = readString(node.data.nodeType) || readString(node.data.kind)
+  if (direction === 'source' && nodeType === 'prompt') {
+    return resolveZflowPromptRunOutputType(node, promptKindByPath)
+  }
+  return normalizeZflowPortValueType(port?.valueType, 'any')
+}
+
+function resolveZflowPromptRunOutputType(node: ZflowNode, promptKindByPath: ZflowPromptKindByPath): ZflowPortValueType {
+  const promptKind = resolveZflowPromptRunKind(node, promptKindByPath)
+  return promptKind === 'image' ? 'image' : 'text'
+}
+
+function resolveZflowPromptRunKind(node: ZflowNode, promptKindByPath: ZflowPromptKindByPath): ZpmtPromptKind {
+  const config = isRecord(node.data.config) ? node.data.config : {}
+  const filePath = readString(config.filePath)
+  return (filePath ? promptKindByPath[filePath] : undefined) || normalizeZpmtPromptKind(config.promptKind)
+}
+
+function isZflowPortTypeCompatible(sourceType: ZflowPortValueType, targetType: ZflowPortValueType) {
+  if (sourceType === 'string' && targetType === 'text') return true
+  if (sourceType === 'text' && targetType === 'string') return true
+  return sourceType === 'any' || targetType === 'any' || sourceType === targetType
+}
+
+function isZflowUpstreamOutputCompatible(option: ZflowUpstreamOutputOption, targetType: ZflowPortValueType) {
+  if (targetType === 'image' && option.imageCollection) return true
+  return isZflowPortTypeCompatible(option.valueType, targetType)
+}
+
+function getZflowValueTypeColor(valueType: ZflowPortValueType) {
+  if (valueType === 'string' || valueType === 'text') return '#2563eb'
+  if (valueType === 'number') return '#7c3aed'
+  if (valueType === 'object') return '#0f766e'
+  if (valueType === 'array') return '#d97706'
+  if (valueType === 'color') return '#db2777'
+  if (valueType === 'boolean') return '#059669'
+  if (valueType === 'image') return '#e11d48'
+  if (valueType === 'file') return '#475569'
+  if (valueType === 'error') return '#dc2626'
+  return '#475569'
+}
+
+function getZflowPortBadgeStyle(valueType: ZflowPortValueType) {
+  const color = getZflowValueTypeColor(valueType)
+  return {
+    borderColor: `${color}33`,
+    background: `${color}14`,
+    color,
+  }
+}
+
+function getZflowPortTypeLabel(valueType: ZflowPortValueType, t: WorkbenchCopy) {
+  return t.zflowTypeLabels[valueType]
+}
+
+function getZflowPortCountSummary(ports: ZflowNodePort[], t: WorkbenchCopy, direction: 'source' | 'target') {
+  if (!ports.length) return direction === 'target' ? 'start' : '0 out'
+  const directionLabel = direction === 'target' ? 'in' : 'out'
+  if (ports.length === 1) return `${ports.length} ${directionLabel} · ${getZflowPortTypeLabel(ports[0]?.valueType || 'any', t)}`
+  return `${ports.length} ${directionLabel}`
+}
+
+function getZflowNodeCardPortSummary(ports: ZflowNodePort[], direction: 'source' | 'target') {
+  if (!ports.length) return direction === 'target' ? 'start' : '0 out'
+  const directionLabel = direction === 'target' ? 'in' : 'out'
+  const typeLabel = ports[0]?.valueType || 'any'
+  if (ports.length === 1) return `${directionLabel} · ${typeLabel}`
+  return `${ports.length} ${directionLabel}`
+}
+
+function areZflowPortsEqual(left: ZflowNodePort[], right: ZflowNodePort[]) {
+  if (left.length !== right.length) return false
+  return left.every((port, index) => {
+    const candidate = right[index]
+    return (
+      candidate?.id === port.id &&
+      candidate?.label === port.label &&
+      normalizeZflowPortValueType(candidate?.valueType, 'any') === normalizeZflowPortValueType(port.valueType, 'any')
+    )
+  })
+}
+
+function decorateZflowNode(node: ZflowNode, promptKindByPath: ZflowPromptKindByPath): ZflowNode {
+  const nodeType = readString(node.data.nodeType) || readString(node.data.kind)
+  if (nodeType !== 'prompt') {
+    return node
+  }
+  const promptKind = resolveZflowPromptRunKind(node, promptKindByPath)
+  const resolvedType = promptKind === 'image' ? 'image' : 'text'
+  const nextIcon = promptKind === 'image' ? 'wand-sparkles' : promptKind === 'agent' ? 'workflow' : 'message-square'
+  const nextOutputPorts: ZflowNodePort[] = normalizeZflowNodePortsForDirection(node.data, 'source').map((port) => ({ ...port, valueType: resolvedType }))
+  const nextOutputData: ZflowNodePort[] = [{ id: promptKind === 'image' ? 'image' : 'result', label: promptKind === 'image' ? '图片结果' : '结果', valueType: resolvedType }]
+  const currentConfig = isRecord(node.data.config) ? node.data.config : {}
+  const nextOutputPath = promptKind === 'image' ? 'image' : readString(currentConfig.outputPath) || 'result'
+  if (
+    readString(node.data.icon) === nextIcon &&
+    currentConfig.promptKind === promptKind &&
+    readString(currentConfig.outputPath) === nextOutputPath &&
+    areZflowPortsEqual(normalizeZflowPorts(node.data.outputPorts || node.data.outputs, []), nextOutputPorts) &&
+    areZflowPortsEqual(normalizeZflowPorts(node.data.outputData, []), nextOutputData)
+  ) {
+    return node
+  }
+  return {
+    ...node,
+    data: {
+      ...node.data,
+      icon: nextIcon,
+      outputPorts: nextOutputPorts,
+      outputData: nextOutputData,
+      config: {
+        ...currentConfig,
+        promptKind,
+        outputPath: nextOutputPath,
+      },
+    },
+  }
+}
+
+function decorateZflowNodeWithRunStatus(node: ZflowNode, runStatus?: ZflowRunNodeStatus): ZflowNode {
+  const currentStatus = readString(node.data.runStatus)
+  if (!runStatus && !currentStatus) return node
+  if (currentStatus === runStatus) return node
+  return {
+    ...node,
+    data: {
+      ...node.data,
+      ...(runStatus ? { runStatus } : { runStatus: '' }),
+    },
+  }
+}
+
+function getZflowRunNodeStatuses(events: Array<Record<string, unknown>>): Record<string, ZflowRunNodeStatus> {
+  const statuses: Record<string, ZflowRunNodeStatus> = {}
+  for (const event of events) {
+    const nodeId = readString(event.nodeId)
+    if (!nodeId) continue
+    const type = readString(event.type)
+    if (type === 'node:start') statuses[nodeId] = 'running'
+    if (type === 'node:end') statuses[nodeId] = 'success'
+    if (type === 'node:error') statuses[nodeId] = 'error'
+  }
+  return statuses
+}
+
+function decorateZflowEdge(edge: ZflowEdge, nodes: ZflowNode[], promptKindByPath: ZflowPromptKindByPath): ZflowEdge {
+  const validation = getZflowConnectionValidation(edge, nodes, promptKindByPath)
+  const strokeType = validation.valid ? validation.sourceType : 'error'
+  const stroke = getZflowValueTypeColor(strokeType)
+  const strokeWidth = edge.selected ? 2.8 : 2.25
+  const strokeDasharray = validation.valid ? undefined : '7 5'
+  const currentMarkerEnd: Record<string, unknown> = isRecord(edge.markerEnd) ? edge.markerEnd : {}
+  const currentStyle: Record<string, unknown> = isRecord(edge.style) ? edge.style : {}
+  const currentData: Record<string, unknown> = isRecord(edge.data) ? edge.data : {}
+  if (
+    currentMarkerEnd.type === MarkerType.ArrowClosed &&
+    currentMarkerEnd.color === stroke &&
+    currentStyle.stroke === stroke &&
+    currentStyle.strokeWidth === strokeWidth &&
+    currentStyle.strokeDasharray === strokeDasharray &&
+    currentData.invalid === !validation.valid &&
+    readString(currentData.invalidReason) === validation.invalidReason &&
+    normalizeZflowPortValueType(currentData.sourceType, 'any') === validation.sourceType &&
+    normalizeZflowPortValueType(currentData.targetType, 'any') === validation.targetType
+  ) {
+    return edge
+  }
+  return {
+    ...edge,
+    markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
+    style: {
+      ...edge.style,
+      stroke,
+      strokeWidth,
+      strokeDasharray,
+    },
+    data: {
+      ...edge.data,
+      invalid: !validation.valid,
+      invalidReason: validation.invalidReason,
+      sourceType: validation.sourceType,
+      targetType: validation.targetType,
+    },
+  }
+}
+
+function stripDerivedZflowEdgeData(data: Record<string, unknown>) {
+  const { invalid: _invalid, invalidReason: _invalidReason, sourceType: _sourceType, targetType: _targetType, ...rest } = data
+  return rest
+}
+
+function areZflowAlignmentGuidesEqual(left: ZflowAlignmentGuide[], right: ZflowAlignmentGuide[]) {
+  if (left.length !== right.length) return false
+  return left.every((guide, index) => {
+    const candidate = right[index]
+    return (
+      candidate?.id === guide.id &&
+      candidate?.axis === guide.axis &&
+      candidate?.position === guide.position &&
+      candidate?.start === guide.start &&
+      candidate?.end === guide.end
+    )
+  })
+}
+
+function getZflowNodeSize(node: ZflowNode) {
+  return {
+    width: readPositiveFiniteNumber(node.width, readPositiveFiniteNumber(node.initialWidth, ZFLOW_NODE_WIDTH)),
+    height: readPositiveFiniteNumber(node.height, readPositiveFiniteNumber(node.initialHeight, ZFLOW_NODE_HEIGHT)),
+  }
+}
+
+function getZflowNodeRect(node: ZflowNode) {
+  const size = getZflowNodeSize(node)
+  return {
+    x: node.position.x,
+    y: node.position.y,
+    width: size.width,
+    height: size.height,
+  }
+}
+
+function getZflowNodesBounds(nodes: ZflowNode[]) {
+  if (!nodes.length) return { x: 0, y: 0, width: 0, height: 0 }
+  const rects = nodes.map(getZflowNodeRect)
+  const left = Math.min(...rects.map((rect) => rect.x))
+  const top = Math.min(...rects.map((rect) => rect.y))
+  const right = Math.max(...rects.map((rect) => rect.x + rect.width))
+  const bottom = Math.max(...rects.map((rect) => rect.y + rect.height))
+  return {
+    x: left,
+    y: top,
+    width: right - left,
+    height: bottom - top,
+  }
+}
+
+function layoutZflowNodes(nodes: ZflowNode[], edges: ZflowEdge[], targetNodeIds?: string[]) {
+  const visibleNodes = nodes.filter((node) => !node.hidden)
+  const selectedSet = targetNodeIds?.length ? new Set(targetNodeIds) : null
+  const nodesToLayout = selectedSet ? visibleNodes.filter((node) => selectedSet.has(node.id)) : visibleNodes
+  if (!nodesToLayout.length) return nodes
+
+  const graph = new dagre.graphlib.Graph()
+  graph.setDefaultEdgeLabel(() => ({}))
+  graph.setGraph({
+    rankdir: 'LR',
+    align: 'UL',
+    marginx: 24,
+    marginy: 24,
+    nodesep: 56,
+    ranksep: 92,
+  })
+
+  nodesToLayout.forEach((node) => {
+    const size = getZflowNodeSize(node)
+    graph.setNode(node.id, { width: size.width, height: size.height })
+  })
+
+  edges
+    .filter((edge) => !selectedSet || (selectedSet.has(edge.source) && selectedSet.has(edge.target)))
+    .forEach((edge) => {
+      if (!graph.hasNode(edge.source) || !graph.hasNode(edge.target)) return
+      graph.setEdge(edge.source, edge.target)
+    })
+
+  dagre.layout(graph)
+
+  const currentBounds = getZflowNodesBounds(nodesToLayout)
+  const positioned = new Map<string, { x: number; y: number }>()
+  nodesToLayout.forEach((node) => {
+    const laidOutNode = graph.node(node.id) as { x: number; y: number } | undefined
+    if (!laidOutNode) return
+    const size = getZflowNodeSize(node)
+    positioned.set(node.id, {
+      x: laidOutNode.x - size.width / 2,
+      y: laidOutNode.y - size.height / 2,
+    })
+  })
+
+  const nextBounds = getZflowNodesBounds(
+    nodesToLayout.map((node) => ({
+      ...node,
+      position: positioned.get(node.id) || node.position,
+    })),
+  )
+  const offsetX = selectedSet ? currentBounds.x - nextBounds.x : 0
+  const offsetY = selectedSet ? currentBounds.y - nextBounds.y : 0
+
+  return nodes.map((node) => {
+    const nextPosition = positioned.get(node.id)
+    if (!nextPosition) return node
+    return {
+      ...node,
+      position: {
+        x: Math.round((nextPosition.x + offsetX) * 100) / 100,
+        y: Math.round((nextPosition.y + offsetY) * 100) / 100,
+      },
+    }
+  })
+}
+
+function getZflowNodeAlignmentResult(node: ZflowNode, nodes: ZflowNode[], zoom: number) {
+  const current = getZflowNodeRect(node)
+  const threshold = ZFLOW_ALIGNMENT_THRESHOLD_PX / Math.max(zoom, 0.25)
+  let bestVertical: { delta: number; position: number; start: number; end: number } | null = null
+  let bestHorizontal: { delta: number; position: number; start: number; end: number } | null = null
+
+  for (const candidateNode of nodes) {
+    if (candidateNode.id === node.id || candidateNode.hidden) continue
+    const candidate = getZflowNodeRect(candidateNode)
+    const verticalPairs = [
+      { current: current.x, candidate: candidate.x },
+      { current: current.x + current.width / 2, candidate: candidate.x + candidate.width / 2 },
+      { current: current.x + current.width, candidate: candidate.x + candidate.width },
+    ]
+    const horizontalPairs = [
+      { current: current.y, candidate: candidate.y },
+      { current: current.y + current.height / 2, candidate: candidate.y + candidate.height / 2 },
+      { current: current.y + current.height, candidate: candidate.y + candidate.height },
+    ]
+
+    for (const pair of verticalPairs) {
+      const delta = pair.candidate - pair.current
+      if (Math.abs(delta) > threshold) continue
+      if (!bestVertical || Math.abs(delta) < Math.abs(bestVertical.delta)) {
+        bestVertical = {
+          delta,
+          position: pair.candidate,
+          start: Math.min(current.y, candidate.y),
+          end: Math.max(current.y + current.height, candidate.y + candidate.height),
+        }
+      }
+    }
+
+    for (const pair of horizontalPairs) {
+      const delta = pair.candidate - pair.current
+      if (Math.abs(delta) > threshold) continue
+      if (!bestHorizontal || Math.abs(delta) < Math.abs(bestHorizontal.delta)) {
+        bestHorizontal = {
+          delta,
+          position: pair.candidate,
+          start: Math.min(current.x, candidate.x),
+          end: Math.max(current.x + current.width, candidate.x + candidate.width),
+        }
+      }
+    }
+  }
+
+  const nextPosition = {
+    x: Math.round((node.position.x + (bestVertical?.delta || 0)) * 100) / 100,
+    y: Math.round((node.position.y + (bestHorizontal?.delta || 0)) * 100) / 100,
+  }
+  const guides: ZflowAlignmentGuide[] = []
+  if (bestVertical) {
+    guides.push({
+      id: `${node.id}:x`,
+      axis: 'x',
+      position: bestVertical.position,
+      start: bestVertical.start,
+      end: bestVertical.end,
+    })
+  }
+  if (bestHorizontal) {
+    guides.push({
+      id: `${node.id}:y`,
+      axis: 'y',
+      position: bestHorizontal.position,
+      start: bestHorizontal.start,
+      end: bestHorizontal.end,
+    })
+  }
+
+  return {
+    changed: Math.abs(nextPosition.x - node.position.x) > 0.01 || Math.abs(nextPosition.y - node.position.y) > 0.01,
+    position: nextPosition,
+    guides,
+  }
+}
+
+function cloneZflowConfig(value: Record<string, unknown> = {}) {
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>
+}
+
+function getZflowNodeIcon(iconName: string) {
+  return ZFLOW_NODE_ICON_MAP[iconName] || Workflow
+}
+
+function getDefaultZflowIconNameForCategory(category: ZflowNodeCategoryId) {
+  if (category === 'start') return 'play'
+  if (category === 'control') return 'route'
+  if (category === 'integration') return 'webhook'
+  return 'workflow'
+}
+
+function getZflowRuntimeLabel(runtime: string) {
+  if (runtime === 'start' || runtime === 'trigger') return 'start'
+  if (runtime === 'notify') return 'notify'
+  if (runtime === 'transform') return 'data'
+  if (runtime === 'terminal') return 'terminal'
+  return 'flow'
+}
+
+function getZflowMiniMapNodeColor(node: ZflowNode) {
+  const category = normalizeZflowNodeCategory(node.data.category || node.data.kind)
+  if (category === 'start') return '#2563eb'
+  if (category === 'control') return '#f97316'
+  if (category === 'integration') return '#0f766e'
+  return '#64748b'
+}
+
+function normalizeZflowNodeCategory(value: unknown): ZflowNodeCategoryId {
+  if (value === 'control' || value === 'integration' || value === 'start') return value
+  if (value === 'data' || value === 'notification') return 'integration'
+  if (value === 'trigger') return 'start'
+  const kind = readString(value)
+  const templateId = ZFLOW_LEGACY_KIND_TEMPLATE_IDS[kind] || kind
+  if (templateId === ZFLOW_START_NODE_TYPE) return 'start'
+  const template = getZflowNodeTemplateById(templateId)
+  return template?.category || 'integration'
+}
+
+function normalizeZflowRuntime(value: unknown, fallback: ZflowNodeRuntime): ZflowNodeRuntime {
+  if (value === 'branch' || value === 'transform' || value === 'notify' || value === 'start' || value === 'terminal') return value
+  if (value === 'trigger') return 'start'
+  return fallback
+}
+
+function isPersistableZflowNodeChange(change: NodeChange<ZflowNode>) {
+  return change.type !== 'dimensions' && change.type !== 'select'
+}
+
+function isPersistableZflowEdgeChange(change: EdgeChange<ZflowEdge>) {
+  return change.type !== 'select'
+}
+
+function areZflowViewportsEqual(left: Viewport, right: Viewport) {
+  return (
+    Math.abs(left.x - right.x) < 0.01 &&
+    Math.abs(left.y - right.y) < 0.01 &&
+    Math.abs(left.zoom - right.zoom) < 0.001
   )
 }
 
@@ -10732,6 +14784,10 @@ export function WorkbenchShell() {
     () => projects.find((project) => project.id === activeProjectId) || projects[0] || null,
     [activeProjectId, projects],
   )
+  const activeProjectPromptKinds = useMemo<ZflowPromptKindByPath>(() => {
+    const nodes = buildProjectTreeNodeByPath(activeProject?.tree)
+    return Object.fromEntries(Object.entries(nodes).map(([path, node]) => [path, normalizeZpmtPromptKind(node.promptKind)]))
+  }, [activeProject?.tree])
   const activeEditorTab = useMemo(
     () => editorTabs.find((tab) => tab.id === activeEditorTabId) || editorTabs[0] || null,
     [activeEditorTabId, editorTabs],
@@ -10739,6 +14795,7 @@ export function WorkbenchShell() {
   const activeProjectFile = activeEditorTab
     ? { projectId: activeEditorTab.projectId, path: activeEditorTab.path, name: activeEditorTab.name }
     : null
+  const activeIsZflowFile = Boolean(activeEditorTab && isZflowFilePath(activeEditorTab.path))
   const activeZpmtDocument = activeEditorTab && isZpmtFilePath(activeEditorTab.path) ? parseZpmtContent(activeEditorTab.content, aiProviders) : null
   const activeZpmtModelContext = activeZpmtDocument
     ? getSelectedAiModelContext(aiProviders, activeZpmtDocument.config.providerId, activeZpmtDocument.config.model, activeZpmtDocument.config.providerFile)
@@ -10755,7 +14812,10 @@ export function WorkbenchShell() {
   const visibleAnnouncements = announcements.filter((announcement) => !dismissedAnnouncements.has(dismissAnnouncementKey(announcement)))
   const feedbackUrl = useMemo(() => buildFeedbackUrl(), [])
   const gridMaxRows = useMemo(() => calculateGridRows(workbenchHeight), [workbenchHeight])
-  const renderLayout = useMemo(() => buildRenderableLayout(layout, minimized), [layout, minimized])
+  const renderLayout = useMemo(
+    () => buildRenderableLayout(activeIsZflowFile ? createZflowWorkbenchLayout(layout, gridMaxRows) : layout, minimized),
+    [activeIsZflowFile, gridMaxRows, layout, minimized],
+  )
   const layoutChanged = useMemo(
     () => layoutLoaded && !isDefaultWorkbenchState(layout, minimized, gridMaxRows),
     [gridMaxRows, layout, layoutLoaded, minimized],
@@ -11323,7 +15383,8 @@ export function WorkbenchShell() {
     setActiveEditorTabId(nextTab.id)
   }
 
-  function changeActiveEditorContent(value: string) {
+  function changeActiveEditorContent(value: string, options: { refreshSourceControl?: boolean } = {}) {
+    if (activeEditorTab?.content === value) return
     setEditorTabs((current) =>
       current.map((tab) =>
         tab.id === activeEditorTabId
@@ -11336,7 +15397,7 @@ export function WorkbenchShell() {
           : tab,
         ),
     )
-    dispatchSourceControlRefresh()
+    if (options.refreshSourceControl !== false) dispatchSourceControlRefresh()
   }
 
   function applyPromptTemplate(template: PromptTemplateDefinition) {
@@ -11609,12 +15670,16 @@ export function WorkbenchShell() {
           resizeHandles={RESIZE_HANDLES}
           draggableHandle=".workbench-window__title"
           draggableCancel=".workbench-window__control"
-          onDragStop={(nextLayout) => commitRuntimeLayout(nextLayout as Array<Partial<GridLayoutItem> & { i: string }>)}
-          onResizeStop={(nextLayout) => commitRuntimeLayout(nextLayout as Array<Partial<GridLayoutItem> & { i: string }>)}
+          onDragStop={(nextLayout) => {
+            if (!activeIsZflowFile) commitRuntimeLayout(nextLayout as Array<Partial<GridLayoutItem> & { i: string }>)
+          }}
+          onResizeStop={(nextLayout) => {
+            if (!activeIsZflowFile) commitRuntimeLayout(nextLayout as Array<Partial<GridLayoutItem> & { i: string }>)
+          }}
         >
           <div
             key="files"
-            className={minimized.files ? 'is-window-minimized' : undefined}
+            className={!activeIsZflowFile && minimized.files ? 'is-window-minimized' : undefined}
             data-window-id="files"
             style={{ zIndex: activeWindow === 'files' ? 20 : 1 }}
           >
@@ -11623,7 +15688,7 @@ export function WorkbenchShell() {
               title={workspaceActivity === 'explorer' ? t.activity.explorer : t.activity.sourceControl}
               icon={workspaceActivity === 'explorer' ? Boxes : GitBranch}
               active={activeWindow === 'files'}
-              minimized={minimized.files}
+              minimized={activeIsZflowFile ? false : minimized.files}
               minimizeLabel={t.windows.minimize}
               restoreLabel={t.windows.restore}
               onFocus={setActiveWindow}
@@ -11661,7 +15726,7 @@ export function WorkbenchShell() {
           </div>
           <div
             key="editor"
-            className={minimized.editor ? 'is-window-minimized' : undefined}
+            className={!activeIsZflowFile && minimized.editor ? 'is-window-minimized' : undefined}
             data-window-id="editor"
             style={{ zIndex: activeWindow === 'editor' ? 20 : 1 }}
           >
@@ -11670,7 +15735,7 @@ export function WorkbenchShell() {
               title={t.windows.editor}
               icon={FileText}
               active={activeWindow === 'editor'}
-              minimized={minimized.editor}
+              minimized={activeIsZflowFile ? false : minimized.editor}
               minimizeLabel={t.windows.minimize}
               restoreLabel={t.windows.restore}
               onFocus={setActiveWindow}
@@ -11682,6 +15747,7 @@ export function WorkbenchShell() {
                 locale={locale}
                 monacoTheme={monacoTheme}
                 aiProviders={aiProviders}
+                promptKindByPath={activeProjectPromptKinds}
                 recipeVariableCategories={recipeVariableCategories}
                 tabs={editorTabs}
                 activeTab={activeEditorTab}
@@ -11692,63 +15758,67 @@ export function WorkbenchShell() {
               />
             </WorkbenchWindow>
           </div>
-          <div
-            key="tests"
-            className={minimized.tests ? 'is-window-minimized' : undefined}
-            data-window-id="tests"
-            style={{ zIndex: activeWindow === 'tests' ? 20 : 1 }}
-          >
-            <WorkbenchWindow
-              id="tests"
-              title={t.windows.tests}
-              icon={Play}
-              active={activeWindow === 'tests'}
-              minimized={minimized.tests}
-              minimizeLabel={t.windows.minimize}
-              restoreLabel={t.windows.restore}
-              onFocus={setActiveWindow}
-              onMinimize={minimizeWindow}
-              onRestore={restoreWindow}
+          {!activeIsZflowFile ? (
+            <div
+              key="tests"
+              className={minimized.tests ? 'is-window-minimized' : undefined}
+              data-window-id="tests"
+              style={{ zIndex: activeWindow === 'tests' ? 20 : 1 }}
             >
-              <TestPanel
-                t={t}
-                locale={locale}
-                document={activeZpmtDocument}
-                activeFile={activeProjectFile}
-                modelCapabilities={activeZpmtModelCapabilities}
-                promptSurface={activeZpmtPromptSurface}
-                recipeVariableCategories={recipeVariableCategories}
-              />
-            </WorkbenchWindow>
-          </div>
-          <div
-            key="inspector"
-            className={minimized.inspector ? 'is-window-minimized' : undefined}
-            data-window-id="inspector"
-            style={{ zIndex: activeWindow === 'inspector' ? 20 : 1 }}
-          >
-            <WorkbenchWindow
-              id="inspector"
-              title={t.windows.inspector}
-              icon={Settings}
-              active={activeWindow === 'inspector'}
-              minimized={minimized.inspector}
-              minimizeLabel={t.windows.minimize}
-              restoreLabel={t.windows.restore}
-              onFocus={setActiveWindow}
-              onMinimize={minimizeWindow}
-              onRestore={restoreWindow}
+              <WorkbenchWindow
+                id="tests"
+                title={t.windows.tests}
+                icon={Play}
+                active={activeWindow === 'tests'}
+                minimized={minimized.tests}
+                minimizeLabel={t.windows.minimize}
+                restoreLabel={t.windows.restore}
+                onFocus={setActiveWindow}
+                onMinimize={minimizeWindow}
+                onRestore={restoreWindow}
+              >
+                <TestPanel
+                  t={t}
+                  locale={locale}
+                  document={activeZpmtDocument}
+                  activeFile={activeProjectFile}
+                  modelCapabilities={activeZpmtModelCapabilities}
+                  promptSurface={activeZpmtPromptSurface}
+                  recipeVariableCategories={recipeVariableCategories}
+                />
+              </WorkbenchWindow>
+            </div>
+          ) : null}
+          {!activeIsZflowFile ? (
+            <div
+              key="inspector"
+              className={minimized.inspector ? 'is-window-minimized' : undefined}
+              data-window-id="inspector"
+              style={{ zIndex: activeWindow === 'inspector' ? 20 : 1 }}
             >
-              <InspectorPanel
-                t={t}
-                locale={locale}
-                recipeVariableCategories={recipeVariableCategories}
-                modelCapabilities={activeZpmtModelCapabilities}
-                activeDocument={activeZpmtDocument}
-                onApplyTemplate={applyPromptTemplate}
-              />
-            </WorkbenchWindow>
-          </div>
+              <WorkbenchWindow
+                id="inspector"
+                title={t.windows.inspector}
+                icon={Settings}
+                active={activeWindow === 'inspector'}
+                minimized={minimized.inspector}
+                minimizeLabel={t.windows.minimize}
+                restoreLabel={t.windows.restore}
+                onFocus={setActiveWindow}
+                onMinimize={minimizeWindow}
+                onRestore={restoreWindow}
+              >
+                <InspectorPanel
+                  t={t}
+                  locale={locale}
+                  recipeVariableCategories={recipeVariableCategories}
+                  modelCapabilities={activeZpmtModelCapabilities}
+                  activeDocument={activeZpmtDocument}
+                  onApplyTemplate={applyPromptTemplate}
+                />
+              </WorkbenchWindow>
+            </div>
+          ) : null}
           </WorkbenchGridLayout>
         </main>
         <DragOverlay>
@@ -12643,6 +16713,17 @@ function flattenProjectTreePaths(tree?: TreeNode | null) {
   return paths
 }
 
+function buildProjectTreeNodeByPath(tree?: TreeNode | null) {
+  const nodes: Record<string, TreeNode> = {}
+  function visit(node?: TreeNode | null) {
+    if (!node) return
+    if (node.path) nodes[node.path] = node
+    node.children?.forEach(visit)
+  }
+  visit(tree)
+  return nodes
+}
+
 function uniqueProjectPaths(paths: string[]) {
   return [...new Set(paths.map((item) => item.trim()).filter(Boolean))]
 }
@@ -12660,6 +16741,10 @@ function hasProjectEntryDrag(dataTransfer: DataTransfer) {
   return Array.from(dataTransfer.types || []).includes(PROJECT_ENTRY_DRAG_MIME)
 }
 
+function hasZpmtFileDrag(dataTransfer: DataTransfer) {
+  return Array.from(dataTransfer.types || []).includes(ZPMT_FILE_DRAG_MIME)
+}
+
 function hasExternalFileDrag(dataTransfer: DataTransfer) {
   return Array.from(dataTransfer.types || []).includes('Files')
 }
@@ -12675,6 +16760,34 @@ function readProjectEntryDragPayload(dataTransfer: DataTransfer): ProjectEntryDr
         projectId: parsed.projectId,
         paths: uniqueProjectPaths(parsed.paths.filter((item): item is string => typeof item === 'string')),
       }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+function readZpmtFileDragPayload(dataTransfer: DataTransfer): ZpmtFileDragPayload | null {
+  const raw = dataTransfer.getData(ZPMT_FILE_DRAG_MIME)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!isRecord(parsed) || parsed.kind !== 'zpmt-files' || typeof parsed.projectId !== 'string') return null
+    const rawFiles = Array.isArray(parsed.files)
+      ? parsed.files
+      : Array.isArray(parsed.paths)
+        ? parsed.paths.map((path) => ({ path }))
+        : []
+    const seen = new Set<string>()
+    const files = rawFiles.flatMap((item): ZpmtFileDragEntry[] => {
+      const source: Record<string, unknown> = isRecord(item) ? item : { path: item }
+      const path = readString(source.path)
+      if (!isZpmtFilePath(path) || seen.has(path)) return []
+      seen.add(path)
+      return [{ path, promptKind: normalizeZpmtPromptKind(source.promptKind) }]
+    })
+    if (files.length) {
+      return { kind: 'zpmt-files', projectId: parsed.projectId, files, paths: files.map((file) => file.path) }
     }
   } catch {
     return null
@@ -12825,6 +16938,12 @@ function ensureZamfFileName(value: string) {
   return /\.zamf$/i.test(normalized) ? normalized : `${normalized.replace(/\.[a-z0-9]+$/i, '')}.zamf`
 }
 
+function ensureZflowFileName(value: string) {
+  const normalized = value.trim()
+  if (!normalized) return 'flow.zflow'
+  return /\.zflow$/i.test(normalized) ? normalized : `${normalized.replace(/\.[a-z0-9]+$/i, '')}.zflow`
+}
+
 function createZlexTemplate(fileName: string) {
   const title = fileName.replace(/\.zlex$/i, '') || '词汇变量'
   return `${JSON.stringify(
@@ -12858,6 +16977,78 @@ function createZamfTemplate(fileName: string) {
     null,
     2,
   )}\n`
+}
+
+function createZflowTemplate(fileName: string) {
+  const title = fileName.replace(/\.zflow$/i, '') || '提示词流程'
+  return serializeZflowDocument(createDefaultZflowDocument(title))
+}
+
+function createDefaultZflowDocument(title = '提示词流程'): ZflowDocument {
+  const nodes: ZflowNode[] = [
+    createDefaultZflowStartNode({ x: 60, y: 120 }, `${title}：${UI_COPY.zh.zflowStartNodeDescription}`),
+    createDefaultZflowNode('prompt', 'prompt-1', { x: 325, y: 120 }, '引用 .zpmt 文件并绑定输入变量。'),
+    createDefaultZflowNode('end', 'end', { x: 590, y: 120 }, '输出最终结果。'),
+  ]
+  const edges: ZflowEdge[] = [
+    { id: 'start-out-prompt-1-in', source: ZFLOW_START_NODE_ID, sourceHandle: 'out', target: 'prompt-1', targetHandle: 'in', type: 'smoothstep' },
+    { id: 'prompt-1-out-end-in', source: 'prompt-1', sourceHandle: 'out', target: 'end', targetHandle: 'in', type: 'smoothstep' },
+  ]
+
+  return {
+    schema: ZFLOW_SCHEMA,
+    version: 1,
+    nodes,
+    edges,
+    viewport: { x: 70, y: 80, zoom: 0.82 },
+  }
+}
+
+function createDefaultZflowStartNode(position: { x: number; y: number }, description = UI_COPY.zh.zflowStartNodeDescription, outputs: ZflowNodePort[] = getDefaultZflowStartOutputs('zh')): ZflowNode {
+  return {
+    id: ZFLOW_START_NODE_ID,
+    type: 'zflow',
+    position,
+    data: {
+      label: UI_COPY.zh.zflowStartNode,
+      description,
+      category: 'start',
+      nodeType: ZFLOW_START_NODE_TYPE,
+      kind: ZFLOW_START_NODE_TYPE,
+      icon: 'play',
+      runtime: 'start',
+      inputPorts: [],
+      outputPorts: [ZFLOW_START_FLOW_PORT],
+      outputData: outputs.map((port) => ({
+        ...port,
+        valueType: normalizeZflowStartOutputType(port.valueType),
+      })),
+      config: {},
+    },
+  }
+}
+
+function createDefaultZflowNode(templateId: string, id: string, position: { x: number; y: number }, description: string): ZflowNode {
+  const template = getZflowNodeTemplateById(templateId) || ZFLOW_NODE_TEMPLATES[0]
+  const outputData = getDefaultZflowOutputDataForNode({ id, type: 'zflow', position, data: { label: localizeZflowText(template.label, 'zh'), nodeType: template.id, kind: template.id, category: template.category, config: cloneZflowConfig(template.config) } } as ZflowNode, 'zh')
+  return {
+    id,
+    type: 'zflow',
+    position,
+    data: {
+      label: localizeZflowText(template.label, 'zh'),
+      description,
+      category: template.category,
+      nodeType: template.id,
+      kind: template.id,
+      icon: template.iconName,
+      runtime: template.runtime,
+      inputPorts: localizeZflowTemplatePorts(template.inputs, 'zh'),
+      outputPorts: localizeZflowTemplatePorts(template.outputs, 'zh'),
+      ...(outputData.length ? { outputData } : {}),
+      config: cloneZflowConfig(template.config),
+    },
+  }
 }
 
 function createZpmtContent(input: {
@@ -12896,6 +17087,275 @@ function createZpmtContent(input: {
 
 function isZpmtFilePath(filePath: string) {
   return filePath.toLowerCase().endsWith('.zpmt')
+}
+
+function isZflowFilePath(filePath: string) {
+  return filePath.toLowerCase().endsWith('.zflow')
+}
+
+function parseZflowContent(content: string): ProjectConfigParseResult<ZflowDocument> {
+  try {
+    const parsed = JSON.parse(content) as unknown
+    if (!isRecord(parsed)) return { ok: false, message: '文件不是 JSON 对象' }
+    const schema = readString(parsed.schema)
+    if (schema !== ZFLOW_SCHEMA) return { ok: false, message: '旧版 .zflow 不再兼容，请新建 LangGraph 流程文件' }
+    const normalizedNodes = Array.isArray(parsed.nodes) ? parsed.nodes.map(normalizeZflowNodeForEditor) : []
+    const normalized = normalizeZflowDocumentStartNode(normalizedNodes)
+    const edges = Array.isArray(parsed.edges)
+      ? parsed.edges
+          .map((edge, index) => normalizeZflowEdgeForEditor(migrateZflowStartEdgeSource(edge, normalized.migratedSourceIds), index, normalized.nodes))
+          .filter((edge): edge is ZflowEdge => Boolean(edge))
+      : []
+
+    return {
+      ok: true,
+      document: {
+        schema: ZFLOW_SCHEMA,
+        version: Math.max(1, Math.round(readFiniteNumber(parsed.version, 1))),
+        nodes: normalized.nodes,
+        edges,
+        viewport: normalizeZflowViewport(parsed.viewport),
+      },
+    }
+  } catch {
+    return { ok: false, message: 'JSON 解析失败' }
+  }
+}
+
+function normalizeZflowDocumentStartNode(nodes: ZflowNode[]) {
+  const startCandidates = nodes.filter(isZflowStartNode)
+  const firstStart = startCandidates[0]
+  const migratedSourceIds = new Set(startCandidates.map((node) => node.id))
+  const startNode = firstStart
+    ? normalizeExistingZflowStartNode(firstStart)
+    : createDefaultZflowStartNode({ x: 60, y: 120 })
+  const restNodes = nodes.filter((node) => !isZflowStartNode(node))
+  return {
+    nodes: [startNode, ...restNodes],
+    migratedSourceIds,
+  }
+}
+
+function normalizeExistingZflowStartNode(node: ZflowNode): ZflowNode {
+  const outputData = normalizeZflowStartOutputPorts(node.data.outputData || node.data.outputs, 'zh')
+  return {
+    ...node,
+    id: ZFLOW_START_NODE_ID,
+    data: {
+      ...node.data,
+      label: UI_COPY.zh.zflowStartNode,
+      description: readString(node.data.description) || UI_COPY.zh.zflowStartNodeDescription,
+      category: 'start',
+      nodeType: ZFLOW_START_NODE_TYPE,
+      kind: ZFLOW_START_NODE_TYPE,
+      icon: readString(node.data.icon) || 'play',
+      runtime: 'start',
+      inputPorts: [],
+      outputPorts: [ZFLOW_START_FLOW_PORT],
+      outputData: outputData.length ? outputData : getDefaultZflowStartOutputs('zh'),
+      config: isRecord(node.data.config) ? node.data.config : {},
+    },
+  }
+}
+
+function migrateZflowStartEdgeSource(edge: unknown, migratedSourceIds: Set<string>) {
+  if (!isRecord(edge)) return edge
+  const source = readString(edge.source)
+  if (!source || !migratedSourceIds.has(source)) return edge
+  return { ...edge, source: ZFLOW_START_NODE_ID, sourceHandle: 'out' }
+}
+
+function serializeZflowDocument(document: ZflowDocument) {
+  const normalized = normalizeZflowDocumentStartNode(document.nodes)
+  return `${JSON.stringify(
+    {
+      schema: ZFLOW_SCHEMA,
+      version: Math.max(2, document.version || 1),
+      nodes: normalized.nodes.map(toSerializableZflowNode),
+      edges: document.edges.map((edge) => toSerializableZflowEdge(migrateSerializableZflowStartEdge(edge, normalized.migratedSourceIds))),
+      viewport: toSerializableZflowViewport(document.viewport),
+    },
+    null,
+    2,
+  )}\n`
+}
+
+function migrateSerializableZflowStartEdge(edge: ZflowEdge, migratedSourceIds: Set<string>): ZflowEdge {
+  if (!migratedSourceIds.has(edge.source)) return edge
+  return { ...edge, source: ZFLOW_START_NODE_ID, sourceHandle: 'out' }
+}
+
+function normalizeZflowNodeForEditor(value: unknown, index: number): ZflowNode {
+  const source = isRecord(value) ? value : {}
+  const position = isRecord(source.position) ? source.position : {}
+  const data = isRecord(source.data) ? source.data : {}
+  const id = readString(source.id) || `node-${index + 1}`
+  const label = readString(data.label) || readString(source.label) || `节点 ${index + 1}`
+  const legacyKind = readString(data.kind)
+  const templateId = readString(data.nodeType) || ZFLOW_LEGACY_KIND_TEMPLATE_IDS[legacyKind] || legacyKind
+  const template = getZflowNodeTemplateById(templateId)
+  const category = normalizeZflowNodeCategory(readString(data.category) || template?.category || legacyKind)
+  const runtime = normalizeZflowRuntime(readString(data.runtime), template?.runtime || (category === 'start' ? 'start' : category === 'control' ? 'branch' : 'transform'))
+  const width = readPositiveFiniteNumber(source.width, ZFLOW_NODE_WIDTH)
+  const height = readPositiveFiniteNumber(source.height, ZFLOW_NODE_HEIGHT)
+  return {
+    id,
+    type: 'zflow',
+    position: {
+      x: readFiniteNumber(position.x, 80 + index * 220),
+      y: readFiniteNumber(position.y, 80),
+    },
+    width,
+    height,
+    initialWidth: readPositiveFiniteNumber(source.initialWidth, width),
+    initialHeight: readPositiveFiniteNumber(source.initialHeight, height),
+    data: {
+      ...data,
+      label: category === 'start' ? UI_COPY.zh.zflowStartNode : label,
+      description: readString(data.description),
+      category,
+      nodeType: category === 'start' ? ZFLOW_START_NODE_TYPE : readString(data.nodeType) || template?.id || legacyKind || category,
+      kind: category === 'start' ? ZFLOW_START_NODE_TYPE : readString(data.kind) || template?.id || category,
+      icon: readString(data.icon) || template?.iconName || getDefaultZflowIconNameForCategory(category),
+      runtime,
+      inputPorts: normalizeZflowPortsPreservingEmpty(
+        Array.isArray(data.inputPorts) ? data.inputPorts : data.inputs,
+        template ? localizeZflowTemplatePorts(template.inputs, 'zh') : category === 'start' ? [] : [{ id: 'in', label: '输入', valueType: 'any' }],
+      ),
+      outputPorts: normalizeZflowPortsPreservingEmpty(
+        Array.isArray(data.outputPorts) ? data.outputPorts : category === 'start' ? [ZFLOW_START_FLOW_PORT] : data.outputs,
+        template ? localizeZflowTemplatePorts(template.outputs, 'zh') : category === 'start' ? [ZFLOW_START_FLOW_PORT] : [{ id: 'out', label: '输出', valueType: 'any' }],
+      ),
+      outputData: normalizeZflowNodeOutputData({
+        id,
+        type: 'zflow',
+        position: {
+          x: readFiniteNumber(position.x, 80 + index * 220),
+          y: readFiniteNumber(position.y, 80),
+        },
+        data: {
+          ...data,
+          category,
+          nodeType: category === 'start' ? ZFLOW_START_NODE_TYPE : readString(data.nodeType) || template?.id || legacyKind || category,
+          kind: category === 'start' ? ZFLOW_START_NODE_TYPE : readString(data.kind) || template?.id || category,
+          outputData: Array.isArray(data.outputData) ? data.outputData : category === 'start' ? data.outputs : undefined,
+          config: isRecord(data.config) ? data.config : cloneZflowConfig(template?.config),
+        },
+      } as ZflowNode, 'zh'),
+      config: readString(data.nodeType) === 'router' || readString(data.kind) === 'router'
+        ? writeZflowConditionConfig(data.config, readZflowConditionConfig(data.config))
+        : isRecord(data.config) ? data.config : cloneZflowConfig(template?.config),
+    },
+  }
+}
+
+function normalizeZflowEdgeForEditor(value: unknown, index: number, nodes: ZflowNode[]): ZflowEdge | null {
+  if (!isRecord(value)) return null
+  const source = readString(value.source)
+  const target = readString(value.target)
+  if (!source || !target) return null
+  const resolvedConnection = resolveZflowConnectionHandles(
+    {
+      source,
+      target,
+      sourceHandle: normalizeZflowHandleId(value.sourceHandle),
+      targetHandle: normalizeZflowHandleId(value.targetHandle),
+    },
+    nodes,
+  )
+  if (!resolvedConnection) return null
+  const data = isRecord(value.data) ? value.data : {}
+  const label = readString(value.label)
+  return {
+    id: readString(value.id) || `${source}-${target}-${index + 1}`,
+    source: resolvedConnection.source,
+    target: resolvedConnection.target,
+    sourceHandle: resolvedConnection.sourceHandle,
+    targetHandle: resolvedConnection.targetHandle,
+    type: readString(value.type) || 'smoothstep',
+    ...(label ? { label } : {}),
+    ...(Object.keys(data).length ? { data } : {}),
+    animated: value.animated === true,
+  }
+}
+
+function normalizeZflowViewport(value: unknown): Viewport {
+  const source = isRecord(value) ? value : {}
+  return {
+    x: readFiniteNumber(source.x, 0),
+    y: readFiniteNumber(source.y, 0),
+    zoom: Math.min(2, Math.max(0.25, readFiniteNumber(source.zoom, 1))),
+  }
+}
+
+function toSerializableZflowViewport(viewport: Viewport) {
+  const normalized = normalizeZflowViewport(viewport)
+  return {
+    x: Math.round(normalized.x * 100) / 100,
+    y: Math.round(normalized.y * 100) / 100,
+    zoom: Math.round(normalized.zoom * 1000) / 1000,
+  }
+}
+
+function toSerializableZflowNode(node: ZflowNode) {
+  const category = normalizeZflowNodeCategory(node.data.category || node.data.kind)
+  const nodeType = readString(node.data.nodeType) || readString(node.data.kind)
+  const template = getZflowNodeTemplateById(nodeType)
+  const promptKind = nodeType === 'prompt' ? normalizeZpmtPromptKind(isRecord(node.data.config) ? node.data.config.promptKind : undefined) : 'chat'
+  const inputPorts = nodeType === 'prompt'
+    ? [{ id: 'in', label: '输入', valueType: 'any' as ZflowPortValueType }]
+    : normalizeZflowPorts(node.data.inputPorts || node.data.inputs, [])
+  const outputPorts = nodeType === 'prompt' && promptKind === 'image'
+    ? normalizeZflowNodePortsForDirection(node.data, 'source').map((port) => ({ ...port, valueType: 'image' as ZflowPortValueType }))
+    : normalizeZflowNodePortsForDirection(node.data, 'source')
+  const outputData = nodeType === 'prompt' && promptKind === 'image'
+    ? [{ id: 'image', label: '图片结果', valueType: 'image' as ZflowPortValueType }]
+    : normalizeZflowNodeOutputData(node, 'zh')
+  const hasInputPorts = Array.isArray(node.data.inputPorts) || Array.isArray(node.data.inputs)
+  const hasOutputPorts = Array.isArray(node.data.outputPorts) || Array.isArray(node.data.outputs)
+  const hasOutputData = Array.isArray(node.data.outputData) || isZflowStartNode(node) || outputData.length > 0
+  const config = isRecord(node.data.config) ? node.data.config : {}
+  const serializableConfig = nodeType === 'prompt' && promptKind === 'image'
+    ? { ...config, promptKind, outputPath: 'image' }
+    : config
+  return {
+    id: node.id,
+    type: 'zflow',
+    position: {
+      x: Math.round(node.position.x * 100) / 100,
+      y: Math.round(node.position.y * 100) / 100,
+    },
+    data: {
+      label: category === 'start' ? UI_COPY.zh.zflowStartNode : readString(node.data.label) || node.id,
+      ...(readString(node.data.description) ? { description: readString(node.data.description) } : {}),
+      category,
+      nodeType: category === 'start' ? ZFLOW_START_NODE_TYPE : readString(node.data.nodeType) || template?.id || category,
+      kind: category === 'start' ? ZFLOW_START_NODE_TYPE : readString(node.data.kind) || readString(node.data.nodeType) || template?.id || category,
+      icon: readString(node.data.icon) || template?.iconName || getDefaultZflowIconNameForCategory(category),
+      runtime: normalizeZflowRuntime(readString(node.data.runtime), category === 'start' ? 'start' : template?.runtime || 'transform'),
+      ...(hasInputPorts || inputPorts.length ? { inputPorts } : {}),
+      ...(hasOutputPorts || outputPorts.length ? { outputPorts } : {}),
+      ...(hasOutputData ? { outputData } : {}),
+      ...(Object.keys(serializableConfig).length ? { config: serializableConfig } : {}),
+    },
+  }
+}
+
+function toSerializableZflowEdge(edge: ZflowEdge) {
+  const data = isRecord(edge.data) ? stripDerivedZflowEdgeData(edge.data) : {}
+  const sourceHandle = normalizeZflowHandleId(edge.sourceHandle)
+  const targetHandle = normalizeZflowHandleId(edge.targetHandle)
+  return {
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    ...(sourceHandle ? { sourceHandle } : {}),
+    ...(targetHandle ? { targetHandle } : {}),
+    type: edge.type || 'smoothstep',
+    ...(typeof edge.label === 'string' && edge.label.trim() ? { label: edge.label.trim() } : {}),
+    ...(Object.keys(data).length ? { data } : {}),
+    ...(edge.animated ? { animated: true } : {}),
+  }
 }
 
 function parseZlexContent(content: string): ProjectConfigParseResult<ZlexDocument> {
@@ -13216,11 +17676,13 @@ function normalizeResponseConfig(
   modelId?: string,
   model?: AiProviderModel | null,
 ): ZpmtResponseConfig {
-  return normalizeAiResponseConfig(outputType, value, providerType, modelId, model)
+  const config = normalizeAiResponseConfig(outputType, value, providerType, modelId, model)
+  return outputType === 'image' ? { ...config, imageCount: 1 } : config
 }
 
 function defaultResponseConfig(outputType: ZpmtOutputType, providerType?: string, modelId?: string, model?: AiProviderModel | null): ZpmtResponseConfig {
-  return defaultAiResponseConfig(outputType, providerType, modelId, model)
+  const config = defaultAiResponseConfig(outputType, providerType, modelId, model)
+  return outputType === 'image' ? { ...config, imageCount: 1 } : config
 }
 
 function createPromptEntryDialog(folder: TreeNode, providers: AiProviderSummary[]): EntryDialogState {
@@ -14078,6 +18540,39 @@ function cloneDefaultWorkbenchLayout(rowCount = DEFAULT_GRID_ROWS) {
   return createDefaultWorkbenchLayout(rowCount).map((item) => clampLayoutItem({ ...item, resizeHandles: RESIZE_HANDLES }))
 }
 
+function createZflowWorkbenchLayout(layout: GridLayoutItem[], rowCount = DEFAULT_GRID_ROWS): GridLayoutItem[] {
+  const rows = Math.max(DEFAULT_GRID_ROWS, rowCount)
+  const currentFiles = layout.find((item) => item.i === 'files') || getDefaultLayoutItem('files', rows)
+  const fileWidth = Math.min(7, Math.max(currentFiles.minW || 3, currentFiles.w || 5))
+  return [
+    createReactGridLayoutItem({
+      ...currentFiles,
+      i: 'files',
+      x: 0,
+      y: 0,
+      w: fileWidth,
+      h: rows,
+      minW: 3,
+      minH: 8,
+      isDraggable: false,
+      isResizable: false,
+      resizeHandles: [],
+    }),
+    createReactGridLayoutItem({
+      i: 'editor',
+      x: fileWidth,
+      y: 0,
+      w: GRID_COLS - fileWidth,
+      h: rows,
+      minW: 8,
+      minH: 9,
+      isDraggable: false,
+      isResizable: false,
+      resizeHandles: [],
+    }),
+  ]
+}
+
 function isWindowId(value: string): value is WindowId {
   return WINDOW_IDS.includes(value as WindowId)
 }
@@ -14354,6 +18849,11 @@ function sanitizeMinimizedState(value: unknown): MinimizedState {
 
 function readFiniteNumber(value: unknown, fallback: number) {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function readPositiveFiniteNumber(value: unknown, fallback: number) {
+  const nextValue = readFiniteNumber(value, fallback)
+  return nextValue > 0 ? nextValue : fallback
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

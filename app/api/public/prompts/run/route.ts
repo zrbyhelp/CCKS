@@ -263,7 +263,7 @@ function buildProviderImageRequestBody(document: ZpmtDocumentForRuntime, prompt:
   const body: Record<string, unknown> = { model: document.config.model, prompt }
   if (promptSurface.kind === 'image-prompt' && promptSurface.negativePrompt && negativePrompt.trim()) body.negative_prompt = negativePrompt.trim()
   if (config.imageSize && config.imageSize !== 'adaptive') body.size = config.imageSize
-  if (Number.isFinite(config.imageCount)) body.n = Math.max(1, Math.min(10, Math.round(Number(config.imageCount))))
+  body.n = 1
   if (config.imageQuality) body.quality = config.imageQuality
   if (config.imageOutputFormat) body.output_format = config.imageOutputFormat
   if (Number.isFinite(config.imageOutputCompression)) body.output_compression = config.imageOutputCompression

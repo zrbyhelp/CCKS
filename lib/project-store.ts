@@ -113,6 +113,7 @@ export async function createUserProject(userId: string, input: { name: unknown; 
   await copyRepositoryReadme(projectRoot)
   await ensureProjectConfigFiles(projectRoot)
   await ensureProjectPromptTestFiles(projectRoot)
+  await ensureProjectZflowDemoFiles(projectRoot)
 
   try {
     const record = await prisma.project.create({
@@ -602,6 +603,7 @@ async function ensureDefaultProjectFiles(projectRoot: string) {
   await mkdir(resolveInside(projectRoot, 'components'), { recursive: true })
   await mkdir(resolveInside(projectRoot, 'templates'), { recursive: true })
   await ensureProjectPromptTestFiles(projectRoot)
+  await ensureProjectZflowDemoFiles(projectRoot)
 
   await Promise.all([
     writeFileIfMissing(resolveInside(projectRoot, 'README.md'), examplePrompt),
@@ -632,6 +634,11 @@ async function ensureProjectPromptTestFiles(projectRoot: string) {
   ])
 }
 
+async function ensureProjectZflowDemoFiles(projectRoot: string) {
+  await mkdir(resolveInside(projectRoot, 'flows'), { recursive: true })
+  await writeFileIfMissing(resolveInside(projectRoot, 'flows/提示词流程.zflow'), createDefaultZflowContent())
+}
+
 function createDefaultZpmtContent(kind: ProjectPromptKind) {
   const outputType = kind === 'image' ? 'image' : 'text'
   const document = {
@@ -659,6 +666,74 @@ function createDefaultZpmtContent(kind: ProjectPromptKind) {
       schemaVersion: 2,
       recipeVariables: [],
     },
+  }
+  return `${JSON.stringify(document, null, 2)}\n`
+}
+
+function createDefaultZflowContent() {
+  const document = {
+    schema: 'ccks.zflow.langgraph',
+    version: 1,
+    nodes: [
+      {
+        id: 'start',
+        type: 'zflow',
+        position: { x: 60, y: 120 },
+        data: {
+          label: '起点',
+          description: 'LangGraph 流程起点。',
+          category: 'start',
+          nodeType: 'start',
+          kind: 'start',
+          icon: 'play',
+          runtime: 'start',
+          inputPorts: [],
+          outputPorts: [{ id: 'out', label: '输出', valueType: 'any' }],
+          outputData: [{ id: 'input', label: '输入', valueType: 'string' }],
+          config: {},
+        },
+      },
+      {
+        id: 'prompt-1',
+        type: 'zflow',
+        position: { x: 325, y: 120 },
+        data: {
+          label: '提示词执行',
+          description: '引用 .zpmt 文件并绑定输入变量。',
+          category: 'data',
+          nodeType: 'prompt',
+          kind: 'prompt',
+          icon: 'message-square',
+          runtime: 'transform',
+          inputPorts: [{ id: 'in', label: '输入' }],
+          outputPorts: [{ id: 'out', label: '输出', valueType: 'text' }],
+          outputData: [{ id: 'result', label: '结果', valueType: 'text' }],
+          config: { filePath: '', outputPath: 'result', bindings: {} },
+        },
+      },
+      {
+        id: 'end',
+        type: 'zflow',
+        position: { x: 590, y: 120 },
+        data: {
+          label: '结束节点',
+          description: '输出最终结果。',
+          category: 'control',
+          nodeType: 'end',
+          kind: 'end',
+          icon: 'check-circle',
+          runtime: 'terminal',
+          inputPorts: [{ id: 'in', label: '输入' }],
+          outputPorts: [],
+          config: { outputPath: 'result' },
+        },
+      },
+    ],
+    edges: [
+      { id: 'start-out-prompt-1-in', source: 'start', sourceHandle: 'out', target: 'prompt-1', targetHandle: 'in', type: 'smoothstep' },
+      { id: 'prompt-1-out-end-in', source: 'prompt-1', sourceHandle: 'out', target: 'end', targetHandle: 'in', type: 'smoothstep' },
+    ],
+    viewport: { x: 70, y: 80, zoom: 0.82 },
   }
   return `${JSON.stringify(document, null, 2)}\n`
 }

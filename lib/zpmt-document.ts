@@ -505,11 +505,11 @@ function validateMediaTokenList(
     const key = getZpmtVariableKey(tokenRange.token)
     if (!key || seen.has(key)) continue
     seen.add(key)
-    if (kind === 'image' && support.image !== true) throw new ZpmtDocumentError('MODEL_MEDIA_UNSUPPORTED', `当前模型不支持图片变量：${parsed.name}`)
-    if (kind === 'file' && support.file !== true) throw new ZpmtDocumentError('MODEL_MEDIA_UNSUPPORTED', `当前模型不支持文件变量：${parsed.name}`)
     const params = getPromptTokenParamMap(parsed.params)
     const files = mediaVariables[key] || []
-    if (!files.length) throw new ZpmtDocumentError('MEDIA_VARIABLE_REQUIRED', `请上传变量「${parsed.name}」需要的${kind === 'image' ? '图片' : '文件'}`)
+    if (!files.length) continue
+    if (kind === 'image' && support.image !== true) throw new ZpmtDocumentError('MODEL_MEDIA_UNSUPPORTED', `当前模型不支持图片变量：${parsed.name}`)
+    if (kind === 'file' && support.file !== true) throw new ZpmtDocumentError('MODEL_MEDIA_UNSUPPORTED', `当前模型不支持文件变量：${parsed.name}`)
     const countLimit = kind === 'image' ? readMediaCountLimit(params.count) : 1
     if (files.length > countLimit) throw new ZpmtDocumentError('MEDIA_COUNT_EXCEEDED', `变量「${parsed.name}」最多上传 ${countLimit} 个文件`)
     const sizeLimit = parseByteSize(String(params.size || '')) || DEFAULT_MEDIA_FILE_LIMIT
@@ -544,7 +544,7 @@ function readMediaFile(value: unknown): ZpmtMediaFile[] {
 }
 
 function formatMediaAnchor(variableName: string, files: ZpmtMediaFile[]) {
-  if (!files.length) return '[未上传]'
+  if (!files.length) return ''
   return files.map((file, index) => `[${createMediaAlias(variableName, index, file.filename)}]`).join('\n')
 }
 

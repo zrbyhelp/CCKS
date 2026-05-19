@@ -272,6 +272,191 @@ html[data-theme="dark"] .portal-background__veil {
   background: rgba(12, 16, 29, 0.45);
 }
 
+.theme-dark .zflow-canvas-editor {
+  --zflow-minimap-bg: rgba(15, 23, 42, 0.94);
+  --zflow-minimap-mask: rgba(15, 23, 42, 0.68);
+  --zflow-minimap-mask-stroke: rgba(255, 176, 135, 0.62);
+  --zflow-minimap-node-stroke: rgba(226, 232, 240, 0.42);
+  --zflow-edge-stroke: #c4b5fd;
+  --zflow-guide-color: rgba(251, 126, 61, 0.7);
+  --zflow-panel-bg: rgba(15, 23, 42, 0.88);
+  --zflow-panel-border: rgba(148, 163, 184, 0.24);
+  --zflow-card-bg: rgba(21, 26, 42, 0.94);
+  --zflow-card-border: rgba(148, 163, 184, 0.22);
+  --zflow-node-bg: rgba(21, 26, 42, 0.96);
+  --zflow-node-border: rgba(148, 163, 184, 0.26);
+  --zflow-toolbar-bg: rgba(15, 23, 42, 0.88);
+  --zflow-toolbar-border: rgba(148, 163, 184, 0.24);
+  background:
+    linear-gradient(135deg, rgba(22, 18, 38, 0.92), rgba(12, 16, 29, 0.96)),
+    #0f172a;
+}
+
+.theme-dark .zflow-node-panel {
+  border-left-color: var(--zflow-panel-border);
+  background: var(--zflow-panel-bg);
+  color: #f3f5fb;
+}
+
+.theme-dark .zflow-node-panel__topbar,
+.theme-dark .zflow-node-panel__tablist,
+.theme-dark .zflow-node-section,
+.theme-dark .zflow-node-editor__meta {
+  border-color: var(--zflow-panel-border);
+}
+
+.theme-dark .zflow-node-template,
+.theme-dark .zflow-node-card {
+  border-color: var(--zflow-card-border);
+  border-left-color: var(--zflow-node-accent);
+  background: var(--zflow-card-bg);
+  color: #f3f5fb;
+  box-shadow: none;
+}
+
+.theme-dark .zflow-node-card--control {
+  --zflow-node-connected-accent: #fb923c;
+  --zflow-node-connected-border: rgba(251, 146, 60, 0.72);
+  --zflow-node-connected-shadow: rgba(249, 115, 22, 0.22);
+}
+
+.theme-dark .zflow-node-card--data,
+.theme-dark .zflow-node-card--integration {
+  --zflow-node-connected-accent: #2dd4bf;
+  --zflow-node-connected-border: rgba(45, 212, 191, 0.68);
+  --zflow-node-connected-shadow: rgba(15, 118, 110, 0.22);
+}
+
+.theme-dark .zflow-node-card--notification {
+  --zflow-node-connected-accent: #fb7185;
+  --zflow-node-connected-border: rgba(244, 114, 182, 0.7);
+  --zflow-node-connected-shadow: rgba(225, 29, 72, 0.22);
+}
+
+.theme-dark .zflow-node-card--start {
+  --zflow-node-connected-accent: #60a5fa;
+  --zflow-node-connected-border: rgba(96, 165, 250, 0.72);
+  --zflow-node-connected-shadow: rgba(37, 99, 235, 0.22);
+}
+
+.theme-dark .zflow-node-card.is-connected {
+  --zflow-node-accent: var(--zflow-node-connected-accent, #cbd5e1);
+  border-color: var(--zflow-node-connected-border);
+  background: var(--zflow-card-bg);
+  box-shadow: none;
+}
+
+.theme-dark .zflow-node-template__description,
+.theme-dark .zflow-node-card__description,
+.theme-dark .zflow-node-card__meta,
+.theme-dark .zflow-node-card__ports,
+.theme-dark .zflow-node-panel__stats,
+.theme-dark .zflow-node-editor__field > span,
+.theme-dark .zflow-node-editor__meta span {
+  color: #94a3b8;
+}
+
+.theme-dark .zflow-canvas-toolbar {
+  border-color: var(--zflow-toolbar-border);
+  background: var(--zflow-toolbar-bg);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+}
+
+.theme-dark .zflow-canvas-toolbar__divider {
+  background: rgba(148, 163, 184, 0.2);
+}
+
+.theme-dark .zflow-node-editor__config {
+  background: rgba(15, 23, 42, 0.76);
+  color: #e2e8f0;
+}
+
+.theme-dark .zflow-node-editor__port-chip {
+  border-color: rgba(148, 163, 184, 0.2);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.theme-dark .zflow-node-editor__port-chip--editable {
+  border-color: rgba(96, 165, 250, 0.32);
+  background: rgba(37, 99, 235, 0.12);
+}
+
+.theme-dark .zflow-node-editor__port-input,
+.theme-dark .zflow-node-editor__port-select {
+  color: #f3f5fb;
+}
+
+.theme-dark .zflow-input-bindings {
+  border-color: var(--zflow-panel-border);
+}
+
+.theme-dark .zflow-input-binding {
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.theme-dark .zflow-input-binding__label,
+.theme-dark .zflow-input-binding__select,
+.theme-dark .zflow-input-binding__textarea,
+.theme-dark .zflow-input-binding__choice,
+.theme-dark .zflow-condition-rule__value {
+  color: #f3f5fb;
+}
+
+.theme-dark .zflow-input-binding__select,
+.theme-dark .zflow-input-binding__textarea,
+.theme-dark .zflow-input-binding__choice,
+.theme-dark .zflow-condition-rule__value,
+.theme-dark .zflow-node-editor__error {
+  border-color: rgba(248, 113, 113, 0.28);
+  background: rgba(127, 29, 29, 0.22);
+  color: #fecaca;
+}
+
+.theme-dark .zflow-canvas-editor .react-flow__controls,
+.theme-dark .zflow-canvas-editor .react-flow__minimap {
+  border-color: var(--zflow-panel-border);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+}
+
+.theme-dark .zflow-canvas-editor .react-flow__controls-button {
+  border-bottom-color: var(--zflow-panel-border);
+  background: rgba(21, 26, 42, 0.96);
+  color: #dbe2f1;
+}
+
+.theme-dark .zflow-canvas-editor .react-flow__controls-button:hover {
+  background: rgba(251, 126, 61, 0.16);
+  color: #ffb087;
+}
+
+.theme-dark .zflow-canvas-editor .react-flow__edge-textbg {
+  fill: rgba(15, 23, 42, 0.9);
+  stroke: rgba(148, 163, 184, 0.28);
+}
+
+.theme-dark .zflow-canvas-editor .react-flow__edge-text {
+  fill: #e2e8f0;
+}
+
+.theme-dark .zflow-canvas-editor .zflow-node-card__handle {
+  border-color: #0f172a;
+}
+
+.theme-dark .zflow-run-event {
+  background: rgba(15, 23, 42, 0.7);
+}
+
+.theme-dark .zflow-run-event__header,
+.theme-dark .zflow-run-event__text {
+  color: #f3f5fb;
+}
+
+.theme-dark .zflow-run-event__text,
+.theme-dark .zflow-run-event__image-link {
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(15, 23, 42, 0.76);
+}
+
 .theme-dark .ai-assist-panel__item {
   background: rgba(251, 126, 61, 0.1);
   border-color: rgba(255, 152, 95, 0.24);
@@ -1798,6 +1983,1019 @@ html[data-theme="dark"] .zlex-empty {
 .source-code-panel__body .monaco-editor .view-lines,
 .source-code-panel__body .monaco-editor .margin-view-overlays {
   background-color: transparent !important;
+}
+
+.zflow-canvas-editor {
+  --zflow-minimap-bg: rgba(255, 255, 255, 0.92);
+  --zflow-minimap-mask: rgba(248, 250, 252, 0.7);
+  --zflow-minimap-mask-stroke: rgba(251, 126, 61, 0.58);
+  --zflow-minimap-node-stroke: rgba(30, 41, 59, 0.34);
+  --zflow-edge-stroke: #475569;
+  --zflow-guide-color: rgba(217, 90, 27, 0.72);
+  --zflow-panel-bg: rgba(255, 255, 255, 0.86);
+  --zflow-panel-border: rgba(203, 213, 225, 0.82);
+  --zflow-card-bg: rgba(255, 255, 255, 0.92);
+  --zflow-card-border: rgba(203, 213, 225, 0.9);
+  --zflow-node-bg: rgba(255, 255, 255, 0.96);
+  --zflow-node-border: rgba(148, 163, 184, 0.32);
+  --zflow-toolbar-bg: rgba(255, 255, 255, 0.9);
+  --zflow-toolbar-border: rgba(203, 213, 225, 0.82);
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  flex-direction: row;
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, rgba(255, 248, 244, 0.9), rgba(248, 250, 252, 0.92)),
+    #fbfcff;
+}
+
+.zflow-canvas-editor__stage {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.zflow-canvas-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--zflow-toolbar-border);
+  border-radius: 10px;
+  background: var(--zflow-toolbar-bg);
+  padding: 6px;
+  backdrop-filter: blur(14px);
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.12);
+}
+
+.zflow-canvas-toolbar__divider {
+  width: 1px;
+  align-self: stretch;
+  background: rgba(148, 163, 184, 0.24);
+}
+
+.zflow-canvas-guides {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+}
+
+.zflow-canvas-guide {
+  position: absolute;
+  background: var(--zflow-guide-color);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--zflow-guide-color) 40%, transparent);
+}
+
+.zflow-canvas-guide--vertical {
+  width: 1px;
+}
+
+.zflow-canvas-guide--horizontal {
+  height: 1px;
+}
+
+.zflow-canvas-editor .react-flow {
+  background: transparent;
+}
+
+.zflow-node-panel {
+  display: flex;
+  width: 292px;
+  min-width: 264px;
+  max-width: 34%;
+  flex-shrink: 0;
+  flex-direction: column;
+  border-left: 1px solid var(--zflow-panel-border);
+  background: var(--zflow-panel-bg);
+  color: #1e293b;
+  backdrop-filter: blur(14px);
+}
+
+.zflow-node-panel__topbar {
+  display: flex;
+  min-height: 52px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--zflow-panel-border);
+  padding: 8px 10px;
+}
+
+.zflow-node-panel__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.zflow-node-panel__stats {
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.zflow-node-panel__tabs {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.zflow-node-panel__tablist {
+  height: 34px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--zflow-panel-border);
+  padding: 0 8px;
+}
+
+.zflow-node-panel__tab {
+  height: 34px;
+  padding-inline: 4px;
+}
+
+.zflow-node-panel__content {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 7px;
+}
+
+.zflow-node-section {
+  border-bottom: 1px solid var(--zflow-panel-border);
+  padding-bottom: 8px;
+}
+
+.zflow-node-section + .zflow-node-section {
+  padding-top: 8px;
+}
+
+.zflow-node-section:last-child {
+  border-bottom: 0;
+}
+
+.zflow-node-section__heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 1px 5px;
+  font-size: 10.5px;
+  font-weight: 900;
+}
+
+.zflow-node-section__icon,
+.zflow-node-template__icon,
+.zflow-node-card__icon {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 8px;
+}
+
+.zflow-node-section__icon {
+  width: 20px;
+  height: 20px;
+}
+
+.zflow-node-section__grid {
+  display: grid;
+  gap: 5px;
+}
+
+.zflow-node-template {
+  --zflow-node-accent: #475569;
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  cursor: grab;
+  align-items: flex-start;
+  gap: 7px;
+  border: 1px solid var(--zflow-card-border);
+  border-left: 3px solid var(--zflow-node-accent);
+  border-radius: 8px;
+  background: var(--zflow-card-bg);
+  padding: 6px 7px;
+  text-align: left;
+  color: #1e293b;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.zflow-node-template:active {
+  cursor: grabbing;
+}
+
+.zflow-node-template:hover {
+  border-color: color-mix(in srgb, var(--zflow-node-accent) 42%, var(--zflow-card-border));
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+  transform: translateY(-1px);
+}
+
+.zflow-node-template__icon {
+  width: 24px;
+  height: 24px;
+  background: color-mix(in srgb, var(--zflow-node-accent) 14%, transparent);
+  color: var(--zflow-node-accent);
+}
+
+.zflow-node-template__body {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.zflow-node-template__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.zflow-node-template__description {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.25;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+}
+
+.zflow-node-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.zflow-node-editor__runtime {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--zflow-panel-border);
+  border-radius: 8px;
+  padding: 7px;
+}
+
+.zflow-node-editor__field {
+  display: grid;
+  gap: 5px;
+}
+
+.zflow-node-editor__field > span,
+.zflow-node-editor__meta span {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.zflow-node-editor__field input,
+.zflow-node-editor__field textarea {
+  font-size: 12px;
+}
+
+.zflow-node-editor__meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  border: 1px solid var(--zflow-panel-border);
+  border-radius: 8px;
+  padding: 7px;
+}
+
+.zflow-node-editor__meta--start {
+  grid-template-columns: 1fr;
+}
+
+.zflow-node-editor__meta div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.zflow-node-editor__meta strong {
+  color: currentColor;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.zflow-node-editor__port-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.zflow-node-editor__port-list--editable {
+  display: grid;
+  gap: 6px;
+}
+
+.zflow-node-editor__port-chip {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--zflow-panel-border);
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.08);
+  padding: 2px 6px;
+}
+
+.zflow-node-editor__port-chip--editable {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 86px 24px;
+  width: 100%;
+  min-height: 32px;
+  gap: 6px;
+  align-items: center;
+  justify-content: stretch;
+  border-color: color-mix(in srgb, var(--zflow-node-accent, #2563eb) 24%, var(--zflow-panel-border));
+  background: color-mix(in srgb, var(--zflow-node-accent, #2563eb) 8%, transparent);
+  padding: 4px 4px 4px 8px;
+}
+
+.zflow-node-editor__port-chip strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+}
+
+.zflow-node-editor__port-chip em {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.zflow-node-editor__port-input {
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 10px !important;
+  font-weight: 900;
+  box-shadow: none !important;
+}
+
+.zflow-node-editor__port-select {
+  width: 86px;
+  height: 22px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0 18px 0 7px;
+  font-size: 9px;
+  font-weight: 900;
+  outline: none;
+}
+
+.zflow-node-editor__port-add {
+  height: 24px;
+  padding-inline: 7px;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.zflow-node-editor__port-delete {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.zflow-input-bindings {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--zflow-panel-border);
+  border-radius: 8px;
+  padding: 7px;
+}
+
+.zflow-input-bindings__heading {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.zflow-input-bindings__list {
+  display: grid;
+  gap: 7px;
+}
+
+.zflow-input-bindings__status {
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.08);
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.45;
+  padding: 8px;
+}
+
+.zflow-input-binding {
+  display: grid;
+  gap: 6px;
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.08);
+  padding: 7px;
+}
+
+.zflow-input-binding__header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.zflow-input-binding__header--return {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.zflow-return-binding-editor {
+  display: grid;
+  min-width: 0;
+  width: 100%;
+  gap: 6px;
+}
+
+.zflow-return-binding-editor__name {
+  width: 100%;
+  min-width: 0;
+}
+
+.zflow-return-binding-editor__controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.zflow-input-binding__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #1e293b;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.zflow-input-binding__type {
+  margin-top: 1px;
+  color: #94a3b8;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.zflow-input-binding__select,
+.zflow-input-binding__textarea {
+  width: 100%;
+  border: 1px solid var(--zflow-panel-border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #1e293b;
+  font-size: 11px;
+  font-weight: 700;
+  outline: none;
+}
+
+.zflow-input-binding__select {
+  height: 30px;
+  padding: 0 8px;
+}
+
+.zflow-input-binding__source-grid {
+  display: grid;
+  gap: 6px;
+}
+
+.zflow-input-binding__textarea {
+  min-height: 48px;
+  resize: vertical;
+  padding: 7px 8px;
+}
+
+.zflow-input-binding__choices {
+  display: grid;
+  gap: 5px;
+}
+
+.zflow-input-binding__choice {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--zflow-panel-border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 4px 7px;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.zflow-input-binding__choice span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zflow-condition-editor {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--zflow-panel-border);
+  border-radius: 8px;
+  padding: 7px;
+}
+
+.zflow-run-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.zflow-run-panel__heading {
+  color: #475569;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.zflow-run-panel__fields {
+  display: grid;
+  gap: 8px;
+}
+
+.zflow-run-panel__fields textarea {
+  min-height: 48px;
+  resize: vertical;
+  border: 1px solid var(--zflow-panel-border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.82);
+  padding: 7px 8px;
+  color: #1e293b;
+  font-size: 11px;
+  font-weight: 700;
+  outline: none;
+}
+
+.zflow-run-monitor {
+  display: grid;
+  gap: 7px;
+}
+
+.zflow-run-event {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--zflow-panel-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 7px;
+}
+
+.zflow-run-event--node-error,
+.zflow-run-event--run-error {
+  border-color: rgba(220, 38, 38, 0.28);
+  background: rgba(254, 242, 242, 0.82);
+}
+
+.zflow-run-event__header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #1e293b;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.zflow-run-event__header em {
+  flex-shrink: 0;
+  color: #94a3b8;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.zflow-run-event__message {
+  color: #b91c1c;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
+.zflow-run-event__payload {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border-radius: 7px;
+  background: rgba(15, 23, 42, 0.94);
+  padding: 8px;
+  color: #e2e8f0;
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.zflow-run-event__result {
+  display: grid;
+  gap: 7px;
+}
+
+.zflow-run-event__text {
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border-radius: 7px;
+  border: 1px solid rgba(203, 213, 225, 0.78);
+  background: rgba(248, 250, 252, 0.92);
+  padding: 8px;
+  color: #1e293b;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.zflow-run-event__images {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+  gap: 7px;
+}
+
+.zflow-run-event__image-link {
+  display: block;
+  overflow: hidden;
+  width: 100%;
+  cursor: zoom-in;
+  border-radius: 7px;
+  border: 1px solid rgba(203, 213, 225, 0.86);
+  background: rgba(248, 250, 252, 0.92);
+  padding: 0;
+}
+
+.zflow-run-event__image-link img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+}
+
+.zflow-condition-editor__heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.zflow-condition-editor__list {
+  display: grid;
+  gap: 7px;
+}
+
+.zflow-condition-rule {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.08);
+  padding: 7px;
+}
+
+.zflow-condition-rule__value {
+  height: 30px;
+  border: 1px solid var(--zflow-panel-border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #1e293b;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.zflow-condition-rule .zflow-node-editor__port-delete {
+  justify-self: end;
+}
+
+.zflow-node-editor__config {
+  min-height: 148px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  line-height: 1.45;
+}
+
+.zflow-node-editor__error {
+  border: 1px solid rgba(239, 68, 68, 0.24);
+  border-radius: 8px;
+  background: rgba(254, 242, 242, 0.86);
+  padding: 7px 8px;
+  color: #b91c1c;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.zflow-node-section__icon--control,
+.zflow-node-template--control {
+  --zflow-node-accent: #f97316;
+}
+
+.zflow-node-card--control {
+  --zflow-node-connected-accent: #f97316;
+  --zflow-node-connected-border: #fb923c;
+  --zflow-node-connected-shadow: rgba(249, 115, 22, 0.22);
+}
+
+.zflow-node-section__icon--data,
+.zflow-node-section__icon--integration,
+.zflow-node-template--data,
+.zflow-node-template--integration {
+  --zflow-node-accent: #0f766e;
+}
+
+.zflow-node-card--data,
+.zflow-node-card--integration {
+  --zflow-node-connected-accent: #0f766e;
+  --zflow-node-connected-border: #14b8a6;
+  --zflow-node-connected-shadow: rgba(13, 148, 136, 0.22);
+}
+
+.zflow-node-section__icon--notification,
+.zflow-node-template--notification {
+  --zflow-node-accent: #e11d48;
+}
+
+.zflow-node-card--notification {
+  --zflow-node-connected-accent: #e11d48;
+  --zflow-node-connected-border: #fb7185;
+  --zflow-node-connected-shadow: rgba(244, 63, 94, 0.22);
+}
+
+.zflow-node-section__icon--start,
+.zflow-node-template--start {
+  --zflow-node-accent: #2563eb;
+}
+
+.zflow-node-card--start {
+  --zflow-node-connected-accent: #2563eb;
+  --zflow-node-connected-border: #60a5fa;
+  --zflow-node-connected-shadow: rgba(59, 130, 246, 0.22);
+}
+
+.zflow-node-section__icon {
+  background: color-mix(in srgb, var(--zflow-node-accent) 14%, transparent);
+  color: var(--zflow-node-accent);
+}
+
+.zflow-canvas-editor .react-flow__node-zflow {
+  background: transparent;
+  border: 0;
+  color: inherit;
+}
+
+.zflow-node-card {
+  --zflow-node-accent: #64748b;
+  position: relative;
+  width: 204px;
+  height: 118px;
+  box-sizing: border-box;
+  overflow: visible;
+  border: 1px solid var(--zflow-node-border);
+  border-left: 4px solid var(--zflow-node-accent);
+  border-radius: 8px;
+  background: var(--zflow-node-bg);
+  box-shadow: none;
+  color: #1e293b;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition:
+    box-shadow 160ms ease,
+    border-color 160ms ease,
+    transform 160ms ease;
+}
+
+.zflow-node-card.is-connected {
+  --zflow-node-accent: var(--zflow-node-connected-accent, #64748b);
+  border-color: var(--zflow-node-connected-border, var(--zflow-node-border));
+  background: var(--zflow-node-bg);
+  box-shadow: none;
+}
+
+.zflow-node-card.is-selected {
+  border-color: color-mix(in srgb, var(--zflow-node-accent) 54%, var(--zflow-node-border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--zflow-node-accent) 25%, transparent);
+}
+
+.zflow-node-card.is-run-running {
+  --zflow-node-accent: #2563eb;
+  border-color: rgba(37, 99, 235, 0.82);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.18);
+}
+
+.zflow-node-card.is-run-success {
+  --zflow-node-accent: #16a34a;
+  border-color: rgba(22, 163, 74, 0.72);
+}
+
+.zflow-node-card.is-run-error {
+  --zflow-node-accent: #dc2626;
+  border-color: rgba(220, 38, 38, 0.82);
+  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.18);
+}
+
+.zflow-node-card__header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 2px 0;
+}
+
+.zflow-node-card__body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 7px;
+  padding: 0 2px 2px;
+}
+
+.zflow-node-card__icon {
+  width: 30px;
+  height: 30px;
+  background: color-mix(in srgb, var(--zflow-node-accent) 14%, transparent);
+  color: var(--zflow-node-accent);
+}
+
+.zflow-node-card__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.zflow-node-card__meta {
+  margin-top: 1px;
+  color: #64748b;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.zflow-node-card__description {
+  display: -webkit-box;
+  overflow: hidden;
+  min-height: calc(11px * 1.35 * 2);
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.zflow-node-card__ports {
+  display: flex;
+  justify-content: space-between;
+  color: #94a3b8;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.zflow-canvas-editor .zflow-node-card__handle {
+  width: 9px;
+  height: 9px;
+  border-color: #fff;
+  background: var(--zflow-node-accent);
+  z-index: 2;
+}
+
+.zflow-canvas-editor .zflow-node-card__handle.is-occupied {
+  opacity: 0.4;
+}
+
+.zflow-canvas-editor .zflow-node-card__handle--target {
+  left: 0;
+}
+
+.zflow-canvas-editor .zflow-node-card__handle--source {
+  right: 0;
+}
+
+.zflow-node-card--condition .zflow-node-card__handle--condition-input {
+  left: 50%;
+  top: 0;
+}
+
+.zflow-node-card--condition .zflow-node-card__handle--condition-output {
+  top: 50%;
+}
+
+.zflow-node-card--condition .zflow-node-card__branch {
+  position: absolute;
+  top: 50%;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.zflow-node-card--condition .zflow-node-card__branch--false {
+  right: calc(100% + 10px);
+}
+
+.zflow-node-card--condition .zflow-node-card__branch--true {
+  left: calc(100% + 10px);
+}
+
+.zflow-node-card--condition .zflow-node-card__branch-label {
+  border: 1px solid color-mix(in srgb, var(--zflow-node-accent) 26%, var(--zflow-node-border));
+  border-radius: 999px;
+  background: var(--zflow-node-bg);
+  color: var(--zflow-node-accent);
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 4px 6px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+}
+
+.zflow-canvas-editor .react-flow__edge-path {
+  stroke: var(--zflow-edge-stroke);
+  stroke-width: 2.25;
+}
+
+.zflow-canvas-editor .react-flow__edge.selected .react-flow__edge-path {
+  stroke: #f97316;
+  stroke-width: 2.8;
+}
+
+.zflow-canvas-editor .react-flow__edge-textbg {
+  fill: rgba(255, 255, 255, 0.92);
+  stroke: rgba(203, 213, 225, 0.9);
+  stroke-width: 1px;
+}
+
+.zflow-canvas-editor .react-flow__edge-text {
+  fill: #334155;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.zflow-canvas-editor .react-flow__controls,
+.zflow-canvas-editor .react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.12);
+}
+
+.zflow-canvas-editor .react-flow__controls-button {
+  border-bottom-color: rgba(226, 232, 240, 0.92);
+  background: rgba(255, 255, 255, 0.96);
+  color: #334155;
+}
+
+.zflow-canvas-editor .react-flow__controls-button:hover {
+  background: #fff2ea;
+  color: #d95a1b;
+}
+
+@media (max-width: 900px) {
+  .zflow-canvas-editor {
+    flex-direction: column;
+  }
+
+  .zflow-node-panel {
+    width: 100%;
+    max-width: none;
+    height: 260px;
+    border-top: 1px solid var(--zflow-panel-border);
+    border-left: 0;
+  }
 }
 
 .markdown-preview-panel__body {
