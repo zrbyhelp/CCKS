@@ -62,7 +62,7 @@ export async function listUserProjects(userId: string): Promise<UserProject[]> {
     records = [await ensureDefaultProject(userId)]
   } else {
     const defaultProject = records.find((record) => record.fileName === DEFAULT_PROJECT_FILE_NAME)
-    if (defaultProject) await ensureDefaultProjectFiles(defaultProject.localPath)
+    if (defaultProject) await ensureDefaultProjectFiles(defaultProject.localPath).catch(() => undefined)
   }
 
   return Promise.all(records.map(readProject))
@@ -562,12 +562,13 @@ async function ensureDefaultProject(userId: string) {
 }
 
 async function ensureDefaultProjectFiles(projectRoot: string) {
-  await ensureProjectScaffold(projectRoot)
+  await ensureProjectScaffold(projectRoot, { preserveReadme: true })
 }
 
-async function ensureProjectScaffold(projectRoot: string) {
+async function ensureProjectScaffold(projectRoot: string, options: { preserveReadme?: boolean } = {}) {
   await mkdir(projectRoot, { recursive: true })
-  await copyRepositoryReadme(projectRoot)
+  if (options.preserveReadme) await ensureProjectReadme(projectRoot)
+  else await copyRepositoryReadme(projectRoot)
   await ensureProjectConfigFiles(projectRoot)
   await ensureProjectPromptTestFiles(projectRoot)
   await ensureProjectZflowDemoFiles(projectRoot)
@@ -717,6 +718,14 @@ async function copyRepositoryReadme(projectRoot: string) {
   } else {
     await writeFile(target, '# ccks\n\n新时代 AI 代码编辑工具以及编辑框架。\n', 'utf8')
   }
+}
+
+async function ensureProjectReadme(projectRoot: string) {
+  const target = resolveInside(projectRoot, 'README.md')
+  const exists = await stat(target)
+    .then((stats) => stats.isFile())
+    .catch(() => false)
+  if (!exists) await copyRepositoryReadme(projectRoot)
 }
 
 async function readProjectTree(project: ProjectRecord): Promise<ProjectTreeNode> {
