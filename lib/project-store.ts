@@ -566,6 +566,7 @@ async function ensureDefaultProjectFiles(projectRoot: string) {
 }
 
 async function ensureProjectScaffold(projectRoot: string) {
+  await mkdir(projectRoot, { recursive: true })
   await copyRepositoryReadme(projectRoot)
   await ensureProjectConfigFiles(projectRoot)
   await ensureProjectPromptTestFiles(projectRoot)
