@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
   const state = request.nextUrl.searchParams.get('state')
   const storedState = decodeState(request.cookies.get(LOGIN_STATE_COOKIE)?.value)
 
-  if (!code || !state) {
+  if (!code) {
     return NextResponse.json({ ok: false, message: 'Invalid login callback' }, { status: 400 })
   }
 
@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
 
   const payload = await tokenResponse.json().catch(() => null)
   const user = normalizeUser(payload)
-  const next = storedState?.state === state ? storedState.next : '/'
+  const next = state && storedState?.state === state ? storedState.next : '/'
   const response = NextResponse.redirect(buildSameOriginRedirectUrl(request, next))
 
   response.cookies.delete(LOGIN_STATE_COOKIE)

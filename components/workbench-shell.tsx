@@ -3674,7 +3674,7 @@ function ProjectFilesPanel({
   const [lastSelectedPath, setLastSelectedPath] = useState('')
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null)
   const [uploadTargetPath, setUploadTargetPath] = useState('')
-  const fileTree = activeProject?.tree ? [activeProject.tree] : []
+  const fileTree = useMemo(() => (activeProject?.tree ? [activeProject.tree] : []), [activeProject?.tree])
   const flatFileTreePaths = useMemo(() => flattenProjectTreePaths(activeProject?.tree), [activeProject?.tree])
   const projectTreeNodeByPath = useMemo(() => buildProjectTreeNodeByPath(activeProject?.tree), [activeProject?.tree])
   const fileTreeHeight = Math.max(160, (fileTreeViewportHeight || 360) - 16)

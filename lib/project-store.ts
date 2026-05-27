@@ -52,36 +52,6 @@ type ProjectRecord = {
 const PROJECT_ROOT = process.env.CCKS_PROJECT_ROOT || path.join(process.cwd(), '.ccks-projects')
 const DEFAULT_PROJECT_FILE_NAME = 'example-site'
 
-const examplePrompt = `---
-title: "ccks"
-description: "新时代 AI 代码编辑工具以及编辑框架"
-layout: "base"
-version: "1.2.0"
-updated_at: "{{ now }}"
-tags: ["首页", "营销"]
----
-
-# {{ site.title }}
-### {{ site.description }}
-
-ccks，帮助团队以更高效率创建、编辑和管理 AI 代码项目。
-
-## 核心能力
-
-- **智能生成**：通过自然语言生成高质量网页内容与结构
-- **可视化管理**：页面、内容、数据一站式管理
-- **强大集成**：丰富的工具与API，扩展无限可能
-
-## 开始使用
-\`\`\`json
-{
-  "cta_text": "立即体验",
-  "cta_url": "{{ links.getStarted }}",
-  "primary_color": "{{ theme.primary }}"
-}
-\`\`\`
-`
-
 export async function listUserProjects(userId: string): Promise<UserProject[]> {
   let records = await prisma.project.findMany({
     where: { userId },
@@ -110,10 +80,7 @@ export async function createUserProject(userId: string, input: { name: unknown; 
     if (error.code === 'EEXIST') throw new ProjectStoreError('PROJECT_EXISTS', '文件名称已存在')
     throw error
   })
-  await copyRepositoryReadme(projectRoot)
-  await ensureProjectConfigFiles(projectRoot)
-  await ensureProjectPromptTestFiles(projectRoot)
-  await ensureProjectZflowDemoFiles(projectRoot)
+  await ensureProjectScaffold(projectRoot)
 
   try {
     const record = await prisma.project.create({
@@ -595,34 +562,14 @@ async function ensureDefaultProject(userId: string) {
 }
 
 async function ensureDefaultProjectFiles(projectRoot: string) {
-  await mkdir(resolveInside(projectRoot, '_global'), { recursive: true })
+  await ensureProjectScaffold(projectRoot)
+}
+
+async function ensureProjectScaffold(projectRoot: string) {
+  await copyRepositoryReadme(projectRoot)
   await ensureProjectConfigFiles(projectRoot)
-  await mkdir(resolveInside(projectRoot, 'pages'), { recursive: true })
-  await mkdir(resolveInside(projectRoot, 'blog/文章'), { recursive: true })
-  await mkdir(resolveInside(projectRoot, 'api'), { recursive: true })
-  await mkdir(resolveInside(projectRoot, 'components'), { recursive: true })
-  await mkdir(resolveInside(projectRoot, 'templates'), { recursive: true })
   await ensureProjectPromptTestFiles(projectRoot)
   await ensureProjectZflowDemoFiles(projectRoot)
-
-  await Promise.all([
-    writeFileIfMissing(resolveInside(projectRoot, 'README.md'), examplePrompt),
-    writeFileIfMissing(resolveInside(projectRoot, '_global/全局设置.prompt'), examplePrompt),
-    writeFileIfMissing(resolveInside(projectRoot, '_global/导航.prompt'), '# 导航.prompt\n'),
-    writeFileIfMissing(resolveInside(projectRoot, 'pages/首页.prompt'), examplePrompt),
-    writeFileIfMissing(resolveInside(projectRoot, 'pages/产品页.prompt'), '# 产品页.prompt\n'),
-    writeFileIfMissing(resolveInside(projectRoot, 'pages/定价页.prompt'), '# 定价页.prompt\n'),
-    writeFileIfMissing(resolveInside(projectRoot, 'pages/关于我们.prompt'), '# 关于我们.prompt\n'),
-    writeFileIfMissing(resolveInside(projectRoot, 'blog/列表页.prompt'), '# 列表页.prompt\n'),
-    writeFileIfMissing(resolveInside(projectRoot, 'blog/文章/博客文章.prompt'), '# 博客文章.prompt\n'),
-    writeFileIfMissing(resolveInside(projectRoot, 'blog/文章/文章详情.prompt'), '# 文章详情.prompt\n'),
-    writeFileIfMissing(resolveInside(projectRoot, 'api/搜索.prompt'), '# 搜索.prompt\n'),
-    writeFileIfMissing(resolveInside(projectRoot, 'api/订阅.prompt'), '# 订阅.prompt\n'),
-    writeFileIfMissing(resolveInside(projectRoot, 'components/页头.prompt'), '# 页头.prompt\n'),
-    writeFileIfMissing(resolveInside(projectRoot, 'components/页脚.prompt'), '# 页脚.prompt\n'),
-    writeFileIfMissing(resolveInside(projectRoot, 'components/CTA.prompt'), '# CTA.prompt\n'),
-    writeFileIfMissing(resolveInside(projectRoot, 'templates/基础模板.prompt'), '# 基础模板.prompt\n'),
-  ])
 }
 
 async function ensureProjectPromptTestFiles(projectRoot: string) {
