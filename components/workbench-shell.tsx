@@ -1996,7 +1996,7 @@ const ZFLOW_NODE_TEMPLATES: ZflowNodeTemplate[] = [
       { id: 'true', label: { zh: '符合条件 true', en: 'Matched true' }, valueType: 'any' },
       { id: 'false', label: { zh: '不符合条件 false', en: 'Unmatched false' }, valueType: 'any' },
     ],
-    config: { left: '{{result}}', operator: 'notEmpty', right: '' },
+    config: { conditionMode: 'all', conditions: [] },
   },
   {
     id: 'parallel-merge',
@@ -8122,6 +8122,7 @@ function ZflowNodeEditor({
   const canEditOutputData = isZflowOutputDataEditable(node)
   const canEditOutputPorts = isZflowOutputPortsEditable(node)
   const isEndNode = readString(node.data.nodeType) === 'end' || readString(node.data.kind) === 'end'
+  const isRouterNode = readString(node.data.nodeType) === 'router' || readString(node.data.kind) === 'router'
   const bindingView = useMemo(
     () => getZflowInputBindingView({
       node,
@@ -8169,6 +8170,10 @@ function ZflowNodeEditor({
     config.bindings = Object.fromEntries(Object.entries(currentBindings).filter(([key]) => nextIds.has(key)))
     delete config.returnPaths
     delete config.inputBindings
+    onChange(node.id, { config })
+  }
+
+  function updateConditionConfig(config: Record<string, unknown>) {
     onChange(node.id, { config })
   }
 
@@ -8226,6 +8231,15 @@ function ZflowNodeEditor({
       ) : bindingView.status ? (
         <ZflowInputBindingStatus locale={locale} status={bindingView.status} />
       ) : null}
+      {isRouterNode ? (
+        <ZflowConditionEditor
+          t={t}
+          locale={locale}
+          node={node}
+          upstreamOptions={upstreamOptions}
+          onChange={updateConditionConfig}
+        />
+      ) : null}
     </div>
   )
 }
@@ -8245,7 +8259,8 @@ function ZflowOutputDataEditor({
   readonly?: boolean
   onChange: (nodeId: string, outputData: ZflowNodePort[]) => void
 }) {
-  const normalizedOutputs = outputData.length ? outputData : getDefaultZflowOutputDataForNode(node, locale)
+  const hasExplicitOutputData = Array.isArray(node.data.outputData) || (isZflowStartNode(node) && Array.isArray(node.data.outputs))
+  const normalizedOutputs = outputData.length || hasExplicitOutputData ? outputData : getDefaultZflowOutputDataForNode(node, locale)
   const allowedTypes = isZflowStartNode(node) ? ZFLOW_START_OUTPUT_TYPES : ['any', 'string', 'number', 'text', 'object', 'array', 'color', 'boolean', 'image', 'file'] as ZflowPortValueType[]
 
   function commit(nextOutputs: ZflowNodePort[]) {
@@ -8312,7 +8327,7 @@ function ZflowOutputDataEditor({
               size="icon"
               variant="ghost"
               className="zflow-node-editor__port-delete"
-              disabled={readonly || normalizedOutputs.length <= 1}
+              disabled={readonly}
               aria-label={locale === 'en' ? 'Delete output' : '删除输出'}
               onClick={() => commit(normalizedOutputs.filter((_, itemIndex) => itemIndex !== index))}
             >
@@ -8346,18 +8361,7 @@ function ZflowNodeRuntimeFields({
   }
 
   if (nodeType === 'prompt') {
-    return (
-      <section className="zflow-node-editor__runtime">
-        <label className="zflow-node-editor__field">
-          <span>{fieldLabel('提示词文件', 'Prompt file')}</span>
-          <Input value={readString(config.filePath)} onChange={(event) => commit({ filePath: event.target.value })} />
-        </label>
-        <label className="zflow-node-editor__field">
-          <span>{fieldLabel('输出变量', 'Output variable')}</span>
-          <Input value={readString(config.outputPath) || (readString(config.promptKind) === 'image' ? 'image' : 'result')} onChange={(event) => commit({ outputPath: event.target.value })} />
-        </label>
-      </section>
-    )
+    return null
   }
 
   if (nodeType === 'state') {
@@ -8420,28 +8424,7 @@ function ZflowNodeRuntimeFields({
     )
   }
 
-  if (nodeType === 'router') {
-    return (
-      <section className="zflow-node-editor__runtime">
-        <label className="zflow-node-editor__field">
-          <span>{fieldLabel('左值', 'Left value')}</span>
-          <Input value={readString(config.left || config.source)} onChange={(event) => commit({ left: event.target.value })} />
-        </label>
-        <label className="zflow-node-editor__field">
-          <span>{fieldLabel('判断方式', 'Operator')}</span>
-          <select className="zflow-input-binding__select" value={readString(config.operator) || 'notEmpty'} onChange={(event) => commit({ operator: event.target.value })}>
-            {ZFLOW_CONDITION_OPERATORS.map((operator) => (
-              <option key={operator} value={operator}>{operator}</option>
-            ))}
-          </select>
-        </label>
-        <label className="zflow-node-editor__field">
-          <span>{fieldLabel('右值', 'Right value')}</span>
-          <Input value={readString(config.right || config.value)} onChange={(event) => commit({ right: event.target.value })} />
-        </label>
-      </section>
-    )
-  }
+  if (nodeType === 'router') return null
 
   if (nodeType === 'array-merge') {
     return (
@@ -8605,11 +8588,11 @@ function ZflowConditionEditor({
         {conditionConfig.conditions.map((condition) => {
           const selectedNodeId = sourceNodes.some((sourceNode) => sourceNode.nodeId === condition.sourceNodeId)
             ? condition.sourceNodeId
-            : sourceNodes[0]?.nodeId || ''
+            : ''
           const nodeOutputOptions = selectedNodeId ? upstreamOptions.filter((option) => option.nodeId === selectedNodeId) : []
           const selectedOutputId = nodeOutputOptions.some((option) => option.outputId === condition.sourceOutputId)
             ? condition.sourceOutputId
-            : nodeOutputOptions[0]?.outputId || ''
+            : ''
           return (
             <div key={condition.id} className="zflow-condition-rule">
               <select
@@ -9361,8 +9344,7 @@ function getDefaultZflowStartOutputs(locale: Locale): ZflowNodePort[] {
 }
 
 function isZflowOutputPortsEditable(node: ZflowNode) {
-  const nodeType = readString(node.data.nodeType) || readString(node.data.kind)
-  return nodeType === 'router'
+  return false
 }
 
 function isZflowOutputDataEditable(node: ZflowNode) {
@@ -9388,9 +9370,20 @@ function normalizeZflowConditionOperator(value: unknown): ZflowConditionOperator
 function readZflowConditionConfig(value: unknown): ZflowConditionConfig {
   const config = isRecord(value) ? value : {}
   const conditions = Array.isArray(config.conditions) ? config.conditions : []
+  const legacySource = readString(config.sourceNodeId)
+  const legacyOutput = readString(config.sourceOutputId) || readString(config.sourceHandle)
+  const legacyConditions: ZflowConditionRule[] = !conditions.length && (legacySource || legacyOutput)
+    ? [{
+      id: 'condition-1',
+      sourceNodeId: legacySource,
+      sourceOutputId: legacyOutput,
+      operator: normalizeZflowConditionOperator(config.operator),
+      value: readString(config.value ?? config.right),
+    }]
+    : []
   return {
     conditionMode: normalizeZflowConditionMode(config.conditionMode),
-    conditions: conditions.flatMap((item, index): ZflowConditionRule[] => {
+    conditions: conditions.length ? conditions.flatMap((item, index): ZflowConditionRule[] => {
       if (!isRecord(item)) return []
       const id = readString(item.id) || `condition-${index + 1}`
       return [{
@@ -9400,7 +9393,7 @@ function readZflowConditionConfig(value: unknown): ZflowConditionConfig {
         operator: normalizeZflowConditionOperator(item.operator),
         value: readString(item.value),
       }]
-    }),
+    }) : legacyConditions,
   }
 }
 
@@ -9416,6 +9409,11 @@ function writeZflowConditionConfig(currentConfig: unknown, conditionConfig: Zflo
   }))
   delete config.expression
   delete config.defaultPath
+  delete config.left
+  delete config.source
+  delete config.operator
+  delete config.right
+  delete config.value
   return config
 }
 
@@ -9446,6 +9444,7 @@ function conditionOperatorNeedsValue(operator: ZflowConditionOperator) {
 }
 
 function normalizeZflowStartOutputPorts(value: unknown, locale: Locale): ZflowNodePort[] {
+  if (Array.isArray(value) && value.length === 0) return []
   return normalizeZflowPorts(value, getDefaultZflowStartOutputs(locale)).map((port) => ({
     ...port,
     valueType: normalizeZflowStartOutputType(port.valueType),
@@ -9453,6 +9452,7 @@ function normalizeZflowStartOutputPorts(value: unknown, locale: Locale): ZflowNo
 }
 
 function normalizeZflowOutputData(value: unknown, fallback: ZflowNodePort[], locale: Locale): ZflowNodePort[] {
+  if (Array.isArray(value) && value.length === 0) return []
   return normalizeZflowPorts(value, fallback).map((port) => ({
     ...port,
     valueType: normalizeZflowPortValueType(port.valueType, 'string'),
@@ -17137,7 +17137,8 @@ function normalizeZflowDocumentStartNode(nodes: ZflowNode[]) {
 }
 
 function normalizeExistingZflowStartNode(node: ZflowNode): ZflowNode {
-  const outputData = normalizeZflowStartOutputPorts(node.data.outputData || node.data.outputs, 'zh')
+  const hasExplicitOutputData = Array.isArray(node.data.outputData) || Array.isArray(node.data.outputs)
+  const outputData = normalizeZflowStartOutputPorts(Array.isArray(node.data.outputData) ? node.data.outputData : node.data.outputs, 'zh')
   return {
     ...node,
     id: ZFLOW_START_NODE_ID,
@@ -17152,7 +17153,7 @@ function normalizeExistingZflowStartNode(node: ZflowNode): ZflowNode {
       runtime: 'start',
       inputPorts: [],
       outputPorts: [ZFLOW_START_FLOW_PORT],
-      outputData: outputData.length ? outputData : getDefaultZflowStartOutputs('zh'),
+      outputData: hasExplicitOutputData ? outputData : getDefaultZflowStartOutputs('zh'),
       config: isRecord(node.data.config) ? node.data.config : {},
     },
   }

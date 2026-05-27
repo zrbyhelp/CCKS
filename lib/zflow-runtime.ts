@@ -838,13 +838,49 @@ function readRemoteError(value: unknown) {
 }
 
 function evaluateRouter(node: ZflowLangGraphNode, state: GraphState) {
-  const left = resolveTemplateValue(node.data.config?.left ?? node.data.config?.source ?? state.last, state.values)
-  const operator = readString(node.data.config?.operator) || 'notEmpty'
-  const right = resolveTemplateValue(node.data.config?.right ?? node.data.config?.value ?? '', state.values)
-  if (operator === 'empty') return !readString(left)
-  if (operator === 'notEmpty') return Boolean(readString(left))
-  if (operator === 'eq') return String(left) === String(right)
-  if (operator === 'neq') return String(left) !== String(right)
+  const config = isRecord(node.data.config) ? node.data.config : {}
+  const conditions = readRouterConditions(config)
+  if (conditions.length) {
+    const results = conditions.map((condition) => evaluateRouterCondition(condition, state.values))
+    return readString(config.conditionMode) === 'any' ? results.some(Boolean) : results.every(Boolean)
+  }
+  const left = resolveTemplateValue(config.left ?? config.source ?? state.last, state.values)
+  const operator = readString(config.operator) || 'notEmpty'
+  const right = resolveTemplateValue(config.right ?? config.value ?? '', state.values)
+  return compareRouterValues(left, operator, right)
+}
+
+function readRouterConditions(config: Record<string, unknown>) {
+  if (!Array.isArray(config.conditions)) return []
+  return config.conditions.flatMap((item) => {
+    if (!isRecord(item)) return []
+    const sourceNodeId = readString(item.sourceNodeId)
+    const sourceOutputId = readString(item.sourceOutputId) || readString(item.sourcePath) || readString(item.sourceHandle)
+    if (!sourceNodeId || !sourceOutputId) return []
+    return [{
+      sourceNodeId,
+      sourceOutputId,
+      operator: readString(item.operator) || 'eq',
+      value: item.value,
+    }]
+  })
+}
+
+function evaluateRouterCondition(
+  condition: { sourceNodeId: string; sourceOutputId: string; operator: string; value: unknown },
+  values: Record<string, unknown>,
+) {
+  const scopedValue = values[createZflowNodeOutputKey(condition.sourceNodeId, condition.sourceOutputId)]
+  const left = scopedValue !== undefined ? scopedValue : readPath(values, condition.sourceOutputId)
+  const right = resolveTemplateValue(condition.value ?? '', values)
+  return compareRouterValues(left, condition.operator, right)
+}
+
+function compareRouterValues(left: unknown, operator: string, right: unknown) {
+  if (operator === 'empty') return isRouterEmptyValue(left)
+  if (operator === 'notEmpty') return !isRouterEmptyValue(left)
+  if (operator === 'eq') return String(left ?? '') === String(right ?? '')
+  if (operator === 'neq') return String(left ?? '') !== String(right ?? '')
   const leftNumber = Number(left)
   const rightNumber = Number(right)
   if (!Number.isFinite(leftNumber) || !Number.isFinite(rightNumber)) return false
@@ -852,6 +888,14 @@ function evaluateRouter(node: ZflowLangGraphNode, state: GraphState) {
   if (operator === 'gte') return leftNumber >= rightNumber
   if (operator === 'lt') return leftNumber < rightNumber
   if (operator === 'lte') return leftNumber <= rightNumber
+  return false
+}
+
+function isRouterEmptyValue(value: unknown) {
+  if (value == null) return true
+  if (typeof value === 'string') return !value.trim()
+  if (Array.isArray(value)) return value.length === 0
+  if (isRecord(value)) return Object.keys(value).length === 0
   return false
 }
 
@@ -949,7 +993,9 @@ function normalizeZflowNode(value: unknown, index: number): ZflowLangGraphNode[]
     description: readString(data.description),
     icon: readString(data.icon) || getDefaultIcon(kind),
     inputs: normalizePorts(data.inputs || data.inputPorts, kind === 'start' ? [] : [{ id: 'in', label: '输入' }]),
-    outputs: normalizePorts(data.outputs || data.outputPorts, kind === 'end' ? [] : kind === 'router' ? [{ id: 'true', label: 'true' }, { id: 'false', label: 'false' }] : [{ id: 'out', label: '输出' }]),
+    outputs: kind === 'router'
+      ? [{ id: 'true', label: 'true' }, { id: 'false', label: 'false' }]
+      : normalizePorts(data.outputs || data.outputPorts, kind === 'end' ? [] : [{ id: 'out', label: '输出' }]),
     config: isRecord(data.config) ? data.config : {},
   })]
 }
